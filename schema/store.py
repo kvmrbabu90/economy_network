@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS edges (
     -- additional provenances (full Provenance dicts, JSON-serialized) are
     -- stashed here so SQLite stays the source of truth.
     additional_provenance TEXT NOT NULL DEFAULT '[]',
+    -- Phase 5 adds this flag so the API can serve a clean "core" graph
+    -- (below_threshold=0, the high-confidence above-cutoff edges) AND a
+    -- separate "audit" view (below_threshold=1, mostly provisional-slug
+    -- competes_with edges capped low in Phase 3). One source of truth;
+    -- the include_provisional API toggle reads this column.
+    below_threshold INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (source) REFERENCES nodes(id),
     FOREIGN KEY (target) REFERENCES nodes(id)
 );
@@ -61,18 +67,23 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
 CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type);
+CREATE INDEX IF NOT EXISTS idx_edges_below_threshold ON edges(below_threshold);
 -- De-dupe key for competes_with (treat as unordered pair, see PRD §4).
 CREATE UNIQUE INDEX IF NOT EXISTS uq_edges_triple
     ON edges(source, target, type);
 
 CREATE TABLE IF NOT EXISTS aliases (
-    alias        TEXT NOT NULL,
-    node_id      TEXT NOT NULL,
+    alias              TEXT NOT NULL,
+    -- Phase 5 stores the resolver-normalized form so /search can look up
+    -- "procter" or "p&g" without re-implementing normalize() in SQL.
+    alias_normalized   TEXT NOT NULL DEFAULT '',
+    node_id            TEXT NOT NULL,
     PRIMARY KEY (alias, node_id),
     FOREIGN KEY (node_id) REFERENCES nodes(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_aliases_alias ON aliases(alias);
+CREATE INDEX IF NOT EXISTS idx_aliases_normalized ON aliases(alias_normalized);
 """
 
 
@@ -129,16 +140,33 @@ def upsert_node(conn: sqlite3.Connection, node: Union[Node, dict[str, Any]]) -> 
     return n
 
 
-def upsert_edge(conn: sqlite3.Connection, edge: Union[Edge, dict[str, Any]]) -> Edge:
-    """Validate via Pydantic then upsert into `edges`. Returns the validated Edge."""
+def upsert_edge(
+    conn: sqlite3.Connection,
+    edge: Union[Edge, dict[str, Any]],
+    *,
+    below_threshold: bool = False,
+) -> Edge:
+    """Validate via Pydantic then upsert into `edges`. Returns the validated Edge.
+
+    `below_threshold=True` flags the row as audit-layer (Phase 5 §A1). The
+    column has DEFAULT 0 so existing callers stay correct without changes.
+    Invariant: never insert a row whose `type == "customer_of"` -- that
+    relationship is derived on read (CLAUDE.md invariant #2).
+    """
     e = edge if isinstance(edge, Edge) else Edge.model_validate(edge)
+    edge_type = e.type if isinstance(e.type, str) else e.type.value
+    if edge_type == "customer_of":
+        raise ValueError(
+            "Refusing to store an Edge with type='customer_of'. The customer "
+            "view is derived from `supplies` at query time (invariant #2)."
+        )
     extra_prov = [p.model_dump() if hasattr(p, "model_dump") else p for p in e.additional_provenance]
     conn.execute(
         """
         INSERT INTO edges (id, source, target, type, directed, confidence, weight,
                            prov_filing, prov_url, prov_snippet, prov_extracted_by,
-                           additional_provenance)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           additional_provenance, below_threshold)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             source=excluded.source,
             target=excluded.target,
@@ -150,13 +178,14 @@ def upsert_edge(conn: sqlite3.Connection, edge: Union[Edge, dict[str, Any]]) -> 
             prov_url=excluded.prov_url,
             prov_snippet=excluded.prov_snippet,
             prov_extracted_by=excluded.prov_extracted_by,
-            additional_provenance=excluded.additional_provenance
+            additional_provenance=excluded.additional_provenance,
+            below_threshold=excluded.below_threshold
         """,
         (
             e.id,
             e.source,
             e.target,
-            e.type if isinstance(e.type, str) else e.type.value,
+            edge_type,
             1 if e.directed else 0,
             e.confidence,
             e.weight,
@@ -165,6 +194,7 @@ def upsert_edge(conn: sqlite3.Connection, edge: Union[Edge, dict[str, Any]]) -> 
             e.provenance.snippet,
             e.provenance.extracted_by,
             json.dumps(extra_prov),
+            1 if below_threshold else 0,
         ),
     )
     conn.commit()
@@ -220,11 +250,39 @@ def get_edge(conn: sqlite3.Connection, edge_id: str) -> Optional[Edge]:
 
 
 def add_aliases(conn: sqlite3.Connection, node_id: str, aliases: Iterable[str]) -> None:
-    """Map alias strings -> canonical node id. Idempotent."""
-    rows = [(a, node_id) for a in aliases if a]
+    """Map raw alias strings -> canonical node id. Idempotent.
+
+    The normalized column gets a best-effort lowercase fallback so this older
+    entrypoint (used by Phase 0 fixtures) still works. Phase 3+ callers
+    should prefer `add_alias_rows()` which carries the resolver's
+    deterministic normalize() output.
+    """
+    rows = [(a, a.lower().strip(), node_id) for a in aliases if a]
     if not rows:
         return
     conn.executemany(
-        "INSERT OR IGNORE INTO aliases (alias, node_id) VALUES (?, ?)", rows
+        "INSERT OR IGNORE INTO aliases (alias, alias_normalized, node_id) VALUES (?, ?, ?)",
+        rows,
     )
     conn.commit()
+
+
+def add_alias_rows(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
+    """Bulk-load aliases.jsonl rows produced by `pipeline.resolve`.
+
+    Each row must carry: alias, alias_normalized, canonical_id.
+    Idempotent on (alias, node_id). Returns rows inserted (incl. ignored).
+    """
+    tuples = [
+        (r["alias"], r.get("alias_normalized") or r["alias"].lower().strip(), r["canonical_id"])
+        for r in rows
+        if r.get("alias") and r.get("canonical_id")
+    ]
+    if not tuples:
+        return 0
+    conn.executemany(
+        "INSERT OR IGNORE INTO aliases (alias, alias_normalized, node_id) VALUES (?, ?, ?)",
+        tuples,
+    )
+    conn.commit()
+    return len(tuples)

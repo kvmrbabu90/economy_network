@@ -25,7 +25,14 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from schema.models import Edge, EdgeType, Node, NodeType
-from schema.store import add_aliases, connect, init_db, upsert_edge, upsert_node
+from schema.store import (
+    add_alias_rows,
+    add_aliases,
+    connect,
+    init_db,
+    upsert_edge,
+    upsert_node,
+)
 
 
 log = logging.getLogger("build_graph")
@@ -58,6 +65,7 @@ def load_into_sqlite(
     nodes: list[dict],
     edges: list[dict],
     aliases: list[dict],
+    below_threshold_edges: Optional[list[dict]] = None,
     fresh: bool = True,
 ) -> LoadResult:
     """Wipe (if fresh) + load nodes/edges/aliases into SQLite via validated upserts.
@@ -76,18 +84,18 @@ def load_into_sqlite(
         upsert_node(conn, n)
     log.info("Loaded %d nodes into %s", len(nodes), db_path)
 
-    # Referential-integrity check (manual, ahead of edge inserts).
+    below_threshold_edges = below_threshold_edges or []
+
+    # Referential-integrity check across BOTH layers -- audit edges must
+    # reference nodes that exist too. Fail loud collectively.
     node_ids = {n["id"] for n in nodes}
     orphans: list[dict[str, str]] = []
-    for e in edges:
+    for e in edges + below_threshold_edges:
         if e["source"] not in node_ids:
             orphans.append({"edge_id": e["id"], "missing": "source", "id": e["source"]})
         if e["target"] not in node_ids:
             orphans.append({"edge_id": e["id"], "missing": "target", "id": e["target"]})
     if orphans:
-        # Fail loud per the Phase 4 acceptance gate: a dangling edge is silent
-        # corruption. We close the connection cleanly so the caller can
-        # inspect the partial DB if they want.
         conn.close()
         raise RuntimeError(
             f"Referential-integrity FAILED: {len(orphans)} orphan edge endpoints. "
@@ -95,18 +103,18 @@ def load_into_sqlite(
         )
 
     for e in edges:
-        upsert_edge(conn, e)
-    log.info("Loaded %d edges", len(edges))
+        upsert_edge(conn, e, below_threshold=False)
+    log.info("Loaded %d core edges", len(edges))
 
-    # Aliases (the alias table is the resolver's audit trail; keep it.)
-    n_aliases = 0
-    grouped: dict[str, list[str]] = defaultdict(list)
-    for a in aliases:
-        grouped[a["canonical_id"]].append(a["alias"])
-    for canonical_id, alist in grouped.items():
-        add_aliases(conn, canonical_id, alist)
-        n_aliases += len(alist)
-    log.info("Loaded %d aliases (across %d canonical nodes)", n_aliases, len(grouped))
+    for e in below_threshold_edges:
+        upsert_edge(conn, e, below_threshold=True)
+    if below_threshold_edges:
+        log.info("Loaded %d audit (below-threshold) edges", len(below_threshold_edges))
+
+    # Aliases. We prefer the richer rows-based loader so alias_normalized
+    # is persisted alongside the raw alias (Phase 5 /search needs it).
+    n_aliases = add_alias_rows(conn, aliases) if aliases else 0
+    log.info("Loaded %d aliases", n_aliases)
 
     # Quick sanity: counts read back.
     n_count = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
@@ -389,11 +397,25 @@ def run(*, data_root: Path, db_path: Path, graph_json_path: Path) -> Stats:
         len(nodes), len(edges), len(below), len(aliases),
     )
 
-    # SQLite is the clean above-cutoff source of truth -- below-threshold
-    # edges stay in their JSONL audit file and are NOT loaded into the DB.
-    load_into_sqlite(db_path, nodes=nodes, edges=edges, aliases=aliases, fresh=True)
+    # Phase 5 §A1: SQLite now holds BOTH layers, flagged by below_threshold.
+    # The API uses that flag to honor the include_provisional toggle.
+    load_into_sqlite(
+        db_path,
+        nodes=nodes,
+        edges=edges,
+        below_threshold_edges=below,
+        aliases=aliases,
+        fresh=True,
+    )
     # Idempotency proof: load again with fresh=False; counts should not change.
-    load_into_sqlite(db_path, nodes=nodes, edges=edges, aliases=aliases, fresh=False)
+    load_into_sqlite(
+        db_path,
+        nodes=nodes,
+        edges=edges,
+        below_threshold_edges=below,
+        aliases=aliases,
+        fresh=False,
+    )
 
     # graph.json folds in the audit layer (tagged below_threshold=true) so
     # the preview can show provisional slug hubs without polluting edges.jsonl.

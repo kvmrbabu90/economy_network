@@ -2,6 +2,7 @@
 
 from .models import CandidateEdge, Edge, EdgeType, Node, NodeType, Provenance
 from .store import (
+    add_alias_rows,
     add_aliases,
     connect,
     get_edge,
@@ -18,6 +19,7 @@ __all__ = [
     "Node",
     "NodeType",
     "Provenance",
+    "add_alias_rows",
     "add_aliases",
     "connect",
     "get_edge",
