@@ -1,0 +1,161 @@
+// Right-side panel: node detail OR edge provenance. The provenance view is
+// the auditability payoff -- every relationship surfaces the verbatim filing
+// snippet that justified it.
+
+import type { ApiEdge, ApiNode, EdgeType } from "../api";
+import type { EconGraph } from "../graph";
+
+const root = () => document.getElementById("inspector")!;
+
+function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K, attrs: Record<string, string> = {}, ...children: (Node | string)[]
+): HTMLElementTagNameMap[K] {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v;
+    else if (k === "html") e.innerHTML = v;
+    else e.setAttribute(k, v);
+  }
+  for (const c of children) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+  return e;
+}
+
+function escapeHTML(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+}
+
+function emptyState() {
+  root().replaceChildren(
+    el("div", { class: "inspector-empty" },
+      el("div", { class: "inspector-empty-title" }, "Inspector"),
+      el("p", {}, "Hover or click any node or edge to see details and provenance."),
+    ),
+  );
+}
+
+export function showEmpty() { emptyState(); }
+
+// ---------------------------------------------------------------------------
+// Node view
+// ---------------------------------------------------------------------------
+
+export function showNode(node: ApiNode, g: EconGraph): void {
+  const a = node.attributes;
+  const r = root();
+  r.replaceChildren();
+
+  const pills: Node[] = [];
+  pills.push(el("span", { class: "pill" }, a.type));
+  if (a.provisional) pills.push(el("span", { class: "pill provisional" }, "provisional"));
+  if (a.identity_unverified) pills.push(el("span", { class: "pill provisional" }, "identity unverified"));
+
+  r.appendChild(el("h2", {}, a.label));
+  r.appendChild(el("p", { class: "subtitle" }, node.key));
+  const pillBox = el("div", { class: "pills" });
+  pills.forEach((p) => pillBox.appendChild(p));
+  r.appendChild(pillBox);
+
+  const dl = el("dl");
+  function row(label: string, value: string | null | undefined) {
+    if (!value) return;
+    dl.appendChild(el("dt", {}, label));
+    dl.appendChild(el("dd", {}, value));
+  }
+  row("Type", a.type);
+  if (a.tickers.length) row("Tickers", a.tickers.join(", "));
+  row("Sector", a.sector);
+  row("Industry", a.industry);
+  row("Country", a.country);
+  if (a.identifiers && Object.keys(a.identifiers).length) {
+    const lines = Object.entries(a.identifiers).map(([k, v]) => `${k}: ${String(v)}`);
+    row("Identifiers", lines.join(" · "));
+  }
+  if (a.aliases.length) row("Aliases", a.aliases.slice(0, 6).join(" · "));
+  r.appendChild(dl);
+
+  // Edge-type breakdown for the node.
+  if (g.hasNode(node.key)) {
+    const counts: Record<string, number> = {};
+    g.forEachEdge(node.key, (_eid, attrs) => {
+      counts[attrs.edgeType] = (counts[attrs.edgeType] ?? 0) + 1;
+    });
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    if (total > 0) {
+      r.appendChild(el("div", { class: "filter-title", style: "margin-bottom:8px" }, "Connections in view"));
+      const list = el("ul", { class: "edges-summary" });
+      const order: EdgeType[] = ["supplies", "customer_of", "competes_with", "regulated_by", "part_of"];
+      for (const t of order) {
+        if (!counts[t]) continue;
+        const li = el("li");
+        li.appendChild(el("span", { class: "pill t-" + t }, t));
+        li.appendChild(el("span", { class: "e-label" }, ""));
+        li.appendChild(el("span", { class: "e-count" }, String(counts[t])));
+        list.appendChild(li);
+      }
+      r.appendChild(list);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Edge view -- the auditability payoff
+// ---------------------------------------------------------------------------
+
+export function showEdge(
+  edge: ApiEdge,
+  endpoints: { source: ApiNode | null; target: ApiNode | null } = { source: null, target: null },
+): void {
+  const a = edge.attributes;
+  const r = root();
+  r.replaceChildren();
+
+  const sourceName = endpoints.source?.attributes.label ?? edge.source;
+  const targetName = endpoints.target?.attributes.label ?? edge.target;
+
+  r.appendChild(el("h2", {}, `${sourceName} → ${targetName}`));
+  r.appendChild(el("p", { class: "subtitle" }, edge.key));
+
+  const pills = el("div");
+  pills.appendChild(el("span", { class: `pill t-${a.type}` }, a.type));
+  if (a.derived) pills.appendChild(el("span", { class: "pill derived" }, "derived view"));
+  if (a.below_threshold) pills.appendChild(el("span", { class: "pill below-threshold" }, "below threshold (audit)"));
+  if (typeof a.confidence === "number") {
+    pills.appendChild(el("span", { class: "pill" }, `confidence ${a.confidence.toFixed(2)}`));
+  }
+  r.appendChild(pills);
+
+  if (a.derived && a.underlying_edge_id) {
+    r.appendChild(el("p", { class: "hint", style: "margin: 12px 0 4px" },
+      "Derived from the underlying supplies edge. Same provenance, reversed view."));
+  }
+
+  const prov = a.provenance;
+  if (prov.snippet) {
+    const block = el("div", { class: `provenance t-${a.type}` });
+    block.appendChild(el("p", { class: "snippet" }, prov.snippet));
+    const meta = el("div", { class: "source" });
+    const left = el("div");
+    left.textContent = `${prov.extracted_by} · ${prov.filing || "—"}`;
+    meta.appendChild(left);
+    if (prov.url) {
+      const link = el("a", { href: prov.url, target: "_blank", rel: "noopener noreferrer" }, "open filing →");
+      meta.appendChild(link);
+    }
+    block.appendChild(meta);
+    r.appendChild(block);
+  }
+
+  if (a.additional_provenance && a.additional_provenance.length) {
+    r.appendChild(el("div", { class: "filter-title", style: "margin-top:8px" },
+      `+ ${a.additional_provenance.length} additional source${a.additional_provenance.length === 1 ? "" : "s"} merged into this edge`));
+    for (const p of a.additional_provenance) {
+      const block = el("div", { class: `provenance t-${a.type}` });
+      block.appendChild(el("p", { class: "snippet" }, p.snippet));
+      const meta = el("div", { class: "source" });
+      meta.appendChild(el("div", {}, `${p.extracted_by} · ${p.filing || "—"}`));
+      if (p.url) meta.appendChild(el("a", { href: p.url, target: "_blank", rel: "noopener noreferrer" }, "open filing →"));
+      block.appendChild(meta);
+      r.appendChild(block);
+    }
+  }
+}

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EconGraph — Consumer Staples MVP</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">EconGraph</span>
+          <span class="brand-sub">Consumer Staples · MVP</span>
+        </div>
+        <div class="searchbox">
+          <input
+            type="search"
+            id="search-input"
+            placeholder="Search a company, ticker, or alias…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <ol id="search-results" hidden></ol>
+        </div>
+        <div class="status" id="status-pill">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-text">connecting…</span>
+        </div>
+      </header>
+
+      <aside class="filters" aria-label="Filters">
+        <div class="filter-section">
+          <div class="filter-title">Relationships</div>
+          <label class="chip chip-supplies">
+            <input type="checkbox" data-edge-type="supplies" checked />
+            <span class="chip-swatch"></span>supplies
+          </label>
+          <label class="chip chip-customer_of">
+            <input type="checkbox" data-edge-type="customer_of" checked />
+            <span class="chip-swatch"></span>customer_of (derived)
+          </label>
+          <label class="chip chip-competes_with">
+            <input type="checkbox" data-edge-type="competes_with" checked />
+            <span class="chip-swatch"></span>competes_with
+          </label>
+          <label class="chip chip-regulated_by">
+            <input type="checkbox" data-edge-type="regulated_by" checked />
+            <span class="chip-swatch"></span>regulated_by
+          </label>
+        </div>
+        <div class="filter-section">
+          <div class="filter-title">Provisional layer</div>
+          <label class="toggle">
+            <input type="checkbox" id="toggle-provisional" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">show grey halo (Nestlé, Unilever, …)</span>
+          </label>
+          <p class="hint">
+            Off by default: clean high-confidence core. On: include the
+            below-threshold audit layer and provisional non-filer nodes.
+          </p>
+        </div>
+        <div class="filter-section">
+          <div class="filter-title">Help</div>
+          <ul class="help">
+            <li><strong>Click</strong> a node — expand its neighbors in place.</li>
+            <li><strong>Double-click</strong> a node — re-center on it.</li>
+            <li><strong>Click</strong> an edge — read the filing snippet.</li>
+            <li><strong>Scroll</strong> to zoom, <strong>drag</strong> to pan.</li>
+          </ul>
+        </div>
+      </aside>
+
+      <main class="canvas-wrap">
+        <div id="canvas"></div>
+        <div id="loading" class="loading" hidden>loading…</div>
+        <div class="legend" aria-label="Legend">
+          <div class="legend-group">
+            <div class="legend-title">Edges</div>
+            <div class="legend-row"><span class="legend-line e-supplies"></span>supplies</div>
+            <div class="legend-row"><span class="legend-line e-customer_of"></span>customer_of</div>
+            <div class="legend-row"><span class="legend-line e-competes_with"></span>competes_with</div>
+            <div class="legend-row"><span class="legend-line e-regulated_by"></span>regulated_by</div>
+          </div>
+          <div class="legend-group">
+            <div class="legend-title">Nodes</div>
+            <div class="legend-row"><span class="legend-dot n-company"></span>S&amp;P 500 filer</div>
+            <div class="legend-row"><span class="legend-dot n-regulator"></span>Regulator</div>
+            <div class="legend-row"><span class="legend-dot n-provisional"></span>Provisional (non-filer)</div>
+          </div>
+        </div>
+      </main>
+
+      <section class="inspector" id="inspector">
+        <div class="inspector-empty">
+          <div class="inspector-empty-title">Inspector</div>
+          <p>Hover or click any node or edge to see details and provenance.</p>
+        </div>
+      </section>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

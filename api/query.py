@@ -256,12 +256,15 @@ def get_node_edges(
         edges.extend(_edge_row_to_dict(r) for r in rows)
 
     if "regulated_by" in requested:
+        # Both directions: ego(Company) returns its regulators; ego(Regulator)
+        # returns the companies it regulates. The edge itself is directed
+        # company -> regulator, so the BFS traversal walks it either way.
         rows = conn.execute(
             f"""
             SELECT * FROM edges
-            WHERE type = 'regulated_by' AND source = ? {below_clause}
+            WHERE type = 'regulated_by' AND (source = ? OR target = ?) {below_clause}
             """,
-            (node_id,),
+            (node_id, node_id),
         ).fetchall()
         edges.extend(_edge_row_to_dict(r) for r in rows)
 

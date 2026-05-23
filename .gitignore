@@ -22,7 +22,14 @@ data/
 .DS_Store
 Thumbs.db
 
+# Web frontend (Phase 6)
+web/node_modules/
+web/dist/
+# Local preview-tool launch config; the contents are environment-specific.
+.claude/
+
 # Secrets
 .env
 .env.*
 !.env.example
+!web/.env.development
