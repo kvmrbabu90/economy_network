@@ -1,6 +1,6 @@
 """EconGraph schema package — Pydantic models + SQLite source-of-truth."""
 
-from .models import Edge, EdgeType, Node, NodeType, Provenance
+from .models import CandidateEdge, Edge, EdgeType, Node, NodeType, Provenance
 from .store import (
     add_aliases,
     connect,
@@ -12,6 +12,7 @@ from .store import (
 )
 
 __all__ = [
+    "CandidateEdge",
     "Edge",
     "EdgeType",
     "Node",

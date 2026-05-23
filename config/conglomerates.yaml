@@ -1,0 +1,24 @@
+# conglomerates.yaml -- allowlist of CIKs we permit to be decomposed into
+# Segment nodes (PRD §10, Phase 2 prompt §B4).
+#
+# By default this file is EMPTY for Consumer Staples. The MVP value is in a
+# tight, material graph -- auto-decomposing every filer with multiple
+# operating segments would flood the graph with seg: nodes that no one needs.
+#
+# Add a CIK here ONLY when:
+#   (a) the filer wraps materially distinct businesses (e.g. Berkshire ->
+#       BNSF, GEICO, See's Candies; Alphabet -> Google Services + Cloud),
+#   (b) the 10-K reports multiple operating segments with their own revenue
+#       and assets, AND
+#   (c) the downstream graph would be meaningfully wrong without breaking
+#       the parent into segments.
+#
+# Phase 2's extractor reads this file. If a CIK is NOT in `allowed_ciks`,
+# the extractor mints zero Segment nodes for it regardless of what the
+# filing reports.
+
+allowed_ciks: []
+# Example entries (kept commented out so the allowlist stays empty for the
+# Consumer Staples MVP):
+#   - cik:0001067983  # Berkshire Hathaway
+#   - cik:0001652044  # Alphabet

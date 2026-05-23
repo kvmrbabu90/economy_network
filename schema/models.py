@@ -111,21 +111,55 @@ class Node(BaseModel):
 
 
 class Provenance(BaseModel):
-    """Source citation for every edge. No edge enters the graph without one."""
+    """Source citation for every edge. No edge enters the graph without one.
+
+    `snippet` and `extracted_by` are always required. `filing` and `url` are
+    required for LLM- and manual-extracted edges (where they identify the
+    actual SEC filing the snippet was lifted from) but may be empty strings
+    for rule-extracted edges generated from local config (e.g. the
+    regulated_by edges minted from config/regulators.yaml have no filing).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     filing: str
     url: str
     snippet: str
-    extracted_by: Literal["llm", "rule", "manual"]
+    # Phase 2 widens this Literal — Phase 1 only had llm/rule/manual. The
+    # llm-* variants record WHICH model produced the candidate (claude-cli on
+    # the Max subscription, or a local gemma fallback). The legacy "llm" value
+    # stays accepted for the Phase 0 fixtures.
+    extracted_by: Literal[
+        "llm",
+        "llm:claude-cli",
+        "llm:gemma",
+        "rule",
+        "manual",
+    ]
 
-    @field_validator("filing", "url", "snippet")
+    @field_validator("snippet")
     @classmethod
-    def _non_empty(cls, v: str) -> str:
+    def _snippet_non_empty(cls, v: str) -> str:
+        # Snippet is the grounding artifact (CLAUDE.md invariant #4) — it must
+        # exist. filing/url may be empty (rule-extracted edges have no filing).
         if not v or not v.strip():
-            raise ValueError("provenance fields (filing, url, snippet) must be non-empty")
+            raise ValueError("Provenance.snippet must be non-empty")
         return v
+
+    @model_validator(mode="after")
+    def _check_filing_url_required_for_llm(self) -> "Provenance":
+        # For LLM- and manual-extracted edges, filing + url must point to a
+        # real source so the grounding check has something to bite on.
+        if self.extracted_by in {"llm", "llm:claude-cli", "llm:gemma", "manual"}:
+            if not self.filing or not self.filing.strip():
+                raise ValueError(
+                    f"Provenance.filing required when extracted_by={self.extracted_by!r}"
+                )
+            if not self.url or not self.url.strip():
+                raise ValueError(
+                    f"Provenance.url required when extracted_by={self.extracted_by!r}"
+                )
+        return self
 
 
 class Edge(BaseModel):
@@ -172,4 +206,67 @@ class Edge(BaseModel):
                 )
         if self.source == self.target:
             raise ValueError("Edge source and target must differ (no self-loops)")
+        return self
+
+
+class CandidateEdge(BaseModel):
+    """A pre-resolution edge: the target is still a raw string, not a canonical id.
+
+    Phase 2 (extraction) emits these. Phase 3 (resolution) resolves
+    ``target_raw`` against the alias table to mint a canonical id, then
+    promotes the surviving candidates into real :class:`Edge` records.
+
+    `source_id` is always a canonical filer id (``cik:...``) — we KNOW which
+    company's filing produced the candidate. `target_raw` may be either a raw
+    string (``"Kimberly-Clark"``) or, for rule-extracted edges from
+    ``config/regulators.yaml``, an already-canonical regulator id
+    (``"regulator:fda"``) which Phase 3 will pass through.
+    """
+
+    model_config = ConfigDict(extra="forbid", use_enum_values=True)
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    source_id: str
+    target_raw: str
+    type: EdgeType
+    confidence: float = Field(ge=0.0, le=1.0)
+    provenance: Provenance
+    # The grounding gate (CLAUDE.md invariant #4): True iff a) the snippet is a
+    # literal substring of the source filing text, and b) the snippet mentions
+    # the target. Rule-generated edges are marked True by construction since
+    # there's no LLM text to verify against.
+    verified: bool = False
+
+    @field_validator("source_id")
+    @classmethod
+    def _source_is_filer(cls, v: str) -> str:
+        # Phase 2 only emits candidates for filings we've ingested, all of
+        # which are SEC filers identified by CIK. Tighten now to catch bugs
+        # early — a candidate whose source isn't a cik: is almost certainly
+        # a wiring mistake.
+        _validate_canonical_id(v, "CandidateEdge.source_id")
+        if not v.startswith("cik:"):
+            raise ValueError(
+                f"CandidateEdge.source_id must start with 'cik:' (got {v!r})"
+            )
+        return v
+
+    @field_validator("target_raw")
+    @classmethod
+    def _target_non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("CandidateEdge.target_raw must be non-empty")
+        return v
+
+    @model_validator(mode="after")
+    def _check_regulated_by_target(self) -> "CandidateEdge":
+        # If we already know the canonical regulator id (rule path),
+        # require the conventional 'regulator:' prefix so Phase 3 can pass
+        # it through unchanged.
+        if self.type == EdgeType.regulated_by or self.type == EdgeType.regulated_by.value:
+            if not self.target_raw.startswith("regulator:"):
+                raise ValueError(
+                    "CandidateEdge.target_raw for type=regulated_by must "
+                    f"start with 'regulator:' (got {self.target_raw!r})"
+                )
         return self

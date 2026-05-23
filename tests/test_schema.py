@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from schema import (
+    CandidateEdge,
     Edge,
     EdgeType,
     Node,
@@ -318,6 +319,95 @@ def test_part_of_target_must_be_cik():
             type=EdgeType.part_of,
             confidence=1.0,
             provenance=_prov(),
+        )
+
+
+# --- Phase 2: CandidateEdge -------------------------------------------------
+
+def test_candidate_edge_supplies_roundtrip():
+    """An LLM-extracted supplies candidate carries source_id, raw target, and provenance."""
+    ce = CandidateEdge(
+        source_id="cik:0000080424",
+        target_raw="Walmart",
+        type=EdgeType.supplies,
+        confidence=0.9,
+        provenance=Provenance(
+            filing="0000080424-25-000076",
+            url="https://www.sec.gov/Archives/edgar/data/80424/000008042425000076/pg.htm",
+            snippet="Our largest customer, Walmart Inc. and its affiliates...",
+            extracted_by="llm:claude-cli",
+        ),
+        verified=True,
+    )
+    dumped = ce.model_dump_json()
+    restored = CandidateEdge.model_validate_json(dumped)
+    assert restored.source_id == "cik:0000080424"
+    assert restored.target_raw == "Walmart"
+    assert restored.verified is True
+    assert restored.provenance.extracted_by == "llm:claude-cli"
+
+
+def test_candidate_edge_regulated_by_target_must_be_regulator_id():
+    with pytest.raises(ValidationError):
+        CandidateEdge(
+            source_id="cik:0000080424",
+            target_raw="Federal Trade Commission",  # raw name, not canonical id
+            type=EdgeType.regulated_by,
+            confidence=1.0,
+            provenance=Provenance(
+                filing="",
+                url="",
+                snippet="regulators.yaml: Consumer Staples/Household Products",
+                extracted_by="rule",
+            ),
+            verified=True,
+        )
+
+
+def test_candidate_edge_rule_provenance_allows_empty_filing_url():
+    """Rule-extracted edges have no SEC filing, so empty filing/url is acceptable."""
+    ce = CandidateEdge(
+        source_id="cik:0000080424",
+        target_raw="regulator:ftc",
+        type=EdgeType.regulated_by,
+        confidence=1.0,
+        provenance=Provenance(
+            filing="",
+            url="",
+            snippet="regulators.yaml: Consumer Staples/Household Products",
+            extracted_by="rule",
+        ),
+        verified=True,
+    )
+    assert ce.provenance.filing == ""
+    assert ce.provenance.url == ""
+    assert ce.provenance.snippet  # but snippet must still be present
+
+
+def test_candidate_edge_source_must_be_cik():
+    with pytest.raises(ValidationError):
+        CandidateEdge(
+            source_id="slug:procter-and-gamble",  # not a filer
+            target_raw="Kimberly-Clark",
+            type=EdgeType.competes_with,
+            confidence=0.8,
+            provenance=Provenance(
+                filing="0000080424-25-000076",
+                url="https://www.sec.gov/Archives/edgar/data/80424/0000080424-25-000076.txt",
+                snippet="We compete with Kimberly-Clark...",
+                extracted_by="llm:claude-cli",
+            ),
+        )
+
+
+def test_provenance_llm_requires_filing_and_url():
+    """LLM/manual edges must have filing+url; an empty filing must be rejected."""
+    with pytest.raises(ValidationError):
+        Provenance(
+            filing="",
+            url="https://www.sec.gov/Archives/edgar/data/80424/x.htm",
+            snippet="We compete with Kimberly-Clark...",
+            extracted_by="llm:claude-cli",
         )
 
 

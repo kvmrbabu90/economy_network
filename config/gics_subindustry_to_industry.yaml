@@ -1,0 +1,48 @@
+# gics_subindustry_to_industry.yaml -- GICS Sub-Industry -> GICS Industry rollup.
+#
+# Why this file exists (Phase 2 gotcha #1):
+#
+# Wikipedia's S&P 500 table ships "GICS Sub-Industry" values, which Phase 1
+# stores on each Company node's `industry` field. But config/regulators.yaml
+# is keyed on "GICS Industry" names ("Food Products", "Beverages", ...).
+# Sub-industry != industry -- e.g. "Packaged Foods & Meats" rolls up to
+# "Food Products"; "Soft Drinks & Non-alcoholic Beverages" rolls up to
+# "Beverages". A direct string match against regulators.yaml would silently
+# miss every industry-level regulator.
+#
+# Loader behavior (see pipeline/regulators.py):
+#   resolved_industry = sub_industry_to_industry[node.industry]
+#   raise KeyError if a node's sub-industry isn't in this map -- fail loud,
+#   never assume.
+#
+# Scope: populated for the GICS Sub-Industries actually present in the
+# data/companies.jsonl produced by `python -m pipeline.ingest --sector "Consumer Staples"`.
+# Extend when you add other sectors. This is a hand-maintained mapping, like
+# regulators.yaml.
+
+# --- Consumer Staples -------------------------------------------------------
+# Per the GICS structure (Industry Group "Food, Beverage & Tobacco" and
+# "Household & Personal Products", "Consumer Staples Distribution & Retail").
+
+# Industry Group: Food, Beverage & Tobacco
+Brewers: Beverages
+Distillers & Vintners: Beverages
+Soft Drinks & Non-alcoholic Beverages: Beverages
+Agricultural Products & Services: Food Products
+Packaged Foods & Meats: Food Products
+Tobacco: Tobacco
+
+# Industry Group: Household & Personal Products
+Household Products: Household Products
+Personal Care Products: Personal Care Products
+
+# Industry Group: Consumer Staples Distribution & Retail
+# All three sub-industries roll up under the single GICS Industry name
+# "Consumer Staples Distribution & Retail".
+Consumer Staples Merchandise Retail: Consumer Staples Distribution & Retail
+Food Distributors: Consumer Staples Distribution & Retail
+Food Retail: Consumer Staples Distribution & Retail
+
+# --- Future sectors ---------------------------------------------------------
+# When you run the pipeline on additional GICS Sectors, add their
+# sub-industries here. The loader's KeyError will tell you which ones.
