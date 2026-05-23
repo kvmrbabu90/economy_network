@@ -45,10 +45,15 @@ CREATE TABLE IF NOT EXISTS edges (
     confidence   REAL NOT NULL,
     weight       REAL,
     -- Provenance is required on every edge (CLAUDE.md invariant #3).
-    prov_filing      TEXT NOT NULL,
-    prov_url         TEXT NOT NULL,
-    prov_snippet     TEXT NOT NULL,
-    prov_extracted_by TEXT NOT NULL CHECK (prov_extracted_by IN ('llm','rule','manual')),
+    prov_filing      TEXT NOT NULL,    -- may be empty for rule-extracted edges
+    prov_url         TEXT NOT NULL,    -- may be empty for rule-extracted edges
+    prov_snippet     TEXT NOT NULL,    -- never empty (CLAUDE.md invariant #4)
+    prov_extracted_by TEXT NOT NULL
+        CHECK (prov_extracted_by IN ('llm','llm:claude-cli','llm:gemma','rule','manual')),
+    -- Phase 3 may merge multiple competes_with rows onto one edge. The
+    -- additional provenances (full Provenance dicts, JSON-serialized) are
+    -- stashed here so SQLite stays the source of truth.
+    additional_provenance TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY (source) REFERENCES nodes(id),
     FOREIGN KEY (target) REFERENCES nodes(id)
 );
@@ -127,11 +132,13 @@ def upsert_node(conn: sqlite3.Connection, node: Union[Node, dict[str, Any]]) -> 
 def upsert_edge(conn: sqlite3.Connection, edge: Union[Edge, dict[str, Any]]) -> Edge:
     """Validate via Pydantic then upsert into `edges`. Returns the validated Edge."""
     e = edge if isinstance(edge, Edge) else Edge.model_validate(edge)
+    extra_prov = [p.model_dump() if hasattr(p, "model_dump") else p for p in e.additional_provenance]
     conn.execute(
         """
         INSERT INTO edges (id, source, target, type, directed, confidence, weight,
-                           prov_filing, prov_url, prov_snippet, prov_extracted_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           prov_filing, prov_url, prov_snippet, prov_extracted_by,
+                           additional_provenance)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             source=excluded.source,
             target=excluded.target,
@@ -142,7 +149,8 @@ def upsert_edge(conn: sqlite3.Connection, edge: Union[Edge, dict[str, Any]]) -> 
             prov_filing=excluded.prov_filing,
             prov_url=excluded.prov_url,
             prov_snippet=excluded.prov_snippet,
-            prov_extracted_by=excluded.prov_extracted_by
+            prov_extracted_by=excluded.prov_extracted_by,
+            additional_provenance=excluded.additional_provenance
         """,
         (
             e.id,
@@ -156,6 +164,7 @@ def upsert_edge(conn: sqlite3.Connection, edge: Union[Edge, dict[str, Any]]) -> 
             e.provenance.url,
             e.provenance.snippet,
             e.provenance.extracted_by,
+            json.dumps(extra_prov),
         ),
     )
     conn.commit()
@@ -186,6 +195,10 @@ def get_edge(conn: sqlite3.Connection, edge_id: str) -> Optional[Edge]:
     row = conn.execute("SELECT * FROM edges WHERE id = ?", (edge_id,)).fetchone()
     if row is None:
         return None
+    try:
+        extra = json.loads(row["additional_provenance"]) if row["additional_provenance"] else []
+    except (KeyError, IndexError):
+        extra = []
     return Edge.model_validate(
         {
             "id": row["id"],
@@ -201,6 +214,7 @@ def get_edge(conn: sqlite3.Connection, edge_id: str) -> Optional[Edge]:
                 "snippet": row["prov_snippet"],
                 "extracted_by": row["prov_extracted_by"],
             },
+            "additional_provenance": extra,
         }
     )
 

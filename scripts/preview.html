@@ -1,0 +1,202 @@
+<!doctype html>
+<!--
+  THROWAWAY: Phase 4 static preview only. The real renderer is the
+  Vite + TypeScript + Sigma.js app that lands in Phase 6 -- delete this
+  file then. Don't add filters / click-to-expand here; that urge is the
+  Phase 6 spec talking. This file's only job is the first visual sanity
+  check of the resolved consumer-staples network.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>EconGraph Phase 4 preview (throwaway)</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    #graph { position: absolute; inset: 0; background: #fafafa; }
+    .panel {
+      position: absolute;
+      background: rgba(255,255,255,0.95);
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      line-height: 1.45;
+    }
+    #note { top: 12px; left: 12px; background: rgba(255,247,205,0.95); color: #5a4a00; max-width: 520px; }
+    #legend { top: 12px; right: 12px; min-width: 200px; }
+    .legend-section { margin-bottom: 6px; }
+    .legend-title { font-weight: 600; margin-bottom: 4px; }
+    .swatch { display: inline-block; width: 14px; height: 4px; vertical-align: middle; margin-right: 8px; border-radius: 2px; }
+    .nodeswatch { display: inline-block; width: 12px; height: 12px; vertical-align: middle; margin-right: 8px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.2); }
+    #error { position: absolute; inset: 20px; padding: 20px; background: #fff3f3; border: 1px solid #f7caca; color: #7a1d1d; font-family: monospace; white-space: pre-wrap; display: none; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/graphology@0.25.4/dist/graphology.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/build/graphology-layout-forceatlas2.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sigma@2.4.0/build/sigma.min.js"></script>
+</head>
+<body>
+  <div id="note" class="panel">
+    <strong>EconGraph Phase 4 throwaway preview</strong> — replaced by the real Sigma.js app in Phase 6.
+    Drag to pan, scroll to zoom, hover a node for its label. Loads <code>../data/graph.json</code>.
+  </div>
+  <div id="legend" class="panel">
+    <div class="legend-section">
+      <div class="legend-title">Edges</div>
+      <div><span class="swatch" style="background:#26a69a"></span>supplies (directed)</div>
+      <div><span class="swatch" style="background:#ff7043"></span>competes_with (undirected)</div>
+      <div><span class="swatch" style="background:#42a5f5"></span>regulated_by (directed)</div>
+    </div>
+    <div class="legend-section">
+      <div class="legend-title">Audit layer</div>
+      <div><span class="swatch" style="background:rgba(255,112,67,0.22)"></span>dimmed = below-cutoff (Phase 3 strict)</div>
+    </div>
+    <div class="legend-section">
+      <div class="legend-title">Nodes</div>
+      <div><span class="nodeswatch" style="background:#607d8b"></span>Company (S&amp;P 500 filer)</div>
+      <div><span class="nodeswatch" style="background:#1565c0"></span>Regulator</div>
+      <div><span class="nodeswatch" style="background:#e0e0e0; border-style: dashed;"></span>Provisional slug (non-filer)</div>
+    </div>
+  </div>
+  <div id="graph"></div>
+  <div id="error"></div>
+
+  <script>
+    const COLORS = {
+      // Edge palette per CLAUDE.md
+      supplies: "#26a69a",
+      competes_with: "#ff7043",
+      regulated_by: "#42a5f5",
+      // Node palette
+      Company: "#607d8b",
+      Regulator: "#1565c0",
+      provisional: "#bdbdbd",
+    };
+
+    function showError(msg) {
+      const el = document.getElementById("error");
+      el.style.display = "block";
+      el.textContent = msg;
+    }
+
+    async function main() {
+      const resp = await fetch("../data/graph.json");
+      if (!resp.ok) {
+        throw new Error(
+          "Could not fetch ../data/graph.json (status " + resp.status + ").\n" +
+          "Open this page via a local HTTP server, e.g.:\n" +
+          "  cd <repo-root>\n  python -m http.server 8000\n" +
+          "then visit  http://localhost:8000/scripts/preview.html"
+        );
+      }
+      const data = await resp.json();
+
+      // graphology UMD exposes the constructors on the global `graphology`.
+      const G = graphology.MultiGraph;
+      const g = new G({ type: "mixed", allowSelfLoops: false });
+
+      // Import nodes
+      data.nodes.forEach(n => {
+        const a = n.attributes || {};
+        const isProv = !!a.provisional;
+        let color = COLORS[a.type] || "#9e9e9e";
+        if (isProv) color = COLORS.provisional;
+        g.addNode(n.key, {
+          label: a.label || n.key,
+          nodeType: a.type,
+          provisional: isProv,
+          sector: a.sector,
+          industry: a.industry,
+          color,
+          // size is set after we know degrees
+          size: 3,
+          // seed positions so ForceAtlas2 has a non-degenerate start
+          x: Math.random(),
+          y: Math.random(),
+        });
+      });
+
+      // Import edges with the multigraph addEdgeWithKey signature
+      // Below-threshold edges are dimmed -- they're the audit layer (mostly
+      // provisional-slug-target edges capped low in Phase 3). They stay
+      // visually present so hubs like Nestlé / Unilever read on the canvas,
+      // but they're clearly secondary to the high-confidence core.
+      function dim(hex) {
+        // Convert "#rrggbb" to a translucent rgba(...) at low alpha.
+        const r = parseInt(hex.slice(1,3),16), gv = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+        return `rgba(${r},${gv},${b},0.22)`;
+      }
+
+      data.edges.forEach(e => {
+        const a = e.attributes || {};
+        const baseColor = COLORS[a.type] || "#bdbdbd";
+        const below = !!a.below_threshold;
+        const color = below ? dim(baseColor) : baseColor;
+        const undirected = !!e.undirected;
+        const size = below ? 0.4 : (0.8 + (a.confidence || 0.5));
+        try {
+          if (undirected) {
+            g.addUndirectedEdgeWithKey(e.key, e.source, e.target, {
+              edgeType: a.type, confidence: a.confidence, color, size,
+              belowThreshold: below,
+            });
+          } else {
+            g.addDirectedEdgeWithKey(e.key, e.source, e.target, {
+              edgeType: a.type, confidence: a.confidence, color, size,
+              belowThreshold: below,
+            });
+          }
+        } catch (err) {
+          // Duplicate-key in a MultiGraph would only happen on a bad export;
+          // skip and keep going so one bad row doesn't black-screen the view.
+          console.warn("Skipped edge", e.key, err.message);
+        }
+      });
+
+      // Size nodes by degree so hubs are obvious at a glance.
+      g.forEachNode((id) => {
+        const deg = g.degree(id);
+        g.setNodeAttribute(id, "size", Math.max(3, Math.min(18, 3 + Math.sqrt(deg) * 1.6)));
+      });
+
+      // ForceAtlas2 layout (synchronous; ~300 iterations is fine for this size).
+      graphologyLayoutForceatlas2.assign(g, {
+        iterations: 300,
+        settings: {
+          gravity: 1.0,
+          scalingRatio: 8,
+          slowDown: 1.5,
+          strongGravityMode: false,
+          barnesHutOptimize: false,
+          adjustSizes: false,
+        },
+      });
+
+      const container = document.getElementById("graph");
+      const renderer = new Sigma(g, container, {
+        renderEdgeLabels: false,
+        defaultEdgeType: "line",
+      });
+
+      // Hover -> show node label in the bottom-left. Minimal interactivity.
+      const hover = document.createElement("div");
+      hover.className = "panel";
+      hover.style.cssText = "bottom: 12px; left: 12px; max-width: 360px; display: none;";
+      document.body.appendChild(hover);
+      renderer.on("enterNode", ({ node }) => {
+        const a = g.getNodeAttributes(node);
+        hover.style.display = "block";
+        hover.innerHTML =
+          "<strong>" + (a.label || node) + "</strong><br>" +
+          "<small>" + node + "</small><br>" +
+          (a.nodeType ? "type: " + a.nodeType + "<br>" : "") +
+          (a.industry ? "industry: " + a.industry + "<br>" : "") +
+          "degree: " + g.degree(node);
+      });
+      renderer.on("leaveNode", () => { hover.style.display = "none"; });
+    }
+
+    main().catch(e => showError(String(e && e.message ? e.message : e)));
+  </script>
+</body>
+</html>

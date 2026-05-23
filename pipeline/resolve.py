@@ -256,6 +256,24 @@ class ReviewItem:
 PROVISIONAL_CONFIDENCE_CAP = 0.5
 
 
+def _cap_for_target(canonical_id: str, registry: Registry) -> Optional[float]:
+    """Return PROVISIONAL_CONFIDENCE_CAP iff the target is a provisional slug.
+
+    Applied uniformly to every resolution path (exact / fuzzy / mint) so that
+    a slug-target edge carries the same low confidence no matter how the
+    matcher arrived at the slug. Without this, the second time a name like
+    "Nestlé" appeared the alias would hit B2's exact path and ESCAPE the cap.
+    """
+    if not canonical_id.startswith("slug:"):
+        return None
+    node = registry.nodes_by_id.get(canonical_id)
+    if not node:
+        return None
+    meta = node.get("metadata") if isinstance(node, dict) else getattr(node, "metadata", None)
+    meta = meta or {}
+    return PROVISIONAL_CONFIDENCE_CAP if meta.get("provisional") else None
+
+
 def _fuzzy_top_matches(target_norm: str, registry: Registry, *, limit: int = 5):
     """Return up to `limit` (canonical_id, score, normalized_name) by score."""
     # process.extract returns list of (choice, score, key) where choice is the
@@ -291,7 +309,11 @@ def resolve_target(
     # B2: exact normalized lookup against the alias table.
     exact = registry.lookup(target_raw)
     if exact:
-        return ResolutionDecision(target_id=exact, action="exact")
+        return ResolutionDecision(
+            target_id=exact,
+            action="exact",
+            confidence_cap=_cap_for_target(exact, registry),
+        )
 
     # B3: fuzzy match.
     target_norm = normalize(target_raw)
@@ -304,6 +326,7 @@ def resolve_target(
         registry.add_alias(target_raw, canonical_id, source="resolve:fuzzy-auto")
         return ResolutionDecision(
             target_id=canonical_id, action="fuzzy-auto",
+            confidence_cap=_cap_for_target(canonical_id, registry),
             suggestions=[(m[2], int(m[1])) for m in above_high],
         )
     if len(above_high) >= 2:
@@ -399,6 +422,50 @@ def _build_edge(
         confidence=max(0.0, min(1.0, confidence)),
         provenance=candidate.provenance,
     )
+
+
+def dedupe_directed(edges: list[Edge]) -> tuple[list[Edge], int, int]:
+    """Collapse duplicate directed edges sharing the SAME (source, target, type).
+
+    Two raw candidates can land here when one filer names the same target via
+    multiple aliases (e.g. "Walmart Inc." and "Walmart Stores, Inc." both
+    resolve to cik:0000104169, both as supplies). Without this pass the
+    SQLite UNIQUE index on (source, target, type) would fire at load time.
+    Keeps the highest-confidence row; folds the others' provenance into
+    additional_provenance.
+    """
+    competes: list[Edge] = []
+    by_triple: dict[tuple[str, str, str], Edge] = {}
+    before_directed = 0
+    for e in edges:
+        et = e.type if isinstance(e.type, str) else e.type.value
+        if et == EdgeType.competes_with.value:
+            competes.append(e)
+            continue
+        before_directed += 1
+        key = (e.source, e.target, et)
+        existing = by_triple.get(key)
+        if existing is None:
+            by_triple[key] = e
+            continue
+        if e.confidence > existing.confidence:
+            primary, other = e, existing
+        else:
+            primary, other = existing, e
+        merged_extra = list(primary.additional_provenance)
+        merged_extra.append(other.provenance)
+        merged_extra.extend(other.additional_provenance)
+        by_triple[key] = Edge(
+            id=primary.id,
+            source=primary.source,
+            target=primary.target,
+            type=EdgeType(et),
+            directed=True,
+            confidence=max(primary.confidence, other.confidence),
+            provenance=primary.provenance,
+            additional_provenance=merged_extra,
+        )
+    return competes + list(by_triple.values()), before_directed, len(by_triple)
 
 
 def dedupe_competes_with(edges: list[Edge]) -> tuple[list[Edge], int, int]:
@@ -567,6 +634,11 @@ def run_resolve(
 
     edges, before_cw, after_cw = dedupe_competes_with(edges)
     log.info("competes_with dedupe: %d -> %d", before_cw, after_cw)
+    # Directed-edge triple dedupe (supplies + regulated_by). Catches the
+    # case where a filer's aliases for the same target both surface as
+    # candidates (e.g. "Walmart Inc." and "Walmart Stores, Inc.").
+    edges, before_dir, after_dir = dedupe_directed(edges)
+    log.info("directed dedupe (supplies/regulated_by): %d -> %d", before_dir, after_dir)
 
     # Threshold
     above, below = [], []
