@@ -224,3 +224,110 @@ def test_edge_confidence_bounds():
 def test_no_customer_of_edge_type():
     """Invariant #2: customer_of is derived, never stored. Enum must not contain it."""
     assert "customer_of" not in {e.value for e in EdgeType}
+
+
+# --- Phase 1 Part A: Segment + part_of schema headroom ----------------------
+
+GOOGLE_CLOUD_SEGMENT = {
+    "id": "seg:cik0001652044:google-cloud",
+    "type": "Segment",
+    "name": "Google Cloud",
+    "aliases": ["GCP"],
+    "tickers": [],
+    "identifiers": {"parent_cik": "0001652044"},
+    "sector": "Communication Services",
+    "industry": "Interactive Media & Services",
+    "country": "US",
+    "metadata": {"note": "Phase 1 schema-headroom example; not populated by ingest."},
+}
+
+ALPHABET_PARENT = {
+    "id": "cik:0001652044",
+    "type": "Company",
+    "name": "Alphabet Inc.",
+    "aliases": ["Alphabet", "Google"],
+    "tickers": ["GOOGL", "GOOG"],
+    "identifiers": {"cik": "0001652044"},
+    "sector": "Communication Services",
+    "industry": "Interactive Media & Services",
+    "country": "US",
+    "metadata": {},
+}
+
+
+def test_segment_node_roundtrip(conn):
+    upsert_node(conn, ALPHABET_PARENT)
+    upsert_node(conn, GOOGLE_CLOUD_SEGMENT)
+    got = get_node(conn, "seg:cik0001652044:google-cloud")
+    assert got is not None
+    assert got.type == NodeType.Segment.value or got.type == NodeType.Segment
+    assert got.name == "Google Cloud"
+    assert got.identifiers["parent_cik"] == "0001652044"
+
+
+def test_segment_id_must_match_format():
+    # Missing parent CIK in the body.
+    with pytest.raises(ValidationError):
+        Node(id="seg:google-cloud", type=NodeType.Segment, name="Google Cloud")
+    # Parent body not lower-kebab.
+    with pytest.raises(ValidationError):
+        Node(
+            id="seg:cik0001652044:Google_Cloud",
+            type=NodeType.Segment,
+            name="Google Cloud",
+        )
+
+
+def test_part_of_edge_validates_and_roundtrips(conn):
+    upsert_node(conn, ALPHABET_PARENT)
+    upsert_node(conn, GOOGLE_CLOUD_SEGMENT)
+    edge = Edge(
+        source="seg:cik0001652044:google-cloud",
+        target="cik:0001652044",
+        type=EdgeType.part_of,
+        confidence=1.0,
+        provenance=Provenance(
+            filing="0001652044-24-000123",
+            url="https://www.sec.gov/Archives/edgar/data/1652044/0001652044-24-000123.txt",
+            snippet="Google Cloud is a reportable operating segment of Alphabet Inc.",
+            extracted_by="manual",
+        ),
+    )
+    upsert_edge(conn, edge)
+    got = get_edge(conn, edge.id)
+    assert got is not None
+    assert got.source == "seg:cik0001652044:google-cloud"
+    assert got.target == "cik:0001652044"
+    assert got.type == EdgeType.part_of.value or got.type == EdgeType.part_of
+
+
+def test_part_of_target_must_be_cik():
+    """A Segment must roll up to a Company filer, not a regulator/commodity/etc."""
+    with pytest.raises(ValidationError):
+        Edge(
+            source="seg:cik0001652044:google-cloud",
+            target="regulator:ftc",
+            type=EdgeType.part_of,
+            confidence=1.0,
+            provenance=_prov(),
+        )
+    with pytest.raises(ValidationError):
+        Edge(
+            source="seg:cik0001652044:google-cloud",
+            target="slug:crude-oil",
+            type=EdgeType.part_of,
+            confidence=1.0,
+            provenance=_prov(),
+        )
+
+
+def test_part_of_source_must_be_segment_id():
+    """part_of edges must originate from a seg: node id (id-prefix convention)."""
+    with pytest.raises(ValidationError):
+        Edge(
+            source="cik:0000080424",  # a Company, not a Segment
+            target="cik:0001652044",
+            type=EdgeType.part_of,
+            confidence=1.0,
+            provenance=_prov(),
+        )
