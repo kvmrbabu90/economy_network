@@ -1,0 +1,279 @@
+# regulators.yaml — industry → US regulator mapping for the `regulated_by` edge generator
+#
+# How the extractor uses this (Phase 2):
+#   regulators(company) = _default
+#                       + sector[company.gics_sector]      (if present)
+#                       + industry[company.gics_industry]  (if present)
+#   De-dupe by regulator id. Each entry becomes a Regulator node + a
+#   `regulated_by` edge (extracted_by: rule, confidence: 1.0, provenance: this file).
+#
+# Keys must match the GICS sector / industry strings carried on company nodes.
+# This is a hand-maintained, pragmatic mapping for US-domiciled filers — extend freely.
+# IDs follow CLAUDE.md: regulator:<slug>.
+
+# ----------------------------------------------------------------------------
+# Applies to every public filer.
+_default:
+  - id: regulator:sec
+    name: U.S. Securities and Exchange Commission
+    scope: Securities issuance and corporate disclosure
+
+# Optional: workplace regulators apply to virtually all employers. Uncomment to
+# attach broadly, or move individual ones into specific sectors if you'd rather
+# keep the default set minimal.
+# _employers:
+#   - id: regulator:osha
+#     name: Occupational Safety and Health Administration
+#     scope: Workplace safety
+#   - id: regulator:nlrb
+#     name: National Labor Relations Board
+#     scope: Labor relations
+#   - id: regulator:eeoc
+#     name: Equal Employment Opportunity Commission
+#     scope: Employment discrimination
+#   - id: regulator:dol
+#     name: U.S. Department of Labor
+#     scope: Wages, hours, benefits
+
+# ----------------------------------------------------------------------------
+# Sector-level regulators (broad strokes; industry overrides add specificity).
+sector:
+  Consumer Staples:
+    - id: regulator:ftc
+      name: Federal Trade Commission
+      scope: Advertising, competition, consumer protection
+  Health Care:
+    - id: regulator:fda
+      name: Food and Drug Administration
+      scope: Drugs, devices, biologics, safety
+  Financials:
+    - id: regulator:ftc
+      name: Federal Trade Commission
+      scope: Consumer protection
+  Energy:
+    - id: regulator:epa
+      name: Environmental Protection Agency
+      scope: Emissions, environmental compliance
+  Materials:
+    - id: regulator:epa
+      name: Environmental Protection Agency
+      scope: Emissions, chemicals, environmental compliance
+    - id: regulator:osha
+      name: Occupational Safety and Health Administration
+      scope: Workplace safety
+  Utilities:
+    - id: regulator:ferc
+      name: Federal Energy Regulatory Commission
+      scope: Interstate energy transmission and wholesale markets
+    - id: regulator:epa
+      name: Environmental Protection Agency
+      scope: Emissions, environmental compliance
+  Industrials:
+    - id: regulator:osha
+      name: Occupational Safety and Health Administration
+      scope: Workplace safety
+  Communication Services:
+    - id: regulator:fcc
+      name: Federal Communications Commission
+      scope: Communications, spectrum, broadcast
+  Information Technology:
+    - id: regulator:ftc
+      name: Federal Trade Commission
+      scope: Competition, data and consumer protection
+  Consumer Discretionary:
+    - id: regulator:ftc
+      name: Federal Trade Commission
+      scope: Advertising, competition, consumer protection
+    - id: regulator:cpsc
+      name: Consumer Product Safety Commission
+      scope: Product safety
+
+# ----------------------------------------------------------------------------
+# Industry-level regulators (GICS industry strings). These ADD to sector + default.
+industry:
+  # --- Consumer Staples ---
+  Food Products:
+    - id: regulator:fda
+      name: Food and Drug Administration
+      scope: Food safety and labeling
+    - id: regulator:usda
+      name: U.S. Department of Agriculture
+      scope: Meat, poultry, egg inspection
+  Beverages:
+    - id: regulator:fda
+      name: Food and Drug Administration
+      scope: Beverage safety and labeling
+    - id: regulator:ttb
+      name: Alcohol and Tobacco Tax and Trade Bureau
+      scope: Alcohol production, labeling, taxation
+  Tobacco:
+    - id: regulator:fda
+      name: Food and Drug Administration
+      scope: Tobacco product regulation (Center for Tobacco Products)
+    - id: regulator:ttb
+      name: Alcohol and Tobacco Tax and Trade Bureau
+      scope: Tobacco taxation
+  Household Products:
+    - id: regulator:cpsc
+      name: Consumer Product Safety Commission
+      scope: Product safety
+    - id: regulator:epa
+      name: Environmental Protection Agency
+      scope: Chemical and pesticide products
+    - id: regulator:fda
+      name: Food and Drug Administration
+      scope: Cosmetics and OTC components
+  Personal Care Products:
+    - id: regulator:fda
+      name: Food and Drug Administration
+      scope: Cosmetics and OTC personal care
+  Consumer Staples Distribution & Retail:
+    - id: regulator:fda
+      name: Food and Drug Administration
+      scope: Food handling and safety
+    - id: regulator:usda
+      name: U.S. Department of Agriculture
+      scope: Meat and produce handling
+
+  # --- Health Care ---
+  Pharmaceuticals:
+    - id: regulator:fda
+      name: Food and Drug Administration
+      scope: Drug approval and safety
+    - id: regulator:dea
+      name: Drug Enforcement Administration
+      scope: Controlled substances
+  Biotechnology:
+    - id: regulator:fda
+      name: Food and Drug Administration
+      scope: Biologics approval and safety
+  Health Care Equipment & Supplies:
+    - id: regulator:fda
+      name: Food and Drug Administration
+      scope: Medical device clearance and safety
+  Health Care Providers & Services:
+    - id: regulator:cms
+      name: Centers for Medicare & Medicaid Services
+      scope: Medicare/Medicaid reimbursement and compliance
+    - id: regulator:hhs
+      name: U.S. Department of Health and Human Services
+      scope: Health programs and privacy (HIPAA)
+
+  # --- Financials ---
+  Banks:
+    - id: regulator:federal-reserve
+      name: Federal Reserve System
+      scope: Bank holding companies, monetary supervision
+    - id: regulator:occ
+      name: Office of the Comptroller of the Currency
+      scope: National bank chartering and supervision
+    - id: regulator:fdic
+      name: Federal Deposit Insurance Corporation
+      scope: Deposit insurance and bank supervision
+    - id: regulator:cfpb
+      name: Consumer Financial Protection Bureau
+      scope: Consumer financial products
+  Capital Markets:
+    - id: regulator:finra
+      name: Financial Industry Regulatory Authority
+      scope: Broker-dealer self-regulation
+  Insurance:
+    - id: regulator:naic
+      name: National Association of Insurance Commissioners
+      scope: State insurance regulatory coordination
+  Consumer Finance:
+    - id: regulator:cfpb
+      name: Consumer Financial Protection Bureau
+      scope: Consumer lending and credit
+
+  # --- Energy ---
+  Oil, Gas & Consumable Fuels:
+    - id: regulator:ferc
+      name: Federal Energy Regulatory Commission
+      scope: Interstate pipelines and wholesale energy
+    - id: regulator:phmsa
+      name: Pipeline and Hazardous Materials Safety Administration
+      scope: Pipeline safety
+    - id: regulator:blm
+      name: Bureau of Land Management
+      scope: Federal land leasing
+    - id: regulator:boem
+      name: Bureau of Ocean Energy Management
+      scope: Offshore leasing
+
+  # --- Utilities ---
+  Electric Utilities:
+    - id: regulator:nrc
+      name: Nuclear Regulatory Commission
+      scope: Nuclear facility licensing and safety
+
+  # --- Industrials ---
+  Aerospace & Defense:
+    - id: regulator:faa
+      name: Federal Aviation Administration
+      scope: Aircraft certification and airspace
+    - id: regulator:dod
+      name: U.S. Department of Defense
+      scope: Defense contracting
+    - id: regulator:state-ddtc
+      name: Directorate of Defense Trade Controls (State Dept)
+      scope: Arms export controls (ITAR)
+  Passenger Airlines:
+    - id: regulator:faa
+      name: Federal Aviation Administration
+      scope: Air carrier safety
+    - id: regulator:dot
+      name: U.S. Department of Transportation
+      scope: Air carrier economic regulation
+  Ground Transportation:
+    - id: regulator:dot
+      name: U.S. Department of Transportation
+      scope: Surface transportation
+    - id: regulator:fmcsa
+      name: Federal Motor Carrier Safety Administration
+      scope: Commercial motor carriers
+    - id: regulator:stb
+      name: Surface Transportation Board
+      scope: Freight rail economic regulation
+
+  # --- Information Technology ---
+  Semiconductors & Semiconductor Equipment:
+    - id: regulator:bis
+      name: Bureau of Industry and Security
+      scope: Export controls on advanced technology
+
+  # --- Communication Services ---
+  Diversified Telecommunication Services:
+    - id: regulator:fcc
+      name: Federal Communications Commission
+      scope: Telecommunications and spectrum
+  Media:
+    - id: regulator:fcc
+      name: Federal Communications Commission
+      scope: Broadcast and media
+
+  # --- Materials ---
+  Chemicals:
+    - id: regulator:epa
+      name: Environmental Protection Agency
+      scope: Chemical safety (TSCA), emissions
+  Metals & Mining:
+    - id: regulator:msha
+      name: Mine Safety and Health Administration
+      scope: Mine safety
+    - id: regulator:epa
+      name: Environmental Protection Agency
+      scope: Environmental compliance
+
+  # --- Consumer Discretionary ---
+  Automobiles:
+    - id: regulator:nhtsa
+      name: National Highway Traffic Safety Administration
+      scope: Vehicle safety standards
+    - id: regulator:epa
+      name: Environmental Protection Agency
+      scope: Vehicle emissions
+  Hotels, Restaurants & Leisure:
+    - id: regulator:fda
+      name: Food and Drug Administration
+      scope: Food safety (restaurants)
