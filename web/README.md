@@ -15,10 +15,10 @@ uvicorn api.main:app --port 8001
 # Terminal 2 — start the Vite dev server
 cd <repo-root>/web
 npm install        # first time only
-npm run dev        # serves http://localhost:5173
+npm run dev        # serves http://localhost:5180 (or the next free port)
 ```
 
-Then open `http://localhost:5173` in a browser. The status pill in the top
+Then open `http://localhost:5180` in a browser. The status pill in the top
 right should turn green and read `166 nodes · 204 core + 156 audit` once
 the API is reachable.
 
