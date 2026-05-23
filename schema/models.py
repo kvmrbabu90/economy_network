@@ -174,6 +174,12 @@ class Edge(BaseModel):
     directed: bool = True
     confidence: float = Field(ge=0.0, le=1.0)
     provenance: Provenance
+    # Phase 3 adds this: a competes_with edge can be supported by multiple
+    # filings (both sides named each other). The dedupe step on the unordered
+    # pair collapses them to ONE Edge row, keeping the highest-confidence
+    # provenance as `provenance` and folding the others into this list.
+    # Default empty; no impact on Phase 0-2 fixtures.
+    additional_provenance: list[Provenance] = Field(default_factory=list)
     weight: Optional[float] = None
 
     @field_validator("source", "target")
