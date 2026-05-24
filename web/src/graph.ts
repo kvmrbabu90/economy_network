@@ -124,6 +124,89 @@ export function runLayout(g: EconGraph, iterations = 220): void {
   });
 }
 
+/**
+ * Cluster nodes by GICS sector: every Company sits in its sector's
+ * pre-allocated arc around a center hub, regulators at the center.
+ * Deterministic -- no force iteration -- so the clusters stay legible even
+ * at full-graph scale. Best paired with a refresh() rather than re-running
+ * FA2 (which would dissolve the clusters under edge attraction).
+ */
+const SECTOR_ORDER = [
+  "Communication Services",
+  "Consumer Discretionary",
+  "Consumer Staples",
+  "Energy",
+  "Financials",
+  "Health Care",
+  "Industrials",
+  "Information Technology",
+  "Materials",
+  "Real Estate",
+  "Utilities",
+];
+
+export function layoutBySector(g: EconGraph): void {
+  if (g.order === 0) return;
+  const N = SECTOR_ORDER.length;
+  // The anchor circle is large enough that 11 clusters don't overlap at
+  // full S&P 500 scale; the scatter radius keeps each cluster legible.
+  const ANCHOR_RADIUS = 100;
+  const CLUSTER_RADIUS = 22;
+  const SLUG_OUTER_RADIUS = 160;
+
+  // For deterministic-looking layout, seed each cluster's intra-arrangement
+  // with index-based positions rather than Math.random() so reloads land
+  // the same place.
+  const sectorCounts = new Map<string, number>();
+  const sectorIndex = new Map<string, number>();
+  let slugIndex = 0;
+  let slugCount = 0;
+  g.forEachNode((_id, attrs) => {
+    const apiNode = attrs.apiNode;
+    if (apiNode.attributes.type === "Regulator") return;
+    if (apiNode.attributes.provisional) { slugCount += 1; return; }
+    const s = apiNode.attributes.sector || "_unknown";
+    sectorCounts.set(s, (sectorCounts.get(s) ?? 0) + 1);
+  });
+
+  g.forEachNode((id, attrs) => {
+    const apiNode = attrs.apiNode;
+    let x = 0, y = 0;
+    if (apiNode.attributes.type === "Regulator") {
+      // Regulators clustered at origin in a small tight ring -- they're hubs.
+      const order = Array.from(sectorCounts.keys()).length;
+      const idx = order ? (id.charCodeAt(id.length - 1) % 7) : 0;
+      const angle = (idx / 7) * 2 * Math.PI;
+      x = Math.cos(angle) * 10;
+      y = Math.sin(angle) * 10;
+    } else if (apiNode.attributes.provisional) {
+      // Provisional slugs orbit at the outer rim, ordered around the
+      // perimeter so click-expand fans out predictably.
+      const angle = (slugIndex++ / Math.max(1, slugCount)) * 2 * Math.PI;
+      x = Math.cos(angle) * SLUG_OUTER_RADIUS;
+      y = Math.sin(angle) * SLUG_OUTER_RADIUS;
+    } else {
+      const sector = apiNode.attributes.sector || "_unknown";
+      const sIdx = SECTOR_ORDER.indexOf(sector);
+      const anchorAngle = ((sIdx >= 0 ? sIdx : N) / N) * 2 * Math.PI;
+      const ax = Math.cos(anchorAngle) * ANCHOR_RADIUS;
+      const ay = Math.sin(anchorAngle) * ANCHOR_RADIUS;
+      // Place within the sector's arc -- spiral the nodes outward so dense
+      // sectors (Industrials, Financials) stay readable.
+      const k = sectorIndex.get(sector) ?? 0;
+      sectorIndex.set(sector, k + 1);
+      const total = sectorCounts.get(sector) ?? 1;
+      // Golden-angle spiral inside the cluster gives even visual coverage.
+      const r = CLUSTER_RADIUS * Math.sqrt(k / Math.max(1, total));
+      const theta = k * 2.39996; // golden angle in radians
+      x = ax + Math.cos(theta) * r;
+      y = ay + Math.sin(theta) * r;
+    }
+    g.setNodeAttribute(id, "x", x);
+    g.setNodeAttribute(id, "y", y);
+  });
+}
+
 /** Clear and replace the graph contents in one shot. Used for re-center. */
 export function replaceGraph(
   g: EconGraph,

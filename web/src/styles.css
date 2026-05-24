@@ -200,6 +200,29 @@ html, body {
   font-weight: 600;
 }
 
+.layout-segmented {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.layout-tab {
+  padding: 6px 10px;
+  background: transparent;
+  border: 0;
+  color: var(--text-mute);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.layout-tab + .layout-tab { border-left: 1px solid var(--line); }
+.layout-tab:hover { color: var(--text); }
+.layout-tab.is-active {
+  color: var(--text);
+  background: var(--bg-recess);
+}
+
 .chip {
   display: flex;
   align-items: center;

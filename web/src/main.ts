@@ -19,6 +19,7 @@ import {
 import {
   EconGraph,
   createGraph,
+  layoutBySector,
   mergeFromApi,
   replaceGraph,
   restyleAfterMerge,
@@ -107,6 +108,18 @@ window.__ec = {
 // dragging it through arguments.
 let filters: FilterState = { types: [], includeProvisional: false, includeInferred: false };
 
+// Layout mode for the 2D view. Force is the FA2 default; "sector" pins by GICS.
+let layoutMode: "force" | "sector" = "force";
+
+function applyLayout() {
+  if (layoutMode === "sector") {
+    layoutBySector(g);
+  } else {
+    runLayout(g, 220);
+  }
+  renderer.refresh();
+}
+
 filters = wireFilters((next) => {
   filters = next;
   // Filtering by type might add or hide edges; cheapest path is to redraw.
@@ -156,8 +169,7 @@ async function loadFullCore(): Promise<void> {
   });
   replaceGraph(g, resp.nodes, resp.edges);
   restyleAfterMerge(g);
-  runLayout(g, 300);
-  renderer.refresh();
+  applyLayout();
   cameraReset();
 }
 
@@ -169,8 +181,7 @@ async function recenterOn(id: string): Promise<void> {
   });
   replaceGraph(g, resp.nodes, resp.edges);
   restyleAfterMerge(g);
-  runLayout(g, 260);
-  renderer.refresh();
+  applyLayout();
   cameraReset();
   // Show the focused node in the inspector.
   const center = resp.nodes.find((n) => n.key === resp.center);
@@ -337,6 +348,18 @@ document.querySelectorAll<HTMLButtonElement>(".view-tab").forEach((btn) => {
   btn.addEventListener("click", () => {
     const v = btn.dataset.view as "2d" | "3d" | "globe" | undefined;
     setView(v === "3d" || v === "globe" ? v : "2d");
+  });
+});
+
+document.querySelectorAll<HTMLButtonElement>(".layout-tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const next = (btn.dataset.layout as "force" | "sector" | undefined) ?? "force";
+    if (next === layoutMode) return;
+    layoutMode = next;
+    document.querySelectorAll<HTMLButtonElement>(".layout-tab").forEach((b) => {
+      b.classList.toggle("is-active", b.dataset.layout === next);
+    });
+    applyLayout();
   });
 });
 
