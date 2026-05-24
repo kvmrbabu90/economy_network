@@ -271,6 +271,52 @@ export function start3D(
     .linkDirectionalArrowColor((l: ForceLink) => l.color)
     .showNavInfo(false);
 
+  // Globe mode: replace 3d-force-graph's straight tube links with
+  // great-circle-style arcs that bulge outward from the sphere center.
+  // Chord-lines cutting through the globe interior obscure the surface
+  // and the rest of the network; arcing them above the wireframe makes
+  // long-haul edges (Lithium-in-Australia -> Tesla-in-California, etc.)
+  // legible. Bezier control point sits along the outward radial at the
+  // edge midpoint; apex height scales with angular separation so short
+  // edges stay flat and trans-oceanic edges arc higher.
+  if (currentLayout === "globe") {
+    const ARC_BASE_HEIGHT = GLOBE_RADIUS * 0.10;
+    const ARC_MAX_HEIGHT = GLOBE_RADIUS * 0.65;
+    const ARC_SEGMENTS = 24;
+    instance
+      .linkThreeObjectExtend(false)
+      .linkThreeObject((link: ForceLink) => {
+        const mat = new THREE.LineBasicMaterial({
+          color: link.color,
+          transparent: true,
+          opacity: link.below ? 0.20 : 0.55,
+        });
+        return new THREE.Line(new THREE.BufferGeometry(), mat);
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .linkPositionUpdate((lineObj: any, { start, end }: any) => {
+        if (!lineObj || !start || !end) return true;
+        const s = new THREE.Vector3(start.x, start.y, start.z);
+        const e = new THREE.Vector3(end.x, end.y, end.z);
+        const mid = s.clone().add(e).multiplyScalar(0.5);
+        // outward radial at midpoint (since both endpoints sit on the
+        // globe sphere of equal radius, mid is along their bisecting
+        // radial which is perpendicular to the line s->e).
+        const outwardLen = mid.length() || 1;
+        const outward = mid.clone().multiplyScalar(1 / outwardLen);
+        // angular separation in [0, pi]; longer arcs need taller apex
+        // to clear the surface convincingly.
+        const angle = Math.min(Math.PI, s.angleTo(e) || 0);
+        const t = angle / Math.PI;       // 0..1
+        const height = ARC_BASE_HEIGHT + (ARC_MAX_HEIGHT - ARC_BASE_HEIGHT) * t;
+        const apex = mid.clone().add(outward.multiplyScalar(height));
+        const curve = new THREE.QuadraticBezierCurve3(s, apex, e);
+        const points = curve.getPoints(ARC_SEGMENTS);
+        lineObj.geometry.setFromPoints(points);
+        return true;  // we handled positioning; skip default
+      });
+  }
+
   // Zoom-aware node + link scaling. Piggybacks on the user's mouse-wheel
   // input -- OrbitControls handles the camera zoom natively, and in the
   // same handler we walk the scene and apply a matching scale to every
