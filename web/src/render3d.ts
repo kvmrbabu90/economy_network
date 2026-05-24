@@ -271,10 +271,49 @@ export function start3D(
     .linkDirectionalArrowColor((l: ForceLink) => l.color)
     .showNavInfo(false);
 
-  // Keyboard shortcut for node size: '[' shrinks, ']' grows, '0' resets.
-  // Walks the scene once per keypress and multiplies node mesh scales --
-  // dirt-cheap, no per-frame loop. Lives on the document so it works
-  // from anywhere except text inputs.
+  // Zoom-aware node + link scaling. Piggybacks on the user's mouse-wheel
+  // input -- OrbitControls handles the camera zoom natively, and in the
+  // same handler we walk the scene and apply a matching scale to every
+  // node sphere and link tube. The effect: as you zoom into a dense
+  // cluster, the spheres and edges shrink in proportion so the internal
+  // structure resolves instead of becoming a single overlapping blob.
+  //
+  // Why a wheel listener rather than camera-distance polling: tracking
+  // camera distance per frame was unreliable (HMR + force-sim interaction
+  // hung the renderer in earlier attempts). User-input-driven is simpler
+  // and survives anything the simulation does to the camera.
+  const onWheel = (ev: WheelEvent) => {
+    if (!instance) return;
+    // deltaY < 0 means scroll-up = "zoom in" in 3d-force-graph's
+    // OrbitControls. On zoom-in we shrink so nodes don't blow up;
+    // on zoom-out we grow so they don't shrink to invisibility.
+    const factor = ev.deltaY < 0 ? 1 / 1.12 : 1.12;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    instance.scene().traverse((obj: any) => {
+      if (obj.__graphObjType === "node" && obj.scale) {
+        obj.scale.multiplyScalar(factor);
+      } else if (obj.__graphObjType === "link") {
+        // Link tubes: scaling X/Y shrinks the tube radius without
+        // detaching the endpoints (Z is along the tube's length axis
+        // in 3d-force-graph's local frame). Adjust XY only.
+        if (obj.scale) {
+          obj.scale.x *= factor;
+          obj.scale.y *= factor;
+        }
+        // Materials with opacity: also dim slightly when zoomed in so
+        // surviving edges read as accent, not noise.
+        if (obj.material && typeof obj.material.opacity === "number") {
+          obj.material.opacity = Math.max(0.1, Math.min(0.85, obj.material.opacity * (factor < 1 ? 0.96 : 1.04)));
+          obj.material.transparent = true;
+          obj.material.needsUpdate = true;
+        }
+      }
+    });
+  };
+  container.addEventListener("wheel", onWheel, { passive: true });
+
+  // Keyboard shortcuts as a fallback / fine control:
+  // '[' shrink, ']' grow, '0' reset.
   const sizeKeydown = (ev: KeyboardEvent) => {
     if (!instance) return;
     const focused = document.activeElement as HTMLElement | null;
@@ -282,7 +321,7 @@ export function start3D(
     let factor = 0;
     if (ev.key === "[") factor = 1 / 1.25;
     else if (ev.key === "]") factor = 1.25;
-    else if (ev.key === "0") factor = -1; // sentinel: reset to 1.0
+    else if (ev.key === "0") factor = -1;
     else return;
     ev.preventDefault();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -290,6 +329,14 @@ export function start3D(
       if (obj.__graphObjType === "node" && obj.scale) {
         if (factor < 0) obj.scale.set(1, 1, 1);
         else obj.scale.multiplyScalar(factor);
+      } else if (obj.__graphObjType === "link" && obj.scale) {
+        if (factor < 0) {
+          obj.scale.set(1, 1, 1);
+          if (obj.material) obj.material.opacity = obj.userData?.__origOpacity ?? obj.material.opacity;
+        } else {
+          obj.scale.x *= factor;
+          obj.scale.y *= factor;
+        }
       }
     });
   };
