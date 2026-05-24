@@ -333,10 +333,18 @@ def run(
     if sec8k_cands:
         log.info("8-K: %d candidate edges loaded", len(sec8k_cands))
 
+    # Commodities + retail markets: rule-based candidates emitted by
+    # pipeline.commodities. commodity -> filer (supplies) and filer ->
+    # region (supplies, surfaced as customer_of in the UI).
+    commodity_path = data_root / "_extract" / "commodity_candidates.jsonl"
+    commodity_cands = _load_inferred(commodity_path) if commodity_path.exists() else []
+    if commodity_cands:
+        log.info("Commodities + retail: %d candidate edges loaded", len(commodity_cands))
+
     edges_raw = data_root / "edges_raw.jsonl"
     n_edges = write_edges_raw(
         rule,
-        llm_candidates + wikidata_cands + sec8k_cands,
+        llm_candidates + wikidata_cands + sec8k_cands + commodity_cands,
         edges_raw,
         inferred_candidates=inferred,
     )

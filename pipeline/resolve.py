@@ -347,6 +347,12 @@ def resolve_target(
     if candidate_type == EdgeType.regulated_by.value:
         return ResolutionDecision(target_id=target_raw, action="exact")
 
+    # B1b: targets that are already canonical (commodity: / region: / cik:)
+    # come from the rule pipelines (commodities, retail markets). They never
+    # need alias resolution -- pass straight through.
+    if target_raw.startswith(("commodity:", "region:", "cik:", "regulator:")):
+        return ResolutionDecision(target_id=target_raw, action="exact")
+
     # B2: exact normalized lookup against the alias table.
     exact = registry.lookup(target_raw)
     if exact:

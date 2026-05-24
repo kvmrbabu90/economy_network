@@ -1,0 +1,59 @@
+# Retail consumer markets -- regional sink nodes representing the
+# B2C end of the value chain. Companies that sell to the public have
+# customer_of edges pointing at the relevant market(s).
+#
+# Each entry:
+#   id            -- canonical id (region:<slug>)
+#   name          -- human-readable label
+#   region_code   -- ISO-3166-1 alpha-2 or supranational code
+#   lat, lon      -- centroid of the market (used by the globe view)
+#   population_m  -- approximate consumer base in millions (for sizing)
+
+- id: region:us-consumer
+  name: US Consumer Market
+  region_code: US
+  lat: 39.83
+  lon: -98.58
+  population_m: 333
+
+- id: region:eu-consumer
+  name: European Consumer Market
+  region_code: EU
+  lat: 50.0
+  lon: 10.0
+  population_m: 447
+
+- id: region:china-consumer
+  name: China Consumer Market
+  region_code: CN
+  lat: 35.86
+  lon: 104.20
+  population_m: 1410
+
+- id: region:india-consumer
+  name: India Consumer Market
+  region_code: IN
+  lat: 20.59
+  lon: 78.96
+  population_m: 1428
+
+- id: region:japan-consumer
+  name: Japan Consumer Market
+  region_code: JP
+  lat: 36.20
+  lon: 138.25
+  population_m: 125
+
+- id: region:brazil-consumer
+  name: Brazil Consumer Market
+  region_code: BR
+  lat: -14.24
+  lon: -51.93
+  population_m: 215
+
+- id: region:southeast-asia-consumer
+  name: Southeast Asia Consumer Market
+  region_code: SEA
+  lat: -2.55
+  lon: 118.0
+  population_m: 680

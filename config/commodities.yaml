@@ -1,0 +1,1356 @@
+# Curated catalog of ~100 major raw materials.
+#
+# Each entry has:
+#   id              -- canonical commodity id  (commodity:<slug>)
+#   name            -- human-readable label
+#   category        -- fuels | metals | minerals | agriculture | softs | timber | plastics
+#   aliases         -- alternate names (alias-table seed)
+#   top_producer    -- country name of the world's #1 producer (or US state if US is #1)
+#   top_producer_country_code -- ISO-3166-1 alpha-2 (US, CN, SA, ...) for grouping
+#   us_state        -- US state postal code if the US is the top producer (else null)
+#   lat, lon        -- placement on the globe (country centroid or US-state centroid)
+#   unit            -- typical unit (barrels, tonnes, bushels, oz, ...)
+#   source          -- citation for the producer rank
+#
+# Sources:
+#   USGS Mineral Commodity Summaries 2024
+#   EIA International Energy Statistics 2023
+#   USDA Foreign Agricultural Service 2023
+#   FAOSTAT 2023
+#   World Steel Association 2023
+#   International Lead and Zinc Study Group 2023
+
+# ========================================================================
+# FUELS
+# ========================================================================
+- id: commodity:crude-oil
+  name: Crude Oil
+  category: fuels
+  aliases: ["Crude", "Petroleum", "Oil"]
+  top_producer: Texas, USA
+  top_producer_country_code: US
+  us_state: TX
+  lat: 31.0
+  lon: -100.0
+  unit: barrels
+  source: EIA 2023 (US #1 producer, Texas leads US)
+
+- id: commodity:natural-gas
+  name: Natural Gas
+  category: fuels
+  aliases: ["LNG", "Methane", "Gas"]
+  top_producer: Texas, USA
+  top_producer_country_code: US
+  us_state: TX
+  lat: 31.0
+  lon: -100.0
+  unit: bcf
+  source: EIA 2023
+
+- id: commodity:coal
+  name: Coal
+  category: fuels
+  aliases: ["Thermal coal", "Coking coal"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: IEA 2023
+
+- id: commodity:uranium
+  name: Uranium
+  category: fuels
+  aliases: ["U3O8", "Yellowcake"]
+  top_producer: Kazakhstan
+  top_producer_country_code: KZ
+  us_state: null
+  lat: 48.0
+  lon: 66.9
+  unit: tonnes U
+  source: World Nuclear Association 2023
+
+- id: commodity:ethanol
+  name: Ethanol (fuel)
+  category: fuels
+  aliases: ["Bioethanol"]
+  top_producer: Iowa, USA
+  top_producer_country_code: US
+  us_state: IA
+  lat: 42.0
+  lon: -93.5
+  unit: gallons
+  source: RFA 2023 (US #1; Iowa leads US)
+
+- id: commodity:biodiesel
+  name: Biodiesel
+  category: fuels
+  aliases: []
+  top_producer: Indonesia
+  top_producer_country_code: ID
+  us_state: null
+  lat: -0.8
+  lon: 113.9
+  unit: gallons
+  source: USDA 2023
+
+# ========================================================================
+# INDUSTRIAL METALS
+# ========================================================================
+- id: commodity:steel
+  name: Steel
+  category: metals
+  aliases: ["Crude steel"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: World Steel Association 2023
+
+- id: commodity:iron-ore
+  name: Iron Ore
+  category: metals
+  aliases: ["Hematite", "Magnetite"]
+  top_producer: Australia
+  top_producer_country_code: AU
+  us_state: null
+  lat: -25.3
+  lon: 133.8
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:aluminum
+  name: Aluminum
+  category: metals
+  aliases: ["Aluminium"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:bauxite
+  name: Bauxite
+  category: metals
+  aliases: []
+  top_producer: Australia
+  top_producer_country_code: AU
+  us_state: null
+  lat: -25.3
+  lon: 133.8
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:copper
+  name: Copper
+  category: metals
+  aliases: ["Cu"]
+  top_producer: Chile
+  top_producer_country_code: CL
+  us_state: null
+  lat: -35.7
+  lon: -71.5
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:zinc
+  name: Zinc
+  category: metals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: ILZSG 2023
+
+- id: commodity:lead
+  name: Lead
+  category: metals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: ILZSG 2023
+
+- id: commodity:nickel
+  name: Nickel
+  category: metals
+  aliases: []
+  top_producer: Indonesia
+  top_producer_country_code: ID
+  us_state: null
+  lat: -0.8
+  lon: 113.9
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:tin
+  name: Tin
+  category: metals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:titanium
+  name: Titanium
+  category: metals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:magnesium
+  name: Magnesium
+  category: metals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:manganese
+  name: Manganese
+  category: metals
+  aliases: []
+  top_producer: South Africa
+  top_producer_country_code: ZA
+  us_state: null
+  lat: -30.6
+  lon: 22.9
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:chromium
+  name: Chromium
+  category: metals
+  aliases: ["Chromite"]
+  top_producer: South Africa
+  top_producer_country_code: ZA
+  us_state: null
+  lat: -30.6
+  lon: 22.9
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:tungsten
+  name: Tungsten
+  category: metals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:molybdenum
+  name: Molybdenum
+  category: metals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:antimony
+  name: Antimony
+  category: metals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:cobalt
+  name: Cobalt
+  category: metals
+  aliases: []
+  top_producer: Democratic Republic of Congo
+  top_producer_country_code: CD
+  us_state: null
+  lat: -4.0
+  lon: 21.8
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:lithium
+  name: Lithium
+  category: metals
+  aliases: []
+  top_producer: Australia
+  top_producer_country_code: AU
+  us_state: null
+  lat: -25.3
+  lon: 133.8
+  unit: tonnes LCE
+  source: USGS 2024
+
+- id: commodity:graphite
+  name: Graphite
+  category: minerals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+# ========================================================================
+# PRECIOUS METALS
+# ========================================================================
+- id: commodity:gold
+  name: Gold
+  category: metals
+  aliases: ["Au"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: oz
+  source: USGS 2024
+
+- id: commodity:silver
+  name: Silver
+  category: metals
+  aliases: ["Ag"]
+  top_producer: Mexico
+  top_producer_country_code: MX
+  us_state: null
+  lat: 23.6
+  lon: -102.5
+  unit: oz
+  source: USGS 2024
+
+- id: commodity:platinum
+  name: Platinum
+  category: metals
+  aliases: ["Pt"]
+  top_producer: South Africa
+  top_producer_country_code: ZA
+  us_state: null
+  lat: -30.6
+  lon: 22.9
+  unit: oz
+  source: USGS 2024
+
+- id: commodity:palladium
+  name: Palladium
+  category: metals
+  aliases: ["Pd"]
+  top_producer: Russia
+  top_producer_country_code: RU
+  us_state: null
+  lat: 61.5
+  lon: 105.3
+  unit: oz
+  source: USGS 2024
+
+- id: commodity:rhodium
+  name: Rhodium
+  category: metals
+  aliases: ["Rh"]
+  top_producer: South Africa
+  top_producer_country_code: ZA
+  us_state: null
+  lat: -30.6
+  lon: 22.9
+  unit: oz
+  source: USGS 2024
+
+# ========================================================================
+# RARE EARTHS & SEMICONDUCTOR INPUTS
+# ========================================================================
+- id: commodity:rare-earths
+  name: Rare Earth Elements
+  category: minerals
+  aliases: ["REE", "Lanthanides"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes REO
+  source: USGS 2024
+
+- id: commodity:neodymium
+  name: Neodymium
+  category: minerals
+  aliases: ["Nd"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:dysprosium
+  name: Dysprosium
+  category: minerals
+  aliases: ["Dy"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:silicon
+  name: Silicon (high-purity)
+  category: minerals
+  aliases: ["Polysilicon", "Si"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:gallium
+  name: Gallium
+  category: minerals
+  aliases: ["Ga"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:germanium
+  name: Germanium
+  category: minerals
+  aliases: ["Ge"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:indium
+  name: Indium
+  category: minerals
+  aliases: ["In"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:tellurium
+  name: Tellurium
+  category: minerals
+  aliases: ["Te"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+# ========================================================================
+# INDUSTRIAL MINERALS / FERTILIZER
+# ========================================================================
+- id: commodity:potash
+  name: Potash
+  category: minerals
+  aliases: ["KCl"]
+  top_producer: Canada
+  top_producer_country_code: CA
+  us_state: null
+  lat: 56.1
+  lon: -106.3
+  unit: tonnes K2O
+  source: USGS 2024
+
+- id: commodity:phosphate
+  name: Phosphate Rock
+  category: minerals
+  aliases: ["Phosphates"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:nitrogen-fertilizer
+  name: Nitrogen Fertilizer (urea, ammonia)
+  category: minerals
+  aliases: ["Urea", "Ammonia"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes N
+  source: IFA 2023
+
+- id: commodity:sulfur
+  name: Sulfur
+  category: minerals
+  aliases: ["Sulphur"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:salt
+  name: Salt
+  category: minerals
+  aliases: ["NaCl", "Halite"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:limestone
+  name: Limestone
+  category: minerals
+  aliases: ["CaCO3"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:gypsum
+  name: Gypsum
+  category: minerals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:cement
+  name: Cement
+  category: minerals
+  aliases: ["Portland cement"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:sand-gravel
+  name: Construction Sand & Gravel
+  category: minerals
+  aliases: ["Aggregates"]
+  top_producer: California, USA
+  top_producer_country_code: US
+  us_state: CA
+  lat: 36.7
+  lon: -119.8
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:silica-sand
+  name: Silica Sand (frac sand)
+  category: minerals
+  aliases: ["Frac sand"]
+  top_producer: Wisconsin, USA
+  top_producer_country_code: US
+  us_state: WI
+  lat: 44.5
+  lon: -89.5
+  unit: tonnes
+  source: USGS 2024 (US #1; Wisconsin leads US for frac sand)
+
+- id: commodity:helium
+  name: Helium
+  category: fuels
+  aliases: ["He"]
+  top_producer: Texas, USA
+  top_producer_country_code: US
+  us_state: TX
+  lat: 31.0
+  lon: -100.0
+  unit: mcf
+  source: USGS 2024
+
+- id: commodity:diamond
+  name: Diamond
+  category: minerals
+  aliases: []
+  top_producer: Russia
+  top_producer_country_code: RU
+  us_state: null
+  lat: 61.5
+  lon: 105.3
+  unit: carats
+  source: Kimberley Process 2023
+
+# ========================================================================
+# AGRICULTURE -- GRAINS & OILSEEDS
+# ========================================================================
+- id: commodity:wheat
+  name: Wheat
+  category: agriculture
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: bushels
+  source: USDA FAS 2023
+
+- id: commodity:corn
+  name: Corn (Maize)
+  category: agriculture
+  aliases: ["Maize"]
+  top_producer: Iowa, USA
+  top_producer_country_code: US
+  us_state: IA
+  lat: 42.0
+  lon: -93.5
+  unit: bushels
+  source: USDA 2023 (US #1; Iowa leads US)
+
+- id: commodity:soybeans
+  name: Soybeans
+  category: agriculture
+  aliases: ["Soy"]
+  top_producer: Brazil
+  top_producer_country_code: BR
+  us_state: null
+  lat: -14.2
+  lon: -51.9
+  unit: bushels
+  source: USDA FAS 2023
+
+- id: commodity:rice
+  name: Rice
+  category: agriculture
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USDA FAS 2023
+
+- id: commodity:barley
+  name: Barley
+  category: agriculture
+  aliases: []
+  top_producer: Russia
+  top_producer_country_code: RU
+  us_state: null
+  lat: 61.5
+  lon: 105.3
+  unit: bushels
+  source: USDA FAS 2023
+
+- id: commodity:oats
+  name: Oats
+  category: agriculture
+  aliases: []
+  top_producer: Russia
+  top_producer_country_code: RU
+  us_state: null
+  lat: 61.5
+  lon: 105.3
+  unit: bushels
+  source: USDA FAS 2023
+
+- id: commodity:sorghum
+  name: Sorghum
+  category: agriculture
+  aliases: []
+  top_producer: Nigeria
+  top_producer_country_code: NG
+  us_state: null
+  lat: 9.1
+  lon: 8.7
+  unit: tonnes
+  source: FAOSTAT 2023
+
+- id: commodity:palm-oil
+  name: Palm Oil
+  category: agriculture
+  aliases: []
+  top_producer: Indonesia
+  top_producer_country_code: ID
+  us_state: null
+  lat: -0.8
+  lon: 113.9
+  unit: tonnes
+  source: USDA FAS 2023
+
+- id: commodity:sunflower-oil
+  name: Sunflower Oil
+  category: agriculture
+  aliases: []
+  top_producer: Ukraine
+  top_producer_country_code: UA
+  us_state: null
+  lat: 48.4
+  lon: 31.2
+  unit: tonnes
+  source: USDA FAS 2023
+
+- id: commodity:rapeseed
+  name: Rapeseed (Canola)
+  category: agriculture
+  aliases: ["Canola"]
+  top_producer: Canada
+  top_producer_country_code: CA
+  us_state: null
+  lat: 56.1
+  lon: -106.3
+  unit: bushels
+  source: USDA FAS 2023
+
+# ========================================================================
+# AGRICULTURE -- LIVESTOCK & ANIMAL PROTEIN
+# ========================================================================
+- id: commodity:beef
+  name: Beef Cattle
+  category: agriculture
+  aliases: ["Beef", "Cattle"]
+  top_producer: USA (Texas)
+  top_producer_country_code: US
+  us_state: TX
+  lat: 31.0
+  lon: -100.0
+  unit: head
+  source: USDA 2023
+
+- id: commodity:pork
+  name: Pork (Hogs)
+  category: agriculture
+  aliases: ["Pork", "Hogs"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: head
+  source: FAOSTAT 2023
+
+- id: commodity:chicken
+  name: Chicken (Poultry)
+  category: agriculture
+  aliases: ["Poultry", "Broilers"]
+  top_producer: USA (Georgia)
+  top_producer_country_code: US
+  us_state: GA
+  lat: 32.2
+  lon: -82.9
+  unit: tonnes
+  source: USDA 2023 (US #1; Georgia leads US for broilers)
+
+- id: commodity:dairy
+  name: Dairy (Milk)
+  category: agriculture
+  aliases: ["Milk"]
+  top_producer: California, USA
+  top_producer_country_code: US
+  us_state: CA
+  lat: 36.7
+  lon: -119.8
+  unit: lbs
+  source: USDA 2023
+
+- id: commodity:eggs
+  name: Eggs
+  category: agriculture
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: dozen
+  source: FAOSTAT 2023
+
+- id: commodity:fish
+  name: Fish (Wild + Farmed)
+  category: agriculture
+  aliases: ["Seafood", "Aquaculture"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: FAO 2023
+
+# ========================================================================
+# AGRICULTURE -- SOFTS (TROPICAL)
+# ========================================================================
+- id: commodity:coffee
+  name: Coffee
+  category: softs
+  aliases: []
+  top_producer: Brazil
+  top_producer_country_code: BR
+  us_state: null
+  lat: -14.2
+  lon: -51.9
+  unit: bags
+  source: ICO 2023
+
+- id: commodity:cocoa
+  name: Cocoa
+  category: softs
+  aliases: []
+  top_producer: Ivory Coast
+  top_producer_country_code: CI
+  us_state: null
+  lat: 7.5
+  lon: -5.5
+  unit: tonnes
+  source: ICCO 2023
+
+- id: commodity:sugar
+  name: Sugar
+  category: softs
+  aliases: ["Sugarcane"]
+  top_producer: Brazil
+  top_producer_country_code: BR
+  us_state: null
+  lat: -14.2
+  lon: -51.9
+  unit: tonnes
+  source: USDA FAS 2023
+
+- id: commodity:cotton
+  name: Cotton
+  category: softs
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: bales
+  source: USDA FAS 2023
+
+- id: commodity:rubber
+  name: Natural Rubber
+  category: softs
+  aliases: []
+  top_producer: Thailand
+  top_producer_country_code: TH
+  us_state: null
+  lat: 15.9
+  lon: 100.9
+  unit: tonnes
+  source: ANRPC 2023
+
+- id: commodity:tobacco
+  name: Tobacco
+  category: softs
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: FAOSTAT 2023
+
+- id: commodity:tea
+  name: Tea
+  category: softs
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: FAOSTAT 2023
+
+- id: commodity:orange-juice
+  name: Orange Juice
+  category: softs
+  aliases: ["FCOJ"]
+  top_producer: Brazil
+  top_producer_country_code: BR
+  us_state: null
+  lat: -14.2
+  lon: -51.9
+  unit: tonnes
+  source: USDA FAS 2023
+
+# ========================================================================
+# TIMBER & PULP
+# ========================================================================
+- id: commodity:lumber
+  name: Lumber (Softwood)
+  category: timber
+  aliases: ["Softwood"]
+  top_producer: USA (Oregon)
+  top_producer_country_code: US
+  us_state: OR
+  lat: 43.8
+  lon: -120.5
+  unit: bf
+  source: USFS 2023
+
+- id: commodity:hardwood
+  name: Hardwood
+  category: timber
+  aliases: []
+  top_producer: USA (Tennessee)
+  top_producer_country_code: US
+  us_state: TN
+  lat: 35.5
+  lon: -86.6
+  unit: bf
+  source: USFS 2023
+
+- id: commodity:pulp
+  name: Pulp (Wood)
+  category: timber
+  aliases: ["Wood pulp"]
+  top_producer: USA (Georgia)
+  top_producer_country_code: US
+  us_state: GA
+  lat: 32.2
+  lon: -82.9
+  unit: tonnes
+  source: FAO 2023
+
+- id: commodity:paper
+  name: Paper & Paperboard
+  category: timber
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: FAO 2023
+
+# ========================================================================
+# PLASTICS & PETROCHEMICALS
+# ========================================================================
+- id: commodity:ethylene
+  name: Ethylene
+  category: plastics
+  aliases: []
+  top_producer: USA (Texas)
+  top_producer_country_code: US
+  us_state: TX
+  lat: 31.0
+  lon: -100.0
+  unit: tonnes
+  source: IHS Markit 2023
+
+- id: commodity:propylene
+  name: Propylene
+  category: plastics
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: IHS Markit 2023
+
+- id: commodity:polyethylene
+  name: Polyethylene (PE)
+  category: plastics
+  aliases: ["PE", "HDPE", "LDPE"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: IHS Markit 2023
+
+- id: commodity:polypropylene
+  name: Polypropylene (PP)
+  category: plastics
+  aliases: ["PP"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: IHS Markit 2023
+
+- id: commodity:pvc
+  name: Polyvinyl Chloride (PVC)
+  category: plastics
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: IHS Markit 2023
+
+- id: commodity:pet
+  name: Polyethylene Terephthalate (PET)
+  category: plastics
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: IHS Markit 2023
+
+- id: commodity:methanol
+  name: Methanol
+  category: plastics
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: Methanol Institute 2023
+
+- id: commodity:ammonia
+  name: Ammonia
+  category: plastics
+  aliases: ["NH3"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: IFA 2023
+
+# ========================================================================
+# RUBBER / TIRES / SYNTHETICS
+# ========================================================================
+- id: commodity:synthetic-rubber
+  name: Synthetic Rubber
+  category: plastics
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: IISRP 2023
+
+# ========================================================================
+# SEMICONDUCTOR / BATTERY MATERIALS
+# ========================================================================
+- id: commodity:lithium-carbonate
+  name: Lithium Carbonate
+  category: minerals
+  aliases: []
+  top_producer: Chile
+  top_producer_country_code: CL
+  us_state: null
+  lat: -35.7
+  lon: -71.5
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:nickel-sulfate
+  name: Nickel Sulfate
+  category: minerals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: Benchmark Mineral Intelligence 2023
+
+- id: commodity:manganese-sulfate
+  name: Manganese Sulfate
+  category: minerals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: Benchmark Mineral Intelligence 2023
+
+# ========================================================================
+# WATER (treated as a commodity for utilities)
+# ========================================================================
+- id: commodity:water
+  name: Water (Industrial/Municipal)
+  category: minerals
+  aliases: ["Freshwater"]
+  top_producer: USA (California)
+  top_producer_country_code: US
+  us_state: CA
+  lat: 36.7
+  lon: -119.8
+  unit: gallons
+  source: USGS 2023
+
+# ========================================================================
+# CHEMICAL PRECURSORS
+# ========================================================================
+- id: commodity:caustic-soda
+  name: Caustic Soda (Sodium Hydroxide)
+  category: minerals
+  aliases: ["NaOH"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: ICIS 2023
+
+- id: commodity:chlorine
+  name: Chlorine
+  category: minerals
+  aliases: ["Cl2"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: ICIS 2023
+
+- id: commodity:soda-ash
+  name: Soda Ash (Sodium Carbonate)
+  category: minerals
+  aliases: []
+  top_producer: USA (Wyoming)
+  top_producer_country_code: US
+  us_state: WY
+  lat: 43.0
+  lon: -107.5
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:sulfuric-acid
+  name: Sulfuric Acid
+  category: minerals
+  aliases: ["H2SO4"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: ICIS 2023
+
+- id: commodity:hydrogen
+  name: Hydrogen (Industrial)
+  category: fuels
+  aliases: ["H2"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: IEA 2023
+
+# ========================================================================
+# SPECIALTY / EMERGING
+# ========================================================================
+- id: commodity:vanadium
+  name: Vanadium
+  category: metals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:niobium
+  name: Niobium
+  category: metals
+  aliases: []
+  top_producer: Brazil
+  top_producer_country_code: BR
+  us_state: null
+  lat: -14.2
+  lon: -51.9
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:tantalum
+  name: Tantalum
+  category: metals
+  aliases: []
+  top_producer: Democratic Republic of Congo
+  top_producer_country_code: CD
+  us_state: null
+  lat: -4.0
+  lon: 21.8
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:beryllium
+  name: Beryllium
+  category: metals
+  aliases: []
+  top_producer: USA (Utah)
+  top_producer_country_code: US
+  us_state: UT
+  lat: 39.3
+  lon: -111.7
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:zirconium
+  name: Zirconium
+  category: metals
+  aliases: ["Zircon"]
+  top_producer: Australia
+  top_producer_country_code: AU
+  us_state: null
+  lat: -25.3
+  lon: 133.8
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:bismuth
+  name: Bismuth
+  category: metals
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+- id: commodity:mercury
+  name: Mercury
+  category: metals
+  aliases: ["Hg"]
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: USGS 2024
+
+# ========================================================================
+# CARBON / EMISSIONS
+# ========================================================================
+- id: commodity:carbon-credits
+  name: Carbon Credits (EU ETS)
+  category: other
+  aliases: ["EUA", "Carbon allowances"]
+  top_producer: European Union
+  top_producer_country_code: EU
+  us_state: null
+  lat: 50.0
+  lon: 10.0
+  unit: tonnes CO2e
+  source: EEX 2023
+
+# ========================================================================
+# TEXTILES / FIBERS (non-cotton)
+# ========================================================================
+- id: commodity:wool
+  name: Wool
+  category: agriculture
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: IWTO 2023
+
+- id: commodity:silk
+  name: Silk
+  category: agriculture
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: tonnes
+  source: International Sericultural Commission 2023
+
+- id: commodity:leather
+  name: Leather
+  category: agriculture
+  aliases: []
+  top_producer: China
+  top_producer_country_code: CN
+  us_state: null
+  lat: 35.9
+  lon: 104.2
+  unit: m2
+  source: ICT 2023

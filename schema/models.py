@@ -49,7 +49,7 @@ class EdgeType(str, Enum):
 #   prefixed). The parent CIK is duplicated in the id for human readability
 #   and joinability without a lookup; the authoritative parent link is the
 #   ``part_of`` edge to ``cik:<parent>``.
-_ID_PREFIXES = ("cik:", "wikidata:", "slug:", "regulator:", "seg:")
+_ID_PREFIXES = ("cik:", "wikidata:", "slug:", "regulator:", "seg:", "commodity:", "region:")
 
 # Prefix-specific body shapes. Keep each strict so a malformed body fails
 # validation rather than silently passing.
@@ -60,6 +60,8 @@ _ID_BODY_RE = {
     "regulator": re.compile(r"^[a-z0-9][a-z0-9\-]*$"),
     # seg body: "cik<10-digit-parent>:<lower-kebab-slug>"
     "seg": re.compile(r"^cik\d{10}:[a-z0-9][a-z0-9\-]*$"),
+    "commodity": re.compile(r"^[a-z0-9][a-z0-9\-]*$"),
+    "region": re.compile(r"^[a-z0-9][a-z0-9\-]*$"),
 }
 
 
@@ -268,15 +270,18 @@ class CandidateEdge(BaseModel):
 
     @field_validator("source_id")
     @classmethod
-    def _source_is_filer(cls, v: str) -> str:
-        # Phase 2 only emits candidates for filings we've ingested, all of
-        # which are SEC filers identified by CIK. Tighten now to catch bugs
-        # early — a candidate whose source isn't a cik: is almost certainly
-        # a wiring mistake.
+    def _source_is_filer_or_curated(cls, v: str) -> str:
+        # Phase 2 emitted only filing-derived candidates so source was always
+        # cik:. As of the commodity / region rules pipeline (post-Phase 7)
+        # we also accept curated source types so a candidate like
+        #   commodity:steel --supplies--> cik:exxon
+        # can flow through resolve. Anything outside this allow-list is
+        # still rejected -- catches typos and other wiring mistakes.
         _validate_canonical_id(v, "CandidateEdge.source_id")
-        if not v.startswith("cik:"):
+        if not v.startswith(("cik:", "commodity:", "region:", "regulator:")):
             raise ValueError(
-                f"CandidateEdge.source_id must start with 'cik:' (got {v!r})"
+                "CandidateEdge.source_id must start with 'cik:', 'commodity:', "
+                f"'region:', or 'regulator:' (got {v!r})"
             )
         return v
 

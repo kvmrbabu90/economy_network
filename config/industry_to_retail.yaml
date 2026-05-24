@@ -1,0 +1,107 @@
+# GICS sub-industry -> retail consumer markets served.
+#
+# Semantics: each entry means "every S&P 500 filer in this sub-industry
+# has the public as a customer in the listed markets." An edge
+#       cik:Y --supplies--> region:X-consumer
+# is generated per (filer, market) pair, surfaced in the UI as a
+# customer_of relationship (region X-consumer is the customer of Y).
+#
+# Defaults: every B2C-facing industry gets US, EU, China at minimum
+# (the three biggest consumer blocs). Industries that explicitly target
+# additional markets (e.g. India for Apple, Brazil for McDonald's)
+# can be expanded later via per-company overrides.
+#
+# Industries with no entry (or empty list) are treated as B2B and
+# don't generate retail-consumer edges.
+
+# ------------------------------------------------------------------
+# DIRECT RETAIL (storefronts, e-commerce)
+# ------------------------------------------------------------------
+Consumer Staples Merchandise Retail: [us, eu, china, india, japan, brazil, southeast-asia]
+Broadline Retail: [us, eu, china, india, japan, brazil, southeast-asia]
+Food Retail: [us, eu, china, japan]
+Home Improvement Retail: [us, eu]
+Homefurnishing Retail: [us]
+Apparel Retail: [us, eu, china, japan]
+Computer & Electronics Retail: [us, eu]
+Automotive Retail: [us]
+Other Specialty Retail: [us, eu]
+Distributors: [us]
+
+# ------------------------------------------------------------------
+# CONSUMER BRANDS (sold through retailers + own channels)
+# ------------------------------------------------------------------
+Packaged Foods & Meats: [us, eu, china, india, japan, brazil, southeast-asia]
+Soft Drinks & Non-alcoholic Beverages: [us, eu, china, india, japan, brazil, southeast-asia]
+Brewers: [us, eu, china, brazil]
+Distillers & Vintners: [us, eu, china]
+Tobacco: [us, eu]
+Household Products: [us, eu, china, india, brazil, southeast-asia]
+Personal Care Products: [us, eu, china, india, brazil, southeast-asia]
+Apparel, Accessories & Luxury Goods: [us, eu, china, japan]
+Footwear: [us, eu, china, japan]
+Consumer Electronics: [us, eu, china, india, japan, brazil, southeast-asia]
+Leisure Products: [us, eu, japan]
+
+# ------------------------------------------------------------------
+# AUTOMOTIVE (sold to end consumers AND fleet/dealer; we count public)
+# ------------------------------------------------------------------
+Automobile Manufacturers: [us, eu, china, india, japan, brazil, southeast-asia]
+
+# ------------------------------------------------------------------
+# RESTAURANTS / HOSPITALITY / TRAVEL
+# ------------------------------------------------------------------
+Restaurants: [us, eu, china, india, japan, brazil, southeast-asia]
+Hotels, Resorts & Cruise Lines: [us, eu, china, japan]
+Casinos & Gaming: [us, eu, china, japan]
+Passenger Airlines: [us, eu, china, japan, southeast-asia]
+Passenger Ground Transportation: [us]
+
+# ------------------------------------------------------------------
+# TECH (consumer-facing)
+# ------------------------------------------------------------------
+Technology Hardware, Storage & Peripherals: [us, eu, china, india, japan, brazil, southeast-asia]
+Interactive Media & Services: [us, eu, china, india, japan, brazil, southeast-asia]
+Interactive Home Entertainment: [us, eu, china, japan]
+Movies & Entertainment: [us, eu, china, india, japan, brazil, southeast-asia]
+Publishing: [us, eu]
+Broadcasting: [us]
+Cable & Satellite: [us]
+Integrated Telecommunication Services: [us]
+Wireless Telecommunication Services: [us]
+Internet Services & Infrastructure: [us, eu, china, india, japan]
+
+# ------------------------------------------------------------------
+# FINANCIAL SERVICES TO CONSUMERS
+# ------------------------------------------------------------------
+Consumer Finance: [us]
+Diversified Banks: [us]
+Regional Banks: [us]
+Property & Casualty Insurance: [us]
+Life & Health Insurance: [us]
+Multi-line Insurance: [us]
+Transaction & Payment Processing Services: [us, eu, china, india, japan, brazil, southeast-asia]
+
+# ------------------------------------------------------------------
+# HEALTHCARE -- SOME B2C TOUCH (pharmacy, insurance, direct-to-consumer drugs)
+# ------------------------------------------------------------------
+Managed Health Care: [us]
+Pharmaceuticals: [us, eu, china, japan]
+Health Care Services: [us]
+Health Care Facilities: [us]
+
+# ------------------------------------------------------------------
+# HOMEBUILDING (sold to retail home-buyers)
+# ------------------------------------------------------------------
+Homebuilding: [us]
+
+# ------------------------------------------------------------------
+# UTILITIES (sold to residential consumers)
+# ------------------------------------------------------------------
+Electric Utilities: [us]
+Multi-Utilities: [us]
+Gas Utilities: [us]
+Water Utilities: [us]
+
+# (All sub-industries not listed here are treated as pure B2B and get no
+#  retail-consumer edges.)

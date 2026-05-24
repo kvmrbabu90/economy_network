@@ -393,6 +393,25 @@ def run(*, data_root: Path, db_path: Path, graph_json_path: Path) -> Stats:
     below_path = data_root / "edges_below_threshold.jsonl"
     below = _load_jsonl(below_path) if below_path.exists() else []
 
+    # Commodity + region nodes from the rule pipeline. These never go
+    # through resolve (they're already canonical), so the resolve stage
+    # doesn't surface them. Fold them in at build time so SQLite sees
+    # the full universe of nodes the rule-generated edges point at.
+    commodity_nodes_path = data_root / "commodity_nodes.jsonl"
+    if commodity_nodes_path.exists():
+        extra_nodes = _load_jsonl(commodity_nodes_path)
+        # Dedup by id in case any commodity has the same canonical id as
+        # something already in nodes.jsonl (shouldn't happen today, but
+        # cheap insurance).
+        existing_ids = {n.get("id") for n in nodes}
+        added = 0
+        for n in extra_nodes:
+            if n.get("id") in existing_ids:
+                continue
+            nodes.append(n)
+            added += 1
+        log.info("Commodity + region nodes merged: %d added", added)
+
     # Tier-3 Wikidata enrichment: if wikidata_companies.json is present,
     # merge {qid, country, hq, lat, lon} into each Company node's metadata.
     # The 3D view uses lat/lon for its globe-mode positioning; the inspector
