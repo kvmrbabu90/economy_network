@@ -308,10 +308,18 @@ def run(
     if wikidata_cands:
         log.info("Wikidata: %d candidate edges loaded", len(wikidata_cands))
 
+    # Tier-C: 8-K contract-event candidates (supplies/customer_of edges
+    # extracted from 8-K Item 8.01 filings via claude -p). Loaded if the
+    # file exists; produced by `python -m pipeline.sec_8k --sector X`.
+    sec8k_path = data_root / "_extract" / "sec_8k_candidates.jsonl"
+    sec8k_cands = _load_inferred(sec8k_path) if sec8k_path.exists() else []
+    if sec8k_cands:
+        log.info("8-K: %d candidate edges loaded", len(sec8k_cands))
+
     edges_raw = data_root / "edges_raw.jsonl"
     n_edges = write_edges_raw(
         rule,
-        llm_candidates + wikidata_cands,
+        llm_candidates + wikidata_cands + sec8k_cands,
         edges_raw,
         inferred_candidates=inferred,
     )
