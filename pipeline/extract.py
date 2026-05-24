@@ -283,7 +283,24 @@ def run(
             llm_accepted, llm_rejected, llm_candidates_by_type,
         )
     else:
-        log.info("Skipping Part B (LLM extraction); pass --run-llm to enable")
+        # When we skip re-running the LLM, the side file from previous runs
+        # is still the source of truth -- load it back so reassembly doesn't
+        # silently lose every LLM-extracted edge (which was the original
+        # cause of "Nike has no competitors" in the rebuilt graph).
+        llm_side_path = data_root / "_extract" / "llm_candidates.jsonl"
+        if llm_side_path.exists():
+            cached_llm = _load_inferred(llm_side_path)
+            llm_candidates = cached_llm
+            llm_candidates_by_type = {}
+            for c in cached_llm:
+                t = (c.type.value if hasattr(c.type, "value") else c.type) or "unknown"
+                llm_candidates_by_type[t] = llm_candidates_by_type.get(t, 0) + 1
+            log.info(
+                "Skipping Part B (LLM extraction); loaded %d cached LLM candidates from %s",
+                len(cached_llm), llm_side_path,
+            )
+        else:
+            log.info("Skipping Part B (LLM extraction); pass --run-llm to enable")
 
     # Tier-2 derivations: co-mention closure over LLM candidates. Cheap,
     # deterministic, no model calls. Run after every batch so the inferred
