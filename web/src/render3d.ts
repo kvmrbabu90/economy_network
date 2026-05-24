@@ -277,6 +277,20 @@ export function start3D(
   // America, that side is Europe."
   if (currentLayout === "globe") {
     const scene = instance.scene();
+    // Solid inner sphere -- background-coloured, opaque. Sits just inside
+    // the wireframe and acts as a depth-occluder so we don't see the
+    // far-side continent outlines bleed through the wireframe (which made
+    // the globe look east-west "inverted" because back-side lines are
+    // mirrored from the viewer's perspective).
+    const occluder = new THREE.Mesh(
+      new THREE.SphereGeometry(GLOBE_RADIUS - 5, 48, 32),
+      new THREE.MeshBasicMaterial({
+        color: 0x05070b,           // matches --bg in styles.css
+        side: THREE.FrontSide,
+      }),
+    );
+    occluder.name = "econgraph-globe-occluder";
+    scene.add(occluder);
     // Wireframe globe -- thin lines, low opacity so node colors dominate.
     const sphere = new THREE.Mesh(
       new THREE.SphereGeometry(GLOBE_RADIUS - 4, 36, 24),
