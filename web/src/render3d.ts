@@ -288,17 +288,25 @@ export function start3D(
     const refDist = camera.position.length() || 1;
     let lastScale = 1.0;
     const tick = () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__zoomTickCount = ((window as any).__zoomTickCount || 0) + 1;
       if (!instance) return;
       const d = camera.position.length();
       const next = Math.max(0.18, Math.min(1.0, d / refDist));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__zoomLast = { d, next, lastScale };
       if (Math.abs(next - lastScale) > 0.01) {
         const factor = next / lastScale;
+        let touched = 0;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         instance.scene().traverse((obj: any) => {
           if (obj.__graphObjType === "node" && obj.scale) {
             obj.scale.multiplyScalar(factor);
+            touched++;
           }
         });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (window as any).__zoomLastApply = { factor, touched, next };
         zoomScale = next;
         lastScale = next;
       }
