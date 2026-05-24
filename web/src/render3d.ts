@@ -282,31 +282,27 @@ export function start3D(
   // camera distance per frame was unreliable (HMR + force-sim interaction
   // hung the renderer in earlier attempts). User-input-driven is simpler
   // and survives anything the simulation does to the camera.
+  const SCALE_MIN = 0.15;
+  const SCALE_MAX = 4.0;
+  const clampScale = (s: number) => Math.min(SCALE_MAX, Math.max(SCALE_MIN, s));
   const onWheel = (ev: WheelEvent) => {
     if (!instance) return;
-    // deltaY < 0 means scroll-up = "zoom in" in 3d-force-graph's
-    // OrbitControls. On zoom-in we shrink so nodes don't blow up;
-    // on zoom-out we grow so they don't shrink to invisibility.
+    // deltaY < 0 = scroll up = zoom in. We shrink so dense clusters
+    // resolve into distinct nodes instead of an overlapping blob.
     const factor = ev.deltaY < 0 ? 1 / 1.12 : 1.12;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     instance.scene().traverse((obj: any) => {
       if (obj.__graphObjType === "node" && obj.scale) {
-        obj.scale.multiplyScalar(factor);
-      } else if (obj.__graphObjType === "link") {
-        // Link tubes: scaling X/Y shrinks the tube radius without
-        // detaching the endpoints (Z is along the tube's length axis
-        // in 3d-force-graph's local frame). Adjust XY only.
-        if (obj.scale) {
-          obj.scale.x *= factor;
-          obj.scale.y *= factor;
-        }
-        // Materials with opacity: also dim slightly when zoomed in so
-        // surviving edges read as accent, not noise.
-        if (obj.material && typeof obj.material.opacity === "number") {
-          obj.material.opacity = Math.max(0.1, Math.min(0.85, obj.material.opacity * (factor < 1 ? 0.96 : 1.04)));
-          obj.material.transparent = true;
-          obj.material.needsUpdate = true;
-        }
+        const next = clampScale(obj.scale.x * factor);
+        obj.scale.set(next, next, next);
+      } else if (obj.__graphObjType === "link" && obj.scale) {
+        // Scale X/Y only -- shrinks the tube radius while keeping it
+        // attached to its endpoints (Z is the tube's length axis in
+        // 3d-force-graph's local frame).
+        const nx = clampScale(obj.scale.x * factor);
+        const ny = clampScale(obj.scale.y * factor);
+        obj.scale.x = nx;
+        obj.scale.y = ny;
       }
     });
   };
