@@ -162,6 +162,11 @@ refreshEdgeVisibility(); // initial pass (everything visible)
 
 function refreshEdgeVisibility(): void {
   renderer.setSetting("edgeReducer", (eid, eattrs) => {
+    // Aggregated bubble<->bubble edges only belong in Bubbles layout.
+    const isVirtualBubbleEdge = eid.startsWith("bubble-edge:");
+    if (isVirtualBubbleEdge && layoutMode !== "bubble") {
+      return { ...eattrs, hidden: true };
+    }
     if (layoutMode === "bubble" && hiddenForBubble.edges.has(eid)) {
       return { ...eattrs, hidden: true };
     }
@@ -173,14 +178,17 @@ function refreshEdgeVisibility(): void {
     };
   });
   renderer.setSetting("nodeReducer", (id, nattrs) => {
+    const isBubbleNode = isBubble(id);
+    // Virtual bubble nodes only belong in Bubbles layout. Don't bleed
+    // into Force / By-sector views.
+    if (isBubbleNode && layoutMode !== "bubble") {
+      return { ...nattrs, hidden: true, label: "" };
+    }
     if (layoutMode === "bubble" && hiddenForBubble.nodes.has(id)) {
       return { ...nattrs, hidden: true, label: "" };
     }
     const isProv = !!nattrs.apiNode.attributes.provisional;
     const hide = isProv && !filters.includeProvisional;
-    // Bubbles always show their label; regular nodes use the displayLabel
-    // heuristic (top-N hubs labeled, hover-only otherwise).
-    const isBubbleNode = isBubble(id);
     return {
       ...nattrs,
       label: isBubbleNode ? nattrs.label : (nattrs.displayLabel || ""),
