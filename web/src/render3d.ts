@@ -285,6 +285,25 @@ export function start3D(
   const SCALE_MIN = 0.15;
   const SCALE_MAX = 4.0;
   const clampScale = (s: number) => Math.min(SCALE_MAX, Math.max(SCALE_MIN, s));
+  // Cache the reference camera distance + the controls' default rotate
+  // speed so we can taper rotation/pan as the user zooms in. OrbitControls
+  // moves in angular units; when the camera is close to the target, a
+  // small angular delta translates to a large screen-space jump, which
+  // reads as "drag is way too sensitive."
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cameraRef = instance.camera();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ctrlRef: any = instance.controls();
+  const refCamDist = cameraRef.position.length() || 1;
+  const defaultRotateSpeed = ctrlRef.rotateSpeed ?? 1.0;
+  const defaultPanSpeed = ctrlRef.panSpeed ?? 1.0;
+  const tuneControls = () => {
+    const d = cameraRef.position.length();
+    // ratio in [0, 1]; clamp to a floor so drags still respond at deep zoom.
+    const ratio = Math.max(0.08, Math.min(1.0, d / refCamDist));
+    ctrlRef.rotateSpeed = defaultRotateSpeed * ratio;
+    ctrlRef.panSpeed = defaultPanSpeed * ratio;
+  };
   const onWheel = (ev: WheelEvent) => {
     if (!instance) return;
     // deltaY < 0 = scroll up = zoom in. We shrink so dense clusters
@@ -305,8 +324,14 @@ export function start3D(
         obj.scale.y = ny;
       }
     });
+    // OrbitControls fires its zoom logic on the same wheel event; by the
+    // time the browser dispatches it, the camera has already moved to its
+    // new position, so reading position.length() here gives the post-zoom
+    // distance. Re-tune drag sensitivity accordingly.
+    tuneControls();
   };
   container.addEventListener("wheel", onWheel, { passive: true });
+  tuneControls();
 
   // Keyboard shortcuts as a fallback / fine control:
   // '[' shrink, ']' grow, '0' reset.
