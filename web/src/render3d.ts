@@ -40,6 +40,15 @@ export interface View3DOptions {
 
 const GLOBE_RADIUS = 200;
 
+// Country -> approximate geographic center, used as a fallback HQ
+// position for companies that have a `country` attribute but never
+// got Wikidata HQ coords (about 41 of the 500 S&P filers fall through
+// the SPARQL net). The MVP corpus is 100% US, so only "US" matters
+// today -- add countries here as the corpus expands.
+const COUNTRY_CENTROID: Record<string, { lat: number; lon: number }> = {
+  US: { lat: 39.83, lon: -98.58 }, // Lebanon, KS -- contiguous-US centroid
+};
+
 /**
  * Project a Wikidata coord (lat, lon, degrees) onto a sphere of the given
  * radius. Maps Greenwich (lat=0, lon=0) to +Z (camera-facing front-center),
@@ -182,17 +191,28 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
           ? latLonToXYZ(39.0997, -94.5786)   // Kansas City, MO
           : latLonToXYZ(38.8951, -77.0364);  // Washington, DC
       } else {
-        // No HQ coords (provisional slug nodes, mostly). Stash them in
-        // a tight cluster south of Antarctica so they don't pretend to
-        // be located somewhere real on the map. Deterministic by id so
-        // the cluster doesn't reshuffle every paint.
+        // No HQ coords. Deterministic-by-id so the placement doesn't
+        // reshuffle every paint.
         let hash = 0;
         for (let i = 0; i < apiNode.key.length; i++) {
           hash = (hash * 31 + apiNode.key.charCodeAt(i)) | 0;
         }
-        const lon = (hash % 360) - 180;
-        const lat = -82 - ((hash >> 8) & 7);  // -82..-89
-        p = latLonToXYZ(lat, lon);
+        const country = apiNode.attributes.country as string | undefined;
+        const centroid = country ? COUNTRY_CENTROID[country] : null;
+        if (centroid) {
+          // Jitter within ~2° of the country's geographic center so
+          // multiple coord-less companies in the same country don't
+          // all stack on one pixel.
+          const jLat = (((hash >> 4) & 0xff) / 255 - 0.5) * 4;
+          const jLon = (((hash >> 12) & 0xff) / 255 - 0.5) * 4;
+          p = latLonToXYZ(centroid.lat + jLat, centroid.lon + jLon);
+        } else {
+          // Truly unknown -- stash south of Antarctica so the node
+          // doesn't pretend to sit on a real continent.
+          const lon = (hash % 360) - 180;
+          const lat = -82 - ((hash >> 8) & 7);  // -82..-89
+          p = latLonToXYZ(lat, lon);
+        }
       }
       node.fx = p.x; node.fy = p.y; node.fz = p.z;
     }
