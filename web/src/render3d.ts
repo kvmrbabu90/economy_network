@@ -255,68 +255,49 @@ export function start3D(
   mountedContainer = container;
   currentLayout = opts.layout ?? "ball";
 
-  // Zoom-aware scaling. As the camera moves closer to the origin, the
-  // node/link world-space sizes shrink proportionally so dense clusters
-  // resolve into individual nodes instead of an overlapping blob. The
-  // accessors below read this on every frame.
-  let zoomScale = 1.0;
-
   instance = ForceGraph3D({ controlType: "orbit" })(container)
     .backgroundColor("#14171a")  // match --bg in styles.css
     .graphData(toForceData(g, opts))
     .nodeLabel((n: ForceNode) => `<span style="color:#e8e3da">${n.label}</span>`)
     .nodeColor((n: ForceNode) => n.color)
-    .nodeVal((n: ForceNode) => n.size * zoomScale * zoomScale)
+    .nodeVal((n: ForceNode) => n.size)
     .nodeResolution(12)
     .nodeOpacity(0.95)
     .linkColor((l: ForceLink) => l.color)
-    .linkWidth((l: ForceLink) => (l.below ? 0.4 : 1.2) * zoomScale)
+    .linkWidth((l: ForceLink) => (l.below ? 0.4 : 1.2))
     .linkOpacity((l: ForceLink) => (l.below ? 0.18 : 0.6))
-    .linkDirectionalArrowLength((l: ForceLink) => (l.edgeType === "competes_with" ? 0 : 3) * zoomScale)
+    .linkDirectionalArrowLength((l: ForceLink) => (l.edgeType === "competes_with" ? 0 : 3))
     .linkDirectionalArrowRelPos(0.92)
     .linkDirectionalArrowColor((l: ForceLink) => l.color)
     .showNavInfo(false);
 
-  // Capture the reference camera distance once the scene is mounted, then
-  // recompute zoomScale on every OrbitControls "change" event. We use
-  // distance-from-origin as the proxy for zoom level. nodeVal is a
-  // *volume* multiplier (sphere radius cubes it), so we square zoomScale
-  // there so the on-screen radius tracks linearly with zoom. linkWidth is
-  // already a 1D measure, so it gets the bare zoomScale.
-  {
-    const camera = instance.camera();
-    const refDist = camera.position.length() || 1;
-    let lastScale = 1.0;
-    const tick = () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).__zoomTickCount = ((window as any).__zoomTickCount || 0) + 1;
-      if (!instance) return;
-      const d = camera.position.length();
-      const next = Math.max(0.18, Math.min(1.0, d / refDist));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).__zoomLast = { d, next, lastScale };
-      if (Math.abs(next - lastScale) > 0.01) {
-        const factor = next / lastScale;
-        let touched = 0;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        instance.scene().traverse((obj: any) => {
-          if (obj.__graphObjType === "node" && obj.scale) {
-            obj.scale.multiplyScalar(factor);
-            touched++;
-          }
-        });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (window as any).__zoomLastApply = { factor, touched, next };
-        zoomScale = next;
-        lastScale = next;
-      }
-      window.requestAnimationFrame(tick);
-    };
-    window.requestAnimationFrame(tick);
-    // Expose for live debugging / preview-tool inspection.
+  // Keyboard shortcut for node size: '[' shrinks, ']' grows, '0' resets.
+  // Walks the scene once per keypress and multiplies node mesh scales --
+  // dirt-cheap, no per-frame loop. Lives on the document so it works
+  // from anywhere except text inputs.
+  const sizeKeydown = (ev: KeyboardEvent) => {
+    if (!instance) return;
+    const focused = document.activeElement as HTMLElement | null;
+    if (focused && (focused.tagName === "INPUT" || focused.tagName === "TEXTAREA")) return;
+    let factor = 0;
+    if (ev.key === "[") factor = 1 / 1.25;
+    else if (ev.key === "]") factor = 1.25;
+    else if (ev.key === "0") factor = -1; // sentinel: reset to 1.0
+    else return;
+    ev.preventDefault();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).__force3D = instance;
-  }
+    instance.scene().traverse((obj: any) => {
+      if (obj.__graphObjType === "node" && obj.scale) {
+        if (factor < 0) obj.scale.set(1, 1, 1);
+        else obj.scale.multiplyScalar(factor);
+      }
+    });
+  };
+  document.addEventListener("keydown", sizeKeydown);
+
+  // Expose for live debugging / preview-tool inspection.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).__force3D = instance;
 
   // Single click distinguished from double-click via a small delay.
   let pendingClick: { id: string; timer: number } | null = null;
