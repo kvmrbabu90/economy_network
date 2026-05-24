@@ -42,16 +42,20 @@ const GLOBE_RADIUS = 200;
 
 /**
  * Project a Wikidata coord (lat, lon, degrees) onto a sphere of the given
- * radius. Standard latitude-longitude -> Cartesian mapping; lat=0 lon=0
- * lands on +X, north pole on +Y.
+ * radius. Maps Greenwich (lat=0, lon=0) to +Z (camera-facing front-center),
+ * eastward longitudes to +X (right of screen), westward longitudes to -X
+ * (left of screen), and the North Pole to +Y. Three.js camera defaults to
+ * +Z looking at the origin, so this orientation puts the prime meridian
+ * dead-centre on the initial view and east on the right -- matching how
+ * world maps are conventionally drawn.
  */
 function latLonToXYZ(lat: number, lon: number, radius = GLOBE_RADIUS) {
   const latR = (lat * Math.PI) / 180;
   const lonR = (lon * Math.PI) / 180;
   return {
-    x: radius * Math.cos(latR) * Math.cos(lonR),
+    x: radius * Math.cos(latR) * Math.sin(lonR),
     y: radius * Math.sin(latR),
-    z: radius * Math.cos(latR) * Math.sin(lonR),
+    z: radius * Math.cos(latR) * Math.cos(lonR),
   };
 }
 
@@ -285,7 +289,7 @@ export function start3D(
     const occluder = new THREE.Mesh(
       new THREE.SphereGeometry(GLOBE_RADIUS - 5, 48, 32),
       new THREE.MeshBasicMaterial({
-        color: 0x05070b,           // matches --bg in styles.css
+        color: 0x14171a,           // matches backgroundColor("#14171a") below
         side: THREE.FrontSide,
       }),
     );
@@ -335,8 +339,13 @@ export function start3D(
     continents.name = "econgraph-continents";
     scene.add(continents);
 
-    // Step the camera back so the whole globe fits comfortably.
-    instance.cameraPosition({ x: 0, y: 0, z: GLOBE_RADIUS * 3 });
+    // Step the camera back so the whole globe fits comfortably, and aim
+    // it over central North America (lat ~30N, lon ~-90W) so the bulk of
+    // the S&P 500 HQs land on the visible hemisphere by default. Without
+    // this the user would see Europe/Africa on first paint and assume
+    // the globe is empty.
+    const camFocus = latLonToXYZ(30, -90, GLOBE_RADIUS * 3);
+    instance.cameraPosition({ x: camFocus.x, y: camFocus.y, z: camFocus.z });
   }
 }
 
