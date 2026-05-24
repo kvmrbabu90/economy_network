@@ -11,7 +11,13 @@ export const API_BASE_URL: string =
 // "search" — start near-empty with the search box focused; switch here when
 //            the full graph stops being readable at larger scale. One-line
 //            change, no rewrite.
-export const OPEN_MODE: "full" | "search" = "full";
+// Phase 7 flip: "full" mode opens with all ~2400 nodes loaded -- the
+// resulting hairball isn't a useful first impression at full-economy scale.
+// "search" opens with the search box focused; the user fans out from a
+// chosen node via the established click-expand / double-click-recenter
+// gestures. The "Full graph" button in the topbar still loads the whole
+// thing on demand.
+export const OPEN_MODE: "full" | "search" = "search";
 
 // When OPEN_MODE = "full", we seed a subgraph fetch at this node and crawl
 // at MAX_HOPS to cover the whole core. The SEC regulator is reached by every
