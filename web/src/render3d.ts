@@ -255,21 +255,47 @@ export function start3D(
   mountedContainer = container;
   currentLayout = opts.layout ?? "ball";
 
+  // Zoom-aware scaling. As the camera moves closer to the origin, the
+  // node/link world-space sizes shrink proportionally so dense clusters
+  // resolve into individual nodes instead of an overlapping blob. The
+  // accessors below read this on every frame.
+  let zoomScale = 1.0;
+
   instance = ForceGraph3D({ controlType: "orbit" })(container)
     .backgroundColor("#14171a")  // match --bg in styles.css
     .graphData(toForceData(g, opts))
     .nodeLabel((n: ForceNode) => `<span style="color:#e8e3da">${n.label}</span>`)
     .nodeColor((n: ForceNode) => n.color)
-    .nodeVal((n: ForceNode) => n.size)
+    .nodeVal((n: ForceNode) => n.size * zoomScale * zoomScale)
     .nodeResolution(12)
     .nodeOpacity(0.95)
     .linkColor((l: ForceLink) => l.color)
-    .linkWidth((l: ForceLink) => (l.below ? 0.4 : 1.2))
+    .linkWidth((l: ForceLink) => (l.below ? 0.4 : 1.2) * zoomScale)
     .linkOpacity((l: ForceLink) => (l.below ? 0.18 : 0.6))
-    .linkDirectionalArrowLength((l: ForceLink) => (l.edgeType === "competes_with" ? 0 : 3))
+    .linkDirectionalArrowLength((l: ForceLink) => (l.edgeType === "competes_with" ? 0 : 3) * zoomScale)
     .linkDirectionalArrowRelPos(0.92)
     .linkDirectionalArrowColor((l: ForceLink) => l.color)
     .showNavInfo(false);
+
+  // Capture the reference camera distance once the scene is mounted, then
+  // recompute zoomScale on every OrbitControls "change" event. We use
+  // distance-from-origin as the proxy for zoom level. nodeVal is a
+  // *volume* multiplier (sphere radius cubes it), so we square zoomScale
+  // there so the on-screen radius tracks linearly with zoom. linkWidth is
+  // already a 1D measure, so it gets the bare zoomScale.
+  {
+    const camera = instance.camera();
+    const refDist = camera.position.length() || 1;
+    const controls = instance.controls();
+    const recomputeZoom = () => {
+      const d = camera.position.length();
+      // Clamp to a sensible band so labels stay readable when fully zoomed
+      // out and nodes don't shrink to invisible specks when extremely close.
+      zoomScale = Math.max(0.18, Math.min(1.0, d / refDist));
+    };
+    controls.addEventListener("change", recomputeZoom);
+    recomputeZoom();
+  }
 
   // Single click distinguished from double-click via a small delay.
   let pendingClick: { id: string; timer: number } | null = null;
