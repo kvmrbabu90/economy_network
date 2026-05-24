@@ -186,9 +186,10 @@ export function bubbleVisibility(
 
   g.forEachNode((id, attrs) => {
     if (isBubble(id)) {
-      // Hide the bubble when the sector is expanded; show it otherwise.
-      const sector = sectorOfBubble(id);
-      if (expanded.has(sector)) hiddenNodes.add(id);
+      // Bubbles stay visible ALWAYS: when collapsed they're the cluster
+      // proxy; when expanded they're the smaller "click to collapse"
+      // affordance pinned at the sector anchor. The label switches
+      // dynamically (see updateBubbleLabels()).
       return;
     }
     const a = attrs.apiNode.attributes;
@@ -197,18 +198,49 @@ export function bubbleVisibility(
     if (!expanded.has(sector)) hiddenNodes.add(id);
   });
 
+  // Bubble<->bubble aggregated edges: hide a virtual edge when EITHER side
+  // has been expanded (its companies' real edges are what's interesting
+  // in that case).
   g.forEachEdge((eid, _attrs, src, tgt) => {
-    const isVirtual = eid.startsWith(BUBBLE_EDGE_PREFIX);
-    if (isVirtual) {
-      // Show a virtual bubble edge only if BOTH bubbles are visible.
-      if (hiddenNodes.has(src) || hiddenNodes.has(tgt)) hiddenEdges.add(eid);
+    const isVirtualEdge = eid.startsWith(BUBBLE_EDGE_PREFIX);
+    if (isVirtualEdge) {
+      const sA = isBubble(src) ? sectorOfBubble(src) : "";
+      const sB = isBubble(tgt) ? sectorOfBubble(tgt) : "";
+      if (expanded.has(sA) || expanded.has(sB)) hiddenEdges.add(eid);
       return;
     }
-    // Hide a real edge if either endpoint is hidden.
+    // Hide a real edge if either endpoint is hidden (collapsed sector member).
     if (hiddenNodes.has(src) || hiddenNodes.has(tgt)) hiddenEdges.add(eid);
   });
 
   return { nodes: hiddenNodes, edges: hiddenEdges };
+}
+
+/**
+ * Update bubble labels + sizes to reflect expansion state. Collapsed bubbles
+ * read "Industrials (79)"; expanded bubbles shrink and read "Industrials ✕"
+ * so they're recognizable as a collapse target without dominating the
+ * visual.
+ */
+export function updateBubbleAppearance(g: EconGraph, expanded: Set<string>): void {
+  g.forEachNode((id, attrs) => {
+    if (!isBubble(id)) return;
+    const sector = sectorOfBubble(id);
+    const md = attrs.apiNode.attributes.metadata as { sectorCount?: number };
+    const n = md.sectorCount ?? 0;
+    const isExpanded = expanded.has(sector);
+    if (isExpanded) {
+      g.setNodeAttribute(id, "label", `${sector} ✕`);
+      g.setNodeAttribute(id, "size", 6);
+      g.setNodeAttribute(id, "color", "#6e6a62");
+      g.setNodeAttribute(id, "displayLabel", `${sector} ✕`);
+    } else {
+      g.setNodeAttribute(id, "label", `${sector} (${n})`);
+      g.setNodeAttribute(id, "size", Math.max(12, 8 + Math.sqrt(n) * 1.6));
+      g.setNodeAttribute(id, "color", "#6ea8f0");
+      g.setNodeAttribute(id, "displayLabel", `${sector} (${n})`);
+    }
+  });
 }
 
 /**

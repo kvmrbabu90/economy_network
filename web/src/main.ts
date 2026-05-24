@@ -32,6 +32,7 @@ import {
   layoutBubbleView,
   refreshBubbleEdges,
   sectorOfBubble,
+  updateBubbleAppearance,
 } from "./bubbles";
 import {
   is3DRunning,
@@ -127,6 +128,7 @@ function applyLayout() {
     ensureBubbleNodes(g);
     refreshBubbleEdges(g);
     layoutBubbleView(g, expandedSectors);
+    updateBubbleAppearance(g, expandedSectors);
     hiddenForBubble = bubbleVisibility(g, expandedSectors);
   } else {
     hiddenForBubble = { nodes: new Set(), edges: new Set() };
@@ -143,6 +145,7 @@ function toggleSector(sector: string) {
   if (expandedSectors.has(sector)) expandedSectors.delete(sector);
   else expandedSectors.add(sector);
   layoutBubbleView(g, expandedSectors);
+  updateBubbleAppearance(g, expandedSectors);
   hiddenForBubble = bubbleVisibility(g, expandedSectors);
   renderer.refresh();
 }
@@ -251,21 +254,14 @@ let pendingClick: { id: string; timer: number } | null = null;
 
 renderer.on("clickNode", (event) => {
   const id = event.node;
-  // Bubble-mode special case: clicking a sector hub toggles expansion;
-  // clicking a company INSIDE an expanded sector collapses that sector
-  // back. Both happen instantly (no double-click delay).
-  if (layoutMode === "bubble") {
-    if (isBubble(id)) {
-      const sector = sectorOfBubble(id);
-      toggleSector(sector);
-      return;
-    }
-    // Company inside an expanded sector -- toggle that sector closed.
-    const a = g.getNodeAttributes(id).apiNode.attributes;
-    if (a.sector && expandedSectors.has(a.sector)) {
-      toggleSector(a.sector);
-      return;
-    }
+  // Bubble nodes ARE the expand/collapse affordance; clicking one toggles
+  // its sector immediately (no double-click delay). All other clicks --
+  // including on companies inside an expanded cluster -- go through the
+  // normal expand-in-place / double-click-recenter flow.
+  if (isBubble(id)) {
+    const sector = sectorOfBubble(id);
+    toggleSector(sector);
+    return;
   }
   if (pendingClick) {
     clearTimeout(pendingClick.timer);
