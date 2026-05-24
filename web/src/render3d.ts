@@ -170,20 +170,31 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
       const wd = (apiNode.attributes.metadata?.wikidata as
         | { lat?: number; lon?: number }
         | undefined);
+      let p: { x: number; y: number; z: number } | null = null;
       if (wd && typeof wd.lat === "number" && typeof wd.lon === "number") {
-        const p = latLonToXYZ(wd.lat, wd.lon);
-        node.fx = p.x; node.fy = p.y; node.fz = p.z;
+        p = latLonToXYZ(wd.lat, wd.lon);
+      } else if (apiNode.attributes.type === "Regulator") {
+        // All but one of our regulators are US federal -- pin at
+        // Washington DC. NAIC is the only multistate body; nudge it to
+        // Kansas City where the NAIC central office actually sits.
+        const isNAIC = apiNode.key === "regulator:naic";
+        p = isNAIC
+          ? latLonToXYZ(39.0997, -94.5786)   // Kansas City, MO
+          : latLonToXYZ(38.8951, -77.0364);  // Washington, DC
       } else {
-        // Random point on the sphere surface for nodes without coords
-        // (regulators, slugs without geographic data). Pinned so they
-        // don't drift around when force-layout runs.
-        const u = Math.random(), v = Math.random();
-        const theta = 2 * Math.PI * u;
-        const phi = Math.acos(2 * v - 1);
-        node.fx = GLOBE_RADIUS * Math.sin(phi) * Math.cos(theta);
-        node.fy = GLOBE_RADIUS * Math.sin(phi) * Math.sin(theta);
-        node.fz = GLOBE_RADIUS * Math.cos(phi);
+        // No HQ coords (provisional slug nodes, mostly). Stash them in
+        // a tight cluster south of Antarctica so they don't pretend to
+        // be located somewhere real on the map. Deterministic by id so
+        // the cluster doesn't reshuffle every paint.
+        let hash = 0;
+        for (let i = 0; i < apiNode.key.length; i++) {
+          hash = (hash * 31 + apiNode.key.charCodeAt(i)) | 0;
+        }
+        const lon = (hash % 360) - 180;
+        const lat = -82 - ((hash >> 8) & 7);  // -82..-89
+        p = latLonToXYZ(lat, lon);
       }
+      node.fx = p.x; node.fy = p.y; node.fz = p.z;
     }
     nodes.push(node);
   });
