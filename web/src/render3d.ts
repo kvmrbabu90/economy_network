@@ -15,6 +15,14 @@ import ForceGraph3DLib from "3d-force-graph";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ForceGraph3D: any = ForceGraph3DLib as any;
 import * as THREE from "three";
+// world-atlas ships a 1:110m TopoJSON of world land masses (~15 KB). The
+// land object's MultiPolygon geometry has continent + island outlines
+// (no political borders) -- exactly what makes a sphere "read as Earth"
+// without cluttering the canvas with country lines.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+import landTopo from "world-atlas/land-110m.json";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+import { feature as topoFeature } from "topojson-client";
 
 import type { EconGraph } from "./graph";
 
@@ -45,6 +53,50 @@ function latLonToXYZ(lat: number, lon: number, radius = GLOBE_RADIUS) {
     y: radius * Math.sin(latR),
     z: radius * Math.cos(latR) * Math.sin(lonR),
   };
+}
+
+// Continent-outline geometry, cached on first build because the projection
+// is the same for every globe-mount in a session.
+let cachedContinentGeometry: THREE.BufferGeometry | null = null;
+
+function buildContinentLines(): THREE.BufferGeometry {
+  if (cachedContinentGeometry) return cachedContinentGeometry;
+  // topojson-client.feature() decodes the land topology into a GeoJSON
+  // MultiPolygon Feature; each polygon ring is an array of [lon, lat] pairs.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const landFeature: any = topoFeature(landTopo as any, (landTopo as any).objects.land);
+  const positions: number[] = [];
+  // Sit the line geometry slightly OUTSIDE the wireframe sphere so it
+  // doesn't z-fight with the wireframe pattern.
+  const r = GLOBE_RADIUS + 0.6;
+
+  const flushRing = (ring: number[][]) => {
+    // ring is an array of [lon, lat]. Convert to xyz triples; emit as
+    // LINE_SEGMENTS (pairs) so we get one segment per consecutive vertex
+    // pair, with no spurious closing line back to the start.
+    let prev: { x: number; y: number; z: number } | null = null;
+    for (const [lon, lat] of ring) {
+      const p = latLonToXYZ(lat, lon, r);
+      if (prev) {
+        positions.push(prev.x, prev.y, prev.z, p.x, p.y, p.z);
+      }
+      prev = p;
+    }
+  };
+
+  const geom = landFeature.geometry;
+  if (geom?.type === "MultiPolygon") {
+    for (const poly of geom.coordinates) {
+      for (const ring of poly) flushRing(ring);
+    }
+  } else if (geom?.type === "Polygon") {
+    for (const ring of geom.coordinates) flushRing(ring);
+  }
+
+  const buf = new THREE.BufferGeometry();
+  buf.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  cachedContinentGeometry = buf;
+  return buf;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -237,6 +289,22 @@ export function start3D(
     const prime = new THREE.Mesh(ringGeom, ringMat);
     prime.name = "econgraph-prime-meridian";
     scene.add(prime);
+
+    // Continent outlines (the "looks like Earth" detail). Thin warm-grey
+    // lines projected from world-atlas 110m land geometry. Sits just
+    // outside the wireframe sphere to avoid z-fighting.
+    const continents = new THREE.LineSegments(
+      buildContinentLines(),
+      new THREE.LineBasicMaterial({
+        color: 0xe8e3da,           // matches --text in styles.css
+        transparent: true,
+        opacity: 0.55,
+        linewidth: 1,
+      }),
+    );
+    continents.name = "econgraph-continents";
+    scene.add(continents);
+
     // Step the camera back so the whole globe fits comfortably.
     instance.cameraPosition({ x: 0, y: 0, z: GLOBE_RADIUS * 3 });
   }
