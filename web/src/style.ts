@@ -37,10 +37,15 @@ export function nodeSizeFromDegree(degree: number): number {
 export function edgeAttributes(e: ApiEdge) {
   const base = EDGE_COLOR[e.attributes.type] ?? "#9e9e9e";
   const dim = e.attributes.below_threshold;
+  // Sigma edge "type" controls the renderer program. Directed relationships
+  // (supplies / customer_of / regulated_by / part_of) draw with an arrowhead
+  // so the reading direction is unambiguous on the canvas; competes_with is
+  // undirected and stays a plain line.
+  const directed = e.attributes.directed && e.attributes.type !== "competes_with";
   return {
     color: dim ? toRgba(base, 0.22) : base,
     size: dim ? 0.5 : Math.max(0.8, 0.8 + (e.attributes.confidence ?? 0.5) * 0.8),
-    type: dim ? "line" : "line",
+    type: directed ? "arrow" : "line",
   };
 }
 
