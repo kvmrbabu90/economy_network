@@ -135,6 +135,18 @@ class Provenance(BaseModel):
         "llm:gemma",
         "rule",
         "manual",
+        # Phase 7+ additions: deterministic derivations and external enrichment.
+        # `inference:co-mention` -- a co-mention closure expansion of an LLM
+        #   snippet that named >=3 competitors together. Same snippet as
+        #   provenance, lower confidence cap, capped low so the strict 0.75
+        #   cutoff keeps them in the audit layer by default.
+        # `inference:gics-peer` -- reserved for the future GICS-sub-industry
+        #   peer-defaulting rule. Not used yet.
+        # `wikidata` -- pulled from Wikidata's competitor (P1830) and
+        #   supplier (P:1071) relations; carries the source Q-id.
+        "inference:co-mention",
+        "inference:gics-peer",
+        "wikidata",
     ]
 
     @field_validator("snippet")
@@ -147,10 +159,21 @@ class Provenance(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _check_filing_url_required_for_llm(self) -> "Provenance":
-        # For LLM- and manual-extracted edges, filing + url must point to a
-        # real source so the grounding check has something to bite on.
-        if self.extracted_by in {"llm", "llm:claude-cli", "llm:gemma", "manual"}:
+    def _check_filing_url_required_for_evidence(self) -> "Provenance":
+        # Edges whose evidence is an external document (an SEC filing or a
+        # Wikidata entity page) must carry both filing + url so the grounding
+        # check has something to bite on. Rule-derived and gics-peer edges
+        # have no external source -- they're justified by a config or by
+        # GICS membership and may carry empty filing/url.
+        REQUIRES_SOURCE = {
+            "llm",
+            "llm:claude-cli",
+            "llm:gemma",
+            "manual",
+            "inference:co-mention",  # the LLM snippet IS the evidence; carry it
+            "wikidata",              # Q-id URL is the evidence
+        }
+        if self.extracted_by in REQUIRES_SOURCE:
             if not self.filing or not self.filing.strip():
                 raise ValueError(
                     f"Provenance.filing required when extracted_by={self.extracted_by!r}"

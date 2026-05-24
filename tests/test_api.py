@@ -55,11 +55,12 @@ def test_health_invariant_zero_customer_of_rows(client):
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    # Phase 4 totals (above + audit) -- a regression in the loader will show here.
-    assert body["node_count"] == 166
-    assert body["edge_count"] == 360
-    assert body["core_edge_count"] == 204
-    assert body["audit_edge_count"] == 156
+    # Counts grow as Phase 7 scales out across sectors -- assert only that
+    # they're in the expected ranges + that the structural invariant holds.
+    # (Hard-coded counts were fragile; they failed every batch.)
+    assert body["node_count"] >= 166      # Consumer Staples MVP floor (43 cik + 7 reg + 123 slugs)
+    assert body["edge_count"] >= body["core_edge_count"]
+    assert body["edge_count"] == body["core_edge_count"] + body["audit_edge_count"]
     # THE INVARIANT: no customer_of rows in the DB. Derivation lives only on read.
     assert body["customer_of_rows_in_db"] == 0
 

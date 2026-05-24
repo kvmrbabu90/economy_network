@@ -124,8 +124,15 @@ def get_ego_endpoint(
     ),
     include_provisional: bool = Query(
         False,
-        description="If true, also return edges flagged below_threshold "
-                    "(audit layer) and their slug-target nodes.",
+        description="If true, include the audit layer: below_threshold edges "
+                    "to provisional slug-target nodes (Nestlé, Unilever, ...).",
+    ),
+    include_inferred: bool = Query(
+        False,
+        description="If true, include Tier-2 inference edges (co-mention "
+                    "closure: pairs of competitors named together in the same "
+                    "filing snippet). Capped at 0.65 confidence, so they only "
+                    "show with this toggle on.",
     ),
     conn: sqlite3.Connection = Depends(get_conn),
 ):
@@ -134,6 +141,7 @@ def get_ego_endpoint(
         conn, node_id,
         types=_parse_types(types),
         include_provisional=include_provisional,
+        include_inferred=include_inferred,
     )
     if result is None:
         raise HTTPException(status_code=404, detail=f"Node not found: {node_id!r}")
@@ -146,6 +154,7 @@ def get_subgraph_endpoint(
     hops: int = Query(2, ge=0, le=q.MAX_HOPS, description=f"BFS depth (max {q.MAX_HOPS})."),
     types: Optional[str] = Query(None, description="Comma-separated edge type filter."),
     include_provisional: bool = Query(False),
+    include_inferred: bool = Query(False),
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     """N-hop BFS from `seed`. Node count is capped; `truncated=true` if hit."""
@@ -158,6 +167,7 @@ def get_subgraph_endpoint(
         hops=hops,
         types=_parse_types(types),
         include_provisional=include_provisional,
+        include_inferred=include_inferred,
     )
     if result is None:
         raise HTTPException(status_code=404, detail=f"Seed not found: {seed!r}")

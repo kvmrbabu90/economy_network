@@ -105,7 +105,7 @@ window.__ec = {
 
 // Current filter state -- declared so all callbacks can read it without
 // dragging it through arguments.
-let filters: FilterState = { types: [], includeProvisional: false };
+let filters: FilterState = { types: [], includeProvisional: false, includeInferred: false };
 
 filters = wireFilters((next) => {
   filters = next;
@@ -152,6 +152,7 @@ async function loadFullCore(): Promise<void> {
   const resp = await getSubgraph(FULL_VIEW_SEED, {
     hops: FULL_VIEW_HOPS,
     includeProvisional: filters.includeProvisional,
+    includeInferred: filters.includeInferred,
   });
   replaceGraph(g, resp.nodes, resp.edges);
   restyleAfterMerge(g);
@@ -164,6 +165,7 @@ async function recenterOn(id: string): Promise<void> {
   const resp = await getEgo(id, {
     types: ["supplies", "customer_of", "competes_with", "regulated_by"],
     includeProvisional: filters.includeProvisional,
+    includeInferred: filters.includeInferred,
   });
   replaceGraph(g, resp.nodes, resp.edges);
   restyleAfterMerge(g);
@@ -179,6 +181,7 @@ async function expandFrom(id: string): Promise<void> {
   const resp = await getEgo(id, {
     types: ["supplies", "customer_of", "competes_with", "regulated_by"],
     includeProvisional: filters.includeProvisional,
+    includeInferred: filters.includeInferred,
   });
   // Merge -- keep what's there.
   const changed = mergeFromApi(g, resp.nodes, resp.edges);

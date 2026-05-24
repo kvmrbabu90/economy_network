@@ -194,6 +194,7 @@ def get_node_edges(
     *,
     types: Optional[Iterable[str]] = None,
     include_provisional: bool = False,
+    include_inferred: bool = False,
 ) -> list[dict[str, Any]]:
     """Return 1-hop edges touching `node_id`, with customer_of synthesized.
 
@@ -206,7 +207,16 @@ def get_node_edges(
     requested = _normalize_types(types)
     if not requested:
         return []
-    below_clause = "" if include_provisional else "AND below_threshold = 0"
+    # Layer filter -- which subsets of below_threshold rows are visible.
+    # Core (below_threshold=0) is always included. The two toggle layers:
+    #   - audit / provisional: below_threshold=1 AND extracted_by NOT LIKE 'inference:%'
+    #   - inference (co-mention closure): below_threshold=1 AND extracted_by LIKE 'inference:%'
+    layers: list[str] = ["below_threshold = 0"]
+    if include_inferred:
+        layers.append("(below_threshold = 1 AND prov_extracted_by LIKE 'inference:%')")
+    if include_provisional:
+        layers.append("(below_threshold = 1 AND prov_extracted_by NOT LIKE 'inference:%')")
+    below_clause = "AND (" + " OR ".join(layers) + ")"
 
     edges: list[dict[str, Any]] = []
 
@@ -308,6 +318,7 @@ def ego(
     *,
     types: Optional[Iterable[str]] = None,
     include_provisional: bool = False,
+    include_inferred: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Ego-graph: center node + 1-hop neighbors along requested types."""
     canonical = resolve_id(conn, node_id)
@@ -317,7 +328,10 @@ def ego(
     if center is None:
         return None
     edges = get_node_edges(
-        conn, canonical, types=types, include_provisional=include_provisional
+        conn, canonical,
+        types=types,
+        include_provisional=include_provisional,
+        include_inferred=include_inferred,
     )
     neighbors = _collect_nodes_for_edges(conn, edges)
     # Ensure the center is in the node list (and first).
@@ -338,6 +352,7 @@ def bfs_subgraph(
     hops: int,
     types: Optional[Iterable[str]] = None,
     include_provisional: bool = False,
+    include_inferred: bool = False,
     node_cap: int = MAX_SUBGRAPH_NODES,
 ) -> Optional[dict[str, Any]]:
     """N-hop BFS from `seed` along requested edge types. customer_of derived."""
@@ -358,7 +373,10 @@ def bfs_subgraph(
         if depth >= hops:
             continue
         for edge in get_node_edges(
-            conn, current, types=types, include_provisional=include_provisional
+            conn, current,
+            types=types,
+            include_provisional=include_provisional,
+            include_inferred=include_inferred,
         ):
             if edge["key"] in edges_by_key:
                 continue

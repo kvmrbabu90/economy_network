@@ -6,6 +6,7 @@ import type { EdgeType } from "../api";
 export interface FilterState {
   types: EdgeType[];
   includeProvisional: boolean;
+  includeInferred: boolean;
 }
 
 export type FilterListener = (state: FilterState) => void;
@@ -15,6 +16,7 @@ export function wireFilters(onChange: FilterListener): FilterState {
     document.querySelectorAll<HTMLInputElement>('.chip input[data-edge-type]'),
   );
   const provisional = document.getElementById("toggle-provisional") as HTMLInputElement | null;
+  const inferred = document.getElementById("toggle-inferred") as HTMLInputElement | null;
 
   function readState(): FilterState {
     const types: EdgeType[] = [];
@@ -24,12 +26,14 @@ export function wireFilters(onChange: FilterListener): FilterState {
     return {
       types,
       includeProvisional: provisional?.checked ?? false,
+      includeInferred: inferred?.checked ?? false,
     };
   }
 
   const fire = () => onChange(readState());
   chips.forEach((c) => c.addEventListener("change", fire));
   provisional?.addEventListener("change", fire);
+  inferred?.addEventListener("change", fire);
 
   return readState();
 }

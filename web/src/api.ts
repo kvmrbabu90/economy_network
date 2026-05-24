@@ -154,23 +154,34 @@ export function getNode(id: string): Promise<ApiNode> {
 
 export function getEgo(
   id: string,
-  opts: { types?: EdgeType[]; includeProvisional?: boolean } = {},
+  opts: {
+    types?: EdgeType[];
+    includeProvisional?: boolean;
+    includeInferred?: boolean;
+  } = {},
 ): Promise<EgoResponse> {
   return get<EgoResponse>(`/node/${encodeURI(id)}/ego`, {
     types: opts.types?.length ? opts.types.join(",") : undefined,
     include_provisional: opts.includeProvisional ?? false,
+    include_inferred: opts.includeInferred ?? false,
   });
 }
 
 export function getSubgraph(
   seed: string,
-  opts: { hops?: number; types?: EdgeType[]; includeProvisional?: boolean } = {},
+  opts: {
+    hops?: number;
+    types?: EdgeType[];
+    includeProvisional?: boolean;
+    includeInferred?: boolean;
+  } = {},
 ): Promise<SubgraphResponse> {
   return get<SubgraphResponse>("/subgraph", {
     seed,
     hops: opts.hops ?? 2,
     types: opts.types?.length ? opts.types.join(",") : undefined,
     include_provisional: opts.includeProvisional ?? false,
+    include_inferred: opts.includeInferred ?? false,
   });
 }
 

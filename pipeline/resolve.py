@@ -288,6 +288,30 @@ def _fuzzy_top_matches(target_norm: str, registry: Registry, *, limit: int = 5):
     )
 
 
+def _resolve_inference_pair(
+    candidate: CandidateEdge,
+    registry: Registry,
+) -> Optional[tuple[str, str]]:
+    """Handle pair-encoded `A || B` targets used by inference candidates.
+
+    Returns (source_canonical_id, target_canonical_id) if BOTH names resolve
+    to canonical ids in the registry; None if either misses. We don't queue
+    or mint slugs for inference candidates -- they're already opt-in audit
+    layer; a miss means the closure just doesn't apply for this pair.
+    """
+    from pipeline.inference import expand_pair_target
+
+    pair = expand_pair_target(candidate.target_raw)
+    if pair is None:
+        return None
+    a_raw, b_raw = pair
+    a = registry.lookup(a_raw)
+    b = registry.lookup(b_raw)
+    if a and b and a != b:
+        return a, b
+    return None
+
+
 def resolve_target(
     candidate: CandidateEdge,
     registry: Registry,
@@ -612,6 +636,35 @@ def run_resolve(
     walmart_id: Optional[str] = None
 
     for ce in candidates:
+        # Special path: inference:co-mention candidates encode a competitor
+        # PAIR in target_raw ("A || B"). Resolve both, mint an edge between
+        # them (not from the filer to either). If either name doesn't resolve
+        # to a real cik / wikidata id, the closure simply doesn't apply.
+        prov_kind = ce.provenance.extracted_by
+        if prov_kind == "inference:co-mention":
+            pair = _resolve_inference_pair(ce, registry)
+            if pair is None:
+                actions["inference-unresolved"] += 1
+                continue
+            src_id, tgt_id = pair
+            try:
+                edge = Edge(
+                    source=src_id,
+                    target=tgt_id,
+                    type=EdgeType.competes_with,
+                    directed=False,
+                    confidence=float(ce.confidence),
+                    provenance=ce.provenance,
+                )
+                edges.append(edge)
+                actions["inference-co-mention"] += 1
+            except Exception as exc:
+                log.warning(
+                    "Inference edge construction failed for pair (%s, %s): %s",
+                    src_id, tgt_id, exc,
+                )
+            continue
+
         decision = resolve_target(ce, registry, review=review)
         if decision is None:
             actions["queued"] += 1

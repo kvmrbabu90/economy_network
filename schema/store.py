@@ -49,7 +49,10 @@ CREATE TABLE IF NOT EXISTS edges (
     prov_url         TEXT NOT NULL,    -- may be empty for rule-extracted edges
     prov_snippet     TEXT NOT NULL,    -- never empty (CLAUDE.md invariant #4)
     prov_extracted_by TEXT NOT NULL
-        CHECK (prov_extracted_by IN ('llm','llm:claude-cli','llm:gemma','rule','manual')),
+        CHECK (prov_extracted_by IN (
+            'llm','llm:claude-cli','llm:gemma','rule','manual',
+            'inference:co-mention','inference:gics-peer','wikidata'
+        )),
     -- Phase 3 may merge multiple competes_with rows onto one edge. The
     -- additional provenances (full Provenance dicts, JSON-serialized) are
     -- stashed here so SQLite stays the source of truth.

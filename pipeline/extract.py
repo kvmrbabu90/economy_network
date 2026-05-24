@@ -151,8 +151,10 @@ def write_edges_raw(
     rule: RuleExtractResult,
     llm_candidates: list,
     out_path: Path,
+    *,
+    inferred_candidates: Optional[list] = None,
 ) -> int:
-    """Truncate-and-write the full edges_raw.jsonl: rule + LLM candidates."""
+    """Truncate-and-write edges_raw.jsonl: rule + LLM + inference candidates."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     n = 0
     with out_path.open("w", encoding="utf-8") as fh:
@@ -164,7 +166,28 @@ def write_edges_raw(
             fh.write(ce.model_dump_json())
             fh.write("\n")
             n += 1
+        for ce in (inferred_candidates or []):
+            fh.write(ce.model_dump_json())
+            fh.write("\n")
+            n += 1
     return n
+
+
+def _load_inferred(path: Path) -> list:
+    if not path.exists():
+        return []
+    from schema.models import CandidateEdge
+    rows = []
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(CandidateEdge.model_validate_json(line))
+            except Exception as exc:
+                log.warning("Skipping malformed inferred row: %s", exc)
+    return rows
 
 
 def summary_dict(
@@ -262,8 +285,25 @@ def run(
     else:
         log.info("Skipping Part B (LLM extraction); pass --run-llm to enable")
 
+    # Tier-2 derivations: co-mention closure over LLM candidates. Cheap,
+    # deterministic, no model calls. Run after every batch so the inferred
+    # candidates stay in sync with the LLM side file.
+    from pipeline.inference import run_inference
+    inference_out = data_root / "_extract" / "inferred_candidates.jsonl"
+    inf_summary = run_inference(
+        llm_side_path=data_root / "_extract" / "llm_candidates.jsonl",
+        out_path=inference_out,
+    )
+    inferred = _load_inferred(inference_out)
+    log.info(
+        "Inference: %d co-mention groups -> %d candidate edges loaded",
+        inf_summary.get("groups", 0), len(inferred),
+    )
+
     edges_raw = data_root / "edges_raw.jsonl"
-    n_edges = write_edges_raw(rule, llm_candidates, edges_raw)
+    n_edges = write_edges_raw(
+        rule, llm_candidates, edges_raw, inferred_candidates=inferred,
+    )
     log.info("Wrote %d candidate edges -> %s", n_edges, edges_raw)
 
     summary = summary_dict(
