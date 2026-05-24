@@ -181,7 +181,17 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
         | undefined);
       let p: { x: number; y: number; z: number } | null = null;
       if (wd && typeof wd.lat === "number" && typeof wd.lon === "number") {
-        p = latLonToXYZ(wd.lat, wd.lon);
+        // Defensive: a small number of Wikidata records come back with
+        // lat/lon swapped (the field stores longitude where it should
+        // store latitude). Detect the swap by checking that lat is in
+        // valid range; if not but lon is, flip them.
+        let { lat, lon } = wd as { lat: number; lon: number };
+        const latOK = lat >= -90 && lat <= 90;
+        const lonOK = lon >= -180 && lon <= 180;
+        if (!latOK && lonOK) {
+          const tmp = lat; lat = lon; lon = tmp;
+        }
+        p = latLonToXYZ(lat, lon);
       } else if (apiNode.attributes.type === "Regulator") {
         // All but one of our regulators are US federal -- pin at
         // Washington DC. NAIC is the only multistate body; nudge it to
