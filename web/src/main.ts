@@ -51,7 +51,8 @@ const renderer = new Sigma(g, container, {
   labelGridCellSize: 80,
   labelRenderedSizeThreshold: 6,
   labelFont: "Inter, system-ui, sans-serif",
-  labelColor: { color: "#1c1c1c" },
+  // Dark-mode label color, matched to --text in styles.css.
+  labelColor: { color: "#e8e3da" },
   labelSize: 11,
 });
 // node/edge reducers are installed once in refreshEdgeVisibility() so they

@@ -4,26 +4,31 @@
    pill-everything. The graph itself is the loudest thing on the page. */
 
 :root {
-  --bg: #faf8f3;           /* warm off-white canvas */
-  --bg-panel: #ffffff;
-  --bg-recess: #f1ede5;    /* slight recess */
-  --line: #d9d3c4;         /* hairlines */
-  --line-soft: #ebe6da;
-  --text: #1c1c1c;
-  --text-mute: #6b675e;
-  --text-faint: #9c978a;
-  --accent: #1c1c1c;       /* "do something" actions stay in ink */
+  /* Dark mode -- warm-tinted, not pure black. The graph is the loud element;
+     panels recede; the four relationship colors are brightened just enough
+     to read on the dark canvas without screaming. */
+  --bg: #14171a;             /* canvas base */
+  --bg-panel: #1a1e22;       /* topbar / filters / inspector chrome */
+  --bg-recess: #22262b;      /* inputs, recessed blocks */
+  --line: #2c3137;           /* hairlines */
+  --line-soft: #23272c;
+  --text: #e8e3da;           /* warm off-white, echoes the light-mode ink */
+  --text-mute: #9a948a;
+  --text-faint: #6e6a62;
+  --accent: #f0ebe2;         /* "do something" actions stay near-white */
 
-  /* Relationship palette -- keep in lockstep with CLAUDE.md and the API. */
-  --c-supplies: #009688;
-  --c-customer_of: #7b3fa0;
-  --c-competes_with: #e0533d;
-  --c-regulated_by: #2f6dbb;
+  /* Relationship palette -- lifted ~20% so it pops on dark without losing
+     its identity. Still teal / purple / coral / blue. */
+  --c-supplies: #2ec5b4;
+  --c-customer_of: #b07ee0;
+  --c-competes_with: #ff8a6b;
+  --c-regulated_by: #6ea8f0;
 
-  /* Node types. */
-  --n-company: #4a5360;
-  --n-regulator: #2f6dbb;
-  --n-provisional: #c9c3b3;
+  /* Node types. Company nodes shift to a cool grey that reads on dark; the
+     provisional outline gets brighter so the dashed circle is visible. */
+  --n-company: #aab2bc;
+  --n-regulator: #6ea8f0;
+  --n-provisional: #4a4e54;
   --n-provisional-stroke: #8e887a;
 }
 
@@ -111,7 +116,7 @@ html, body {
   background: var(--bg-panel);
   border: 1px solid var(--line);
   border-radius: 4px;
-  box-shadow: 0 8px 24px -8px rgba(20, 20, 20, 0.12);
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.6);
   max-height: 360px;
   overflow-y: auto;
   z-index: 50;
@@ -233,7 +238,7 @@ html, body {
   grid-area: canvas;
   position: relative;
   background:
-    radial-gradient(ellipse at center, var(--bg) 0%, #f4efe5 100%);
+    radial-gradient(ellipse at center, #1b1f24 0%, var(--bg) 100%);
   border-right: 1px solid var(--line);
   overflow: hidden;
 }
@@ -271,7 +276,7 @@ html, body {
   display: flex;
   gap: 20px;
   padding: 14px 18px;
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(26, 30, 34, 0.85);
   border: 1px solid var(--line);
   border-radius: 4px;
   z-index: 10;
@@ -357,13 +362,13 @@ html, body {
   color: var(--text-mute);
   margin-right: 4px;
 }
-.inspector .pill.t-supplies { background: rgba(0,150,136,0.12); color: var(--c-supplies); }
-.inspector .pill.t-customer_of { background: rgba(123,63,160,0.12); color: var(--c-customer_of); }
-.inspector .pill.t-competes_with { background: rgba(224,83,61,0.12); color: var(--c-competes_with); }
-.inspector .pill.t-regulated_by { background: rgba(47,109,187,0.12); color: var(--c-regulated_by); }
-.inspector .pill.provisional { background: rgba(0,0,0,0.05); color: var(--text-mute); border: 1px dashed var(--n-provisional-stroke); }
-.inspector .pill.derived { background: rgba(123,63,160,0.10); color: var(--c-customer_of); }
-.inspector .pill.below-threshold { background: rgba(0,0,0,0.04); color: var(--text-faint); }
+.inspector .pill.t-supplies { background: rgba(46, 197, 180, 0.14); color: var(--c-supplies); }
+.inspector .pill.t-customer_of { background: rgba(176, 126, 224, 0.14); color: var(--c-customer_of); }
+.inspector .pill.t-competes_with { background: rgba(255, 138, 107, 0.14); color: var(--c-competes_with); }
+.inspector .pill.t-regulated_by { background: rgba(110, 168, 240, 0.14); color: var(--c-regulated_by); }
+.inspector .pill.provisional { background: rgba(255, 255, 255, 0.04); color: var(--text-mute); border: 1px dashed var(--n-provisional-stroke); }
+.inspector .pill.derived { background: rgba(176, 126, 224, 0.12); color: var(--c-customer_of); }
+.inspector .pill.below-threshold { background: rgba(255, 255, 255, 0.04); color: var(--text-faint); }
 
 .provenance {
   background: var(--bg-recess);

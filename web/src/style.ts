@@ -3,19 +3,23 @@
 
 import type { ApiEdge, ApiNode, EdgeType } from "./api";
 
+// Dark-mode palette. Kept in lockstep with styles.css custom properties.
+// Edge colors are the brightened relationship hues; node colors are tuned
+// so real Companies read as cool gray, Regulators echo the regulated_by
+// blue, and provisional slugs sit darker so they recede behind the core.
 export const EDGE_COLOR: Record<EdgeType, string> = {
-  supplies: "#009688",
-  customer_of: "#7b3fa0",
-  competes_with: "#e0533d",
-  regulated_by: "#2f6dbb",
-  part_of: "#9c978a",
+  supplies: "#2ec5b4",
+  customer_of: "#b07ee0",
+  competes_with: "#ff8a6b",
+  regulated_by: "#6ea8f0",
+  part_of: "#7a7268",
 };
 
 export const NODE_COLOR = {
-  Company: "#4a5360",
-  Regulator: "#2f6dbb",
-  Provisional: "#c9c3b3",
-  Default: "#7a7264",
+  Company: "#aab2bc",
+  Regulator: "#6ea8f0",
+  Provisional: "#4a4e54",
+  Default: "#8d8e94",
 } as const;
 
 export function nodeColor(n: ApiNode): string {
