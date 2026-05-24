@@ -61,10 +61,12 @@ let cachedContinentGeometry: THREE.BufferGeometry | null = null;
 
 function buildContinentLines(): THREE.BufferGeometry {
   if (cachedContinentGeometry) return cachedContinentGeometry;
-  // topojson-client.feature() decodes the land topology into a GeoJSON
-  // MultiPolygon Feature; each polygon ring is an array of [lon, lat] pairs.
+  // topojson-client.feature() decodes the land topology. When the source
+  // object is a GeometryCollection (which world-atlas/land-110m.json IS),
+  // feature() returns a GeoJSON FeatureCollection — not a single Feature.
+  // We must walk .features[*].geometry to find the Polygons / MultiPolygons.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const landFeature: any = topoFeature(landTopo as any, (landTopo as any).objects.land);
+  const decoded: any = topoFeature(landTopo as any, (landTopo as any).objects.land);
   const positions: number[] = [];
   // Sit the line geometry slightly OUTSIDE the wireframe sphere so it
   // doesn't z-fight with the wireframe pattern.
@@ -84,13 +86,27 @@ function buildContinentLines(): THREE.BufferGeometry {
     }
   };
 
-  const geom = landFeature.geometry;
-  if (geom?.type === "MultiPolygon") {
-    for (const poly of geom.coordinates) {
-      for (const ring of poly) flushRing(ring);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleGeometry = (geom: any) => {
+    if (!geom) return;
+    if (geom.type === "MultiPolygon") {
+      for (const poly of geom.coordinates) {
+        for (const ring of poly) flushRing(ring);
+      }
+    } else if (geom.type === "Polygon") {
+      for (const ring of geom.coordinates) flushRing(ring);
+    } else if (geom.type === "GeometryCollection") {
+      for (const sub of geom.geometries ?? []) handleGeometry(sub);
     }
-  } else if (geom?.type === "Polygon") {
-    for (const ring of geom.coordinates) flushRing(ring);
+  };
+
+  if (decoded?.type === "FeatureCollection") {
+    for (const f of decoded.features ?? []) handleGeometry(f.geometry);
+  } else if (decoded?.type === "Feature") {
+    handleGeometry(decoded.geometry);
+  } else {
+    // Fall back to treating it like a bare geometry.
+    handleGeometry(decoded);
   }
 
   const buf = new THREE.BufferGeometry();
