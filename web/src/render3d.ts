@@ -287,11 +287,35 @@ export function start3D(
     const camera = instance.camera();
     const refDist = camera.position.length() || 1;
     const controls = instance.controls();
+    let pendingZoomRefresh: number | null = null;
+    let lastScale = 1.0;
     const recomputeZoom = () => {
       const d = camera.position.length();
       // Clamp to a sensible band so labels stay readable when fully zoomed
       // out and nodes don't shrink to invisible specks when extremely close.
-      zoomScale = Math.max(0.18, Math.min(1.0, d / refDist));
+      const next = Math.max(0.18, Math.min(1.0, d / refDist));
+      zoomScale = next;
+      // 3d-force-graph bakes node sphere geometry at build time, so accessor
+      // changes alone don't propagate; we have to walk the meshes and apply
+      // a scale. Links are likewise baked into Line2 / Tube geometries.
+      // Iterate node meshes directly -- cheaper than a full refresh() and
+      // doesn't fight the simulation. Run via rAF so we batch many "change"
+      // events fired per drag-zoom frame.
+      if (pendingZoomRefresh != null) return;
+      pendingZoomRefresh = window.requestAnimationFrame(() => {
+        pendingZoomRefresh = null;
+        const factor = zoomScale / lastScale;
+        if (factor === 1) return;
+        const scene = instance.scene();
+        // 3d-force-graph tags node meshes with .__graphObjType === "node".
+        // Walk top-level children only; nested groups would multiply scale.
+        scene.traverse((obj: { userData?: { graphData?: unknown }; __graphObjType?: string; scale?: { multiplyScalar: (n: number) => void } }) => {
+          if (obj.__graphObjType === "node" && obj.scale) {
+            obj.scale.multiplyScalar(factor);
+          }
+        });
+        lastScale = zoomScale;
+      });
     };
     controls.addEventListener("change", recomputeZoom);
     recomputeZoom();
