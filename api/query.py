@@ -34,7 +34,13 @@ ALL_QUERY_TYPES = STORED_EDGE_TYPES | DERIVED_EDGE_TYPES
 
 # Hard limits for the subgraph endpoint.
 MAX_HOPS = 3
-MAX_SUBGRAPH_NODES = 500
+# Was 500 (Phase 5). Phase 7 scaled the full graph to ~2100 nodes; the
+# full-graph view seeded from SEC at hops=3 needs room for all of them
+# plus their neighbors -- otherwise the BFS hits the cap on hop 1 (every
+# filer has SEC as regulator) and never traverses out to competes_with /
+# supplies / customer_of edges. Bumped to a value comfortably above the
+# Phase 7 graph size.
+MAX_SUBGRAPH_NODES = 3000
 
 # Sentinel key prefix for derived edges -- keeps them distinguishable from
 # real stored edges in the response stream.

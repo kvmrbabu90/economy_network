@@ -14,6 +14,7 @@
 import ForceGraph3DLib from "3d-force-graph";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ForceGraph3D: any = ForceGraph3DLib as any;
+import * as THREE from "three";
 
 import type { EconGraph } from "./graph";
 
@@ -201,6 +202,44 @@ export function start3D(
       instance.width(rect.width).height(rect.height);
     }
   });
+
+  // Globe mode -- add a translucent wireframe sphere as a positional anchor.
+  // Without it, nodes floating in 3D space look unmoored; with it, you see
+  // the surface they're pinned to and can orient by "this side is North
+  // America, that side is Europe."
+  if (currentLayout === "globe") {
+    const scene = instance.scene();
+    // Wireframe globe -- thin lines, low opacity so node colors dominate.
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(GLOBE_RADIUS - 4, 36, 24),
+      new THREE.MeshBasicMaterial({
+        color: 0x6ea8f0,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.18,
+      }),
+    );
+    sphere.name = "econgraph-globe";
+    scene.add(sphere);
+    // Equator + prime-meridian arcs at slightly stronger weight for
+    // orientation (so "north" reads at a glance).
+    const ringGeom = new THREE.RingGeometry(GLOBE_RADIUS - 4, GLOBE_RADIUS - 3.5, 64);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0x9c978a,
+      transparent: true,
+      opacity: 0.35,
+      side: THREE.DoubleSide,
+    });
+    const equator = new THREE.Mesh(ringGeom, ringMat);
+    equator.name = "econgraph-equator";
+    equator.rotation.x = Math.PI / 2;
+    scene.add(equator);
+    const prime = new THREE.Mesh(ringGeom, ringMat);
+    prime.name = "econgraph-prime-meridian";
+    scene.add(prime);
+    // Step the camera back so the whole globe fits comfortably.
+    instance.cameraPosition({ x: 0, y: 0, z: GLOBE_RADIUS * 3 });
+  }
 }
 
 export function update3D(g: EconGraph): void {
