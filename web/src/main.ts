@@ -24,6 +24,13 @@ import {
   restyleAfterMerge,
   runLayout,
 } from "./graph";
+import {
+  is3DRunning,
+  resize3D,
+  start3D,
+  stop3D,
+  update3D,
+} from "./render3d";
 import { wireFilters, type FilterState } from "./ui/filters";
 import { showEdge, showEmpty, showNode } from "./ui/inspector";
 import { wireSearch } from "./ui/search";
@@ -34,6 +41,7 @@ import { startStatusPolling } from "./ui/status";
 // ---------------------------------------------------------------------------
 
 const container = document.getElementById("canvas") as HTMLDivElement;
+const container3d = document.getElementById("canvas-3d") as HTMLDivElement;
 const loadingEl = document.getElementById("loading") as HTMLDivElement;
 
 onLoadingChange((loading) => {
@@ -273,6 +281,75 @@ const fullBtn = document.getElementById("btn-fullview");
 fullBtn?.addEventListener("click", () => {
   loadFullCore().catch(console.error);
 });
+
+// ---------------------------------------------------------------------------
+// 2D <-> 3D view toggle. Sigma (2D) is the default; flipping to 3D mounts a
+// three.js-backed force-graph in #canvas-3d, hides the Sigma canvas, and
+// reuses the same graphology instance so every merge propagates to whichever
+// view is active.
+// ---------------------------------------------------------------------------
+
+let viewMode: "2d" | "3d" = "2d";
+
+function setView(next: "2d" | "3d") {
+  if (next === viewMode) return;
+  viewMode = next;
+  document.querySelectorAll<HTMLButtonElement>(".view-tab").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.view === next);
+  });
+  if (next === "3d") {
+    container.hidden = true;
+    container3d.hidden = false;
+    start3D(container3d, g, {
+      onNodeClick: (id) => expandFrom(id).catch(console.error),
+      onNodeDoubleClick: (id) => recenterOn(id).catch(console.error),
+      onEdgeClick: async (id) => {
+        try {
+          const edge = await getEdge(id);
+          showEdge(edge);
+        } catch (err) {
+          console.warn("edge fetch failed", err);
+        }
+      },
+    });
+  } else {
+    stop3D();
+    container3d.hidden = true;
+    container.hidden = false;
+    renderer.refresh();
+  }
+}
+
+document.querySelectorAll<HTMLButtonElement>(".view-tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const v = btn.dataset.view === "3d" ? "3d" : "2d";
+    setView(v);
+  });
+});
+
+// Keep the 3D view in sync with graph mutations made by recenter/expand calls.
+// `refreshAll()` is a thin wrapper so call sites don't need to know which
+// view is active.
+function refreshAll() {
+  renderer.refresh();
+  if (is3DRunning()) update3D(g);
+}
+
+// Override the existing call sites that previously only refreshed Sigma.
+// We monkey-patch in a tiny way: the original functions call renderer.refresh();
+// we ALSO call update3D when the 3D renderer is alive. The cheapest path is
+// to add a global graph-change listener -- graphology emits events.
+g.on("nodeAdded", () => { if (is3DRunning()) update3D(g); });
+g.on("edgeAdded", () => { if (is3DRunning()) update3D(g); });
+g.on("cleared",   () => { if (is3DRunning()) update3D(g); });
+
+// Resize handling for the 3D canvas.
+const ro3d = new ResizeObserver(() => {
+  if (!is3DRunning()) return;
+  const r = container3d.getBoundingClientRect();
+  resize3D(r.width, r.height);
+});
+ro3d.observe(container3d);
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
   // Don't hijack Esc when the user is typing in the search box -- they're

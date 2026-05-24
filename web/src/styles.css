@@ -272,6 +272,40 @@ html, body {
   overflow: hidden;
 }
 #canvas { position: absolute; inset: 0; }
+#canvas-3d { position: absolute; inset: 0; }
+#canvas-3d[hidden] { display: none !important; }
+#canvas-3d canvas { display: block; }
+
+.view-toggle {
+  display: inline-flex;
+  align-items: stretch;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 11px;
+  background: transparent;
+  border: 0;
+  color: var(--text-mute);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.view-tab + .view-tab { border-left: 1px solid var(--line); }
+.view-tab:hover { color: var(--text); }
+.view-tab.is-active {
+  color: var(--text);
+  background: var(--bg-recess);
+}
+.view-tab-icon { font-size: 12px; opacity: 0.8; }
 .loading {
   position: absolute;
   bottom: 16px;

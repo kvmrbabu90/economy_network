@@ -28,6 +28,14 @@
           <span class="topbar-btn-icon">⌂</span>
           Full graph
         </button>
+        <div class="view-toggle" role="tablist" aria-label="Render mode">
+          <button type="button" class="view-tab is-active" data-view="2d" role="tab">
+            <span class="view-tab-icon">▢</span>2D
+          </button>
+          <button type="button" class="view-tab" data-view="3d" role="tab">
+            <span class="view-tab-icon">◉</span>3D
+          </button>
+        </div>
         <div class="searchbox">
           <input
             type="search"
@@ -89,6 +97,7 @@
 
       <main class="canvas-wrap">
         <div id="canvas"></div>
+        <div id="canvas-3d" hidden></div>
         <div id="loading" class="loading" hidden>loading…</div>
         <div class="legend" aria-label="Legend">
           <div class="legend-group">
