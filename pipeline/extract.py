@@ -81,20 +81,10 @@ def write_sections_report(results: list[SectionResult], out_path: Path) -> int:
 # Part A
 # ---------------------------------------------------------------------------
 
-def run_part_a(
-    companies: list[dict[str, Any]],
-    *,
-    repo_root: Path,
-    data_root: Path,
-    config_root: Path,
-) -> tuple[RuleExtractResult, list[SectionResult]]:
-    sub_to_industry = load_subindustry_map(
-        config_root / "gics_subindustry_to_industry.yaml"
-    )
-    cfg = load_regulators_config(config_root / "regulators.yaml")
-
-    # Section extraction is per-filing; we run it eagerly here so Part B can
-    # just read the cached .txt + section chunks.
+def _section_pass(
+    companies: list[dict[str, Any]], *, repo_root: Path,
+) -> list[SectionResult]:
+    """Section extraction over a (possibly batch-scoped) company subset."""
     section_results: list[SectionResult] = []
     for node in companies:
         for f in (node.get("metadata") or {}).get("filings", []) or []:
@@ -115,14 +105,41 @@ def run_part_a(
         "Section extraction: %d filings, competition=%d, customers=%d",
         len(section_results), comp_found, cust_found,
     )
+    return section_results
 
-    # Rule edges. The loader raises if any company's sub-industry is unmapped.
+
+def _rule_pass(
+    companies: list[dict[str, Any]], *, config_root: Path,
+) -> RuleExtractResult:
+    """Rule (regulated_by) extraction. Should always run over the FULL registry
+    in Phase 7 so sector-scoped LLM batches don't erase prior rule edges."""
+    sub_to_industry = load_subindustry_map(
+        config_root / "gics_subindustry_to_industry.yaml"
+    )
+    cfg = load_regulators_config(config_root / "regulators.yaml")
     rule = extract_rule_edges(companies, cfg, sub_to_industry)
     log.info(
         "Rule extraction: %d regulator nodes, %d regulated_by candidates over %d companies",
         len(rule.regulator_nodes), len(rule.candidates), len(rule.per_company),
     )
+    return rule
 
+
+def run_part_a(
+    companies: list[dict[str, Any]],
+    *,
+    repo_root: Path,
+    data_root: Path,
+    config_root: Path,
+) -> tuple[RuleExtractResult, list[SectionResult]]:
+    """Legacy combined entrypoint; kept for direct callers + tests.
+
+    Equivalent to ``_rule_pass(companies) + _section_pass(companies)``. The
+    Phase 7 orchestrator calls the split helpers directly so it can run rule
+    over the full registry while scoping sections to the current batch.
+    """
+    section_results = _section_pass(companies, repo_root=repo_root)
+    rule = _rule_pass(companies, config_root=config_root)
     return rule, section_results
 
 
@@ -193,7 +210,16 @@ def run(
     config_root: Path,
     repo_root: Path,
 ) -> dict[str, Any]:
-    companies = load_companies(data_root / "companies.jsonl")
+    all_companies = load_companies(data_root / "companies.jsonl")
+
+    # Phase 7: rule (regulated_by) extraction MUST cover the full registry,
+    # not just this batch's sector. Otherwise a sector-scoped batch erases
+    # prior batches' rule edges + regulator nodes.
+    log.info("Rule pass covers full registry: %d companies", len(all_companies))
+    rule = _rule_pass(all_companies, config_root=config_root)
+
+    # Sections + LLM work are scoped to this batch.
+    companies = all_companies
     if sector:
         before = len(companies)
         companies = [c for c in companies if c.get("sector") == sector]
@@ -201,10 +227,7 @@ def run(
     if limit is not None:
         companies = companies[:limit]
         log.info("--limit applied: %d companies", len(companies))
-
-    rule, section_results = run_part_a(
-        companies, repo_root=repo_root, data_root=data_root, config_root=config_root,
-    )
+    section_results = _section_pass(companies, repo_root=repo_root)
 
     # Stash the section-extraction report and the regulator nodes for Phase 3.
     sections_out = data_root / "extract_sections.jsonl"
