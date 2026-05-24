@@ -1,8 +1,11 @@
 // Config constants. Keep at the top of the file so they're trivial to retune.
 
 // The Phase 5 API base. Override via VITE_API_BASE_URL at build time if needed.
+// Default 8101 (not 8001) because 8000-range ports tend to be busy with other
+// dev servers; the Phase 5 CORS rule matches any localhost port so the only
+// thing to keep in sync is uvicorn's --port flag.
 export const API_BASE_URL: string =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8001";
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8101";
 
 // "full"   — fetch the whole high-confidence core on load (default).
 // "search" — start near-empty with the search box focused; switch here when

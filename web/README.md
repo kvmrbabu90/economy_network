@@ -10,7 +10,7 @@ You need both the API and the dev server running.
 ```sh
 # Terminal 1 — start the API (Phase 5)
 cd <repo-root>
-uvicorn api.main:app --port 8001
+uvicorn api.main:app --port 8101
 
 # Terminal 2 — start the Vite dev server
 cd <repo-root>/web
@@ -25,7 +25,7 @@ the API is reachable.
 To point the frontend at a non-default API URL, override at start time:
 
 ```sh
-VITE_API_BASE_URL=http://localhost:8101 npm run dev
+VITE_API_BASE_URL=http://localhost:8888 npm run dev
 ```
 
 ## What you can do
