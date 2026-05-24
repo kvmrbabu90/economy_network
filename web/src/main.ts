@@ -26,6 +26,14 @@ import {
   runLayout,
 } from "./graph";
 import {
+  bubbleVisibility,
+  ensureBubbleNodes,
+  isBubble,
+  layoutBubbleView,
+  refreshBubbleEdges,
+  sectorOfBubble,
+} from "./bubbles";
+import {
   is3DRunning,
   resize3D,
   start3D,
@@ -108,15 +116,34 @@ window.__ec = {
 // dragging it through arguments.
 let filters: FilterState = { types: [], includeProvisional: false, includeInferred: false };
 
-// Layout mode for the 2D view. Force is the FA2 default; "sector" pins by GICS.
-let layoutMode: "force" | "sector" = "force";
+// Layout mode for the 2D view. Force = FA2; sector = GICS clusters;
+// bubble = each sector collapsed into a clickable hub with expand/collapse.
+let layoutMode: "force" | "sector" | "bubble" = "force";
+const expandedSectors = new Set<string>();
+let hiddenForBubble = { nodes: new Set<string>(), edges: new Set<string>() };
 
 function applyLayout() {
-  if (layoutMode === "sector") {
-    layoutBySector(g);
+  if (layoutMode === "bubble") {
+    ensureBubbleNodes(g);
+    refreshBubbleEdges(g);
+    layoutBubbleView(g, expandedSectors);
+    hiddenForBubble = bubbleVisibility(g, expandedSectors);
   } else {
-    runLayout(g, 220);
+    hiddenForBubble = { nodes: new Set(), edges: new Set() };
+    if (layoutMode === "sector") {
+      layoutBySector(g);
+    } else {
+      runLayout(g, 220);
+    }
   }
+  renderer.refresh();
+}
+
+function toggleSector(sector: string) {
+  if (expandedSectors.has(sector)) expandedSectors.delete(sector);
+  else expandedSectors.add(sector);
+  layoutBubbleView(g, expandedSectors);
+  hiddenForBubble = bubbleVisibility(g, expandedSectors);
   renderer.refresh();
 }
 
@@ -131,9 +158,10 @@ filters = wireFilters((next) => {
 refreshEdgeVisibility(); // initial pass (everything visible)
 
 function refreshEdgeVisibility(): void {
-  // Sigma calls the edgeReducer per edge on each refresh; we set it once
-  // and let it read the live `filters` closure.
-  renderer.setSetting("edgeReducer", (_eid, eattrs) => {
+  renderer.setSetting("edgeReducer", (eid, eattrs) => {
+    if (layoutMode === "bubble" && hiddenForBubble.edges.has(eid)) {
+      return { ...eattrs, hidden: true };
+    }
     const ok = filters.types.includes(eattrs.edgeType);
     const isProv = eattrs.apiEdge.attributes.below_threshold;
     return {
@@ -141,14 +169,18 @@ function refreshEdgeVisibility(): void {
       hidden: !ok || (isProv && !filters.includeProvisional),
     };
   });
-  // Same idea for nodes: hide provisional slug nodes when the toggle is off
-  // (but only if they're not isolated -- always keep the canvas populated).
-  renderer.setSetting("nodeReducer", (_id, nattrs) => {
+  renderer.setSetting("nodeReducer", (id, nattrs) => {
+    if (layoutMode === "bubble" && hiddenForBubble.nodes.has(id)) {
+      return { ...nattrs, hidden: true, label: "" };
+    }
     const isProv = !!nattrs.apiNode.attributes.provisional;
     const hide = isProv && !filters.includeProvisional;
+    // Bubbles always show their label; regular nodes use the displayLabel
+    // heuristic (top-N hubs labeled, hover-only otherwise).
+    const isBubbleNode = isBubble(id);
     return {
       ...nattrs,
-      label: nattrs.displayLabel || "",
+      label: isBubbleNode ? nattrs.label : (nattrs.displayLabel || ""),
       hidden: hide,
     };
   });
@@ -219,6 +251,22 @@ let pendingClick: { id: string; timer: number } | null = null;
 
 renderer.on("clickNode", (event) => {
   const id = event.node;
+  // Bubble-mode special case: clicking a sector hub toggles expansion;
+  // clicking a company INSIDE an expanded sector collapses that sector
+  // back. Both happen instantly (no double-click delay).
+  if (layoutMode === "bubble") {
+    if (isBubble(id)) {
+      const sector = sectorOfBubble(id);
+      toggleSector(sector);
+      return;
+    }
+    // Company inside an expanded sector -- toggle that sector closed.
+    const a = g.getNodeAttributes(id).apiNode.attributes;
+    if (a.sector && expandedSectors.has(a.sector)) {
+      toggleSector(a.sector);
+      return;
+    }
+  }
   if (pendingClick) {
     clearTimeout(pendingClick.timer);
     pendingClick = null;

@@ -78,13 +78,17 @@
         <div class="filter-section">
           <div class="filter-title">Layout (2D)</div>
           <div class="layout-segmented" role="radiogroup">
-            <button type="button" class="layout-tab is-active" data-layout="force" role="radio">Force-directed</button>
+            <button type="button" class="layout-tab is-active" data-layout="force" role="radio">Force</button>
             <button type="button" class="layout-tab" data-layout="sector" role="radio">By sector</button>
+            <button type="button" class="layout-tab" data-layout="bubble" role="radio">Bubbles</button>
           </div>
           <p class="hint">
-            "By sector" pins each company at its GICS sector cluster
-            (11 anchors around a center hub). Regulators sit at the center;
-            provisional slugs orbit the rim.
+            "By sector" pins each company at its GICS sector cluster.
+            "Bubbles" collapses each sector into one clickable hub --
+            click a bubble to <strong>expand</strong> it into its
+            companies; click any of its companies to <strong>collapse</strong>
+            it back. Aggregated cross-sector edges show how the 11
+            sectors connect.
           </p>
         </div>
 
