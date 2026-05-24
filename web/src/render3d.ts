@@ -23,6 +23,29 @@ export interface View3DCallbacks {
   onEdgeClick?: (edgeId: string) => void;
 }
 
+export interface View3DOptions {
+  /** "globe" pins nodes at their Wikidata HQ lat/lon on a sphere; "ball"
+      uses 3d-force-graph's default force-directed layout. */
+  layout?: "ball" | "globe";
+}
+
+const GLOBE_RADIUS = 200;
+
+/**
+ * Project a Wikidata coord (lat, lon, degrees) onto a sphere of the given
+ * radius. Standard latitude-longitude -> Cartesian mapping; lat=0 lon=0
+ * lands on +X, north pole on +Y.
+ */
+function latLonToXYZ(lat: number, lon: number, radius = GLOBE_RADIUS) {
+  const latR = (lat * Math.PI) / 180;
+  const lonR = (lon * Math.PI) / 180;
+  return {
+    x: radius * Math.cos(latR) * Math.cos(lonR),
+    y: radius * Math.sin(latR),
+    z: radius * Math.cos(latR) * Math.sin(lonR),
+  };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let instance: any = null;
 let mountedContainer: HTMLElement | null = null;
@@ -37,6 +60,10 @@ interface ForceNode {
   size: number;
   apiType: string;
   provisional: boolean;
+  // Globe-mode fixed positions (set when the node has Wikidata HQ coords).
+  fx?: number;
+  fy?: number;
+  fz?: number;
 }
 
 interface ForceLink {
@@ -48,12 +75,13 @@ interface ForceLink {
   below: boolean;
 }
 
-function toForceData(g: EconGraph) {
+function toForceData(g: EconGraph, opts: View3DOptions = {}) {
+  const layout = opts.layout ?? "ball";
   const nodes: ForceNode[] = [];
   const links: ForceLink[] = [];
   g.forEachNode((id, attrs) => {
     const apiNode = attrs.apiNode;
-    nodes.push({
+    const node: ForceNode = {
       id,
       label: attrs.label,
       color: attrs.color,
@@ -62,7 +90,29 @@ function toForceData(g: EconGraph) {
       size: Math.max(2, attrs.size * 0.7),
       apiType: apiNode.attributes.type,
       provisional: apiNode.attributes.provisional,
-    });
+    };
+    if (layout === "globe") {
+      // Wikidata enrichment writes metadata.wikidata = { lat, lon, ... }.
+      // Honor it when present so the node lands at its real HQ position.
+      const wd = (apiNode.attributes.metadata?.wikidata as
+        | { lat?: number; lon?: number }
+        | undefined);
+      if (wd && typeof wd.lat === "number" && typeof wd.lon === "number") {
+        const p = latLonToXYZ(wd.lat, wd.lon);
+        node.fx = p.x; node.fy = p.y; node.fz = p.z;
+      } else {
+        // Random point on the sphere surface for nodes without coords
+        // (regulators, slugs without geographic data). Pinned so they
+        // don't drift around when force-layout runs.
+        const u = Math.random(), v = Math.random();
+        const theta = 2 * Math.PI * u;
+        const phi = Math.acos(2 * v - 1);
+        node.fx = GLOBE_RADIUS * Math.sin(phi) * Math.cos(theta);
+        node.fy = GLOBE_RADIUS * Math.sin(phi) * Math.sin(theta);
+        node.fz = GLOBE_RADIUS * Math.cos(phi);
+      }
+    }
+    nodes.push(node);
   });
   g.forEachEdge((id, attrs, src, tgt) => {
     links.push({
@@ -77,17 +127,23 @@ function toForceData(g: EconGraph) {
   return { nodes, links };
 }
 
+// Globe-mode flag remembered across update3D calls so click-expand keeps
+// new nodes pinned at their HQ coords too.
+let currentLayout: "ball" | "globe" = "ball";
+
 export function start3D(
   container: HTMLElement,
   g: EconGraph,
   cbs: View3DCallbacks = {},
+  opts: View3DOptions = {},
 ): void {
   if (instance) stop3D();
   mountedContainer = container;
+  currentLayout = opts.layout ?? "ball";
 
   instance = ForceGraph3D({ controlType: "orbit" })(container)
     .backgroundColor("#14171a")  // match --bg in styles.css
-    .graphData(toForceData(g))
+    .graphData(toForceData(g, opts))
     .nodeLabel((n: ForceNode) => `<span style="color:#e8e3da">${n.label}</span>`)
     .nodeColor((n: ForceNode) => n.color)
     .nodeVal((n: ForceNode) => n.size)
@@ -149,7 +205,7 @@ export function start3D(
 
 export function update3D(g: EconGraph): void {
   if (!instance) return;
-  instance.graphData(toForceData(g));
+  instance.graphData(toForceData(g, { layout: currentLayout }));
 }
 
 export function resize3D(width: number, height: number): void {

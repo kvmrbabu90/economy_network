@@ -300,9 +300,20 @@ def run(
         inf_summary.get("groups", 0), len(inferred),
     )
 
+    # Tier-3: Wikidata enrichment candidates (competitor + supplier edges
+    # pulled from Wikidata's P:1830 / P:1071). Loaded if the file exists;
+    # produced by `python -m pipeline.wikidata`.
+    wikidata_path = data_root / "_extract" / "wikidata_candidates.jsonl"
+    wikidata_cands = _load_inferred(wikidata_path) if wikidata_path.exists() else []
+    if wikidata_cands:
+        log.info("Wikidata: %d candidate edges loaded", len(wikidata_cands))
+
     edges_raw = data_root / "edges_raw.jsonl"
     n_edges = write_edges_raw(
-        rule, llm_candidates, edges_raw, inferred_candidates=inferred,
+        rule,
+        llm_candidates + wikidata_cands,
+        edges_raw,
+        inferred_candidates=inferred,
     )
     log.info("Wrote %d candidate edges -> %s", n_edges, edges_raw)
 

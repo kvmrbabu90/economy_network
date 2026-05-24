@@ -204,8 +204,19 @@ class Registry:
         return self.by_norm.get(normalize(name))
 
 
-def seed_registry(companies: list[dict], regulators: list[dict]) -> Registry:
-    """Build a Registry from the canonical Phase 1 + Phase 2 nodes."""
+def seed_registry(
+    companies: list[dict],
+    regulators: list[dict],
+    *,
+    extra_aliases: Optional[list[dict]] = None,
+) -> Registry:
+    """Build a Registry from the canonical Phase 1 + Phase 2 nodes.
+
+    `extra_aliases` (optional) is a list of {alias, canonical_id, source}
+    rows -- used by Tier-3 Wikidata enrichment to inject Wikidata English
+    labels into the alias table so LLM mentions like "Microsoft" resolve
+    to the right cik even when Wikipedia's stored security name differed.
+    """
     reg = Registry()
     for n in companies + regulators:
         reg.add_node(n)
@@ -220,6 +231,12 @@ def seed_registry(companies: list[dict], regulators: list[dict]) -> Registry:
         # e.g. "The Kraft Heinz Company" -> "kraft heinz". This is what
         # downstream extractor outputs will mostly look like.
         reg.add_alias(normalize(n.get("name", "")), nid, source="seed:normalized")
+    for row in extra_aliases or []:
+        reg.add_alias(
+            row.get("alias", ""),
+            row.get("canonical_id", ""),
+            source=row.get("source", "extra"),
+        )
     return reg
 
 
@@ -619,12 +636,17 @@ def run_resolve(
     candidates: list[CandidateEdge] = [
         CandidateEdge.model_validate(c) for c in candidates_raw
     ]
+    # Tier-3: Wikidata-derived English labels enrich the alias table so LLM
+    # mentions of e.g. "Microsoft" resolve to cik:0000789019 instead of
+    # minting slug:microsoft (when Wikipedia's "Security" label was something
+    # like "Microsoft Corporation").
+    wikidata_aliases = load_jsonl(data_root / "wikidata_aliases.jsonl")
     log.info(
-        "Loaded %d companies, %d regulators, %d candidates",
-        len(companies), len(regulators), len(candidates),
+        "Loaded %d companies, %d regulators, %d candidates, %d wikidata aliases",
+        len(companies), len(regulators), len(candidates), len(wikidata_aliases),
     )
 
-    registry = seed_registry(companies, regulators)
+    registry = seed_registry(companies, regulators, extra_aliases=wikidata_aliases)
     log.info(
         "Seeded registry: %d nodes, %d aliases", len(registry.entries), len(registry.aliases),
     )

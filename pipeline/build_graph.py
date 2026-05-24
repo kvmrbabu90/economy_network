@@ -392,6 +392,23 @@ def run(*, data_root: Path, db_path: Path, graph_json_path: Path) -> Stats:
     aliases = _load_jsonl(data_root / "aliases.jsonl")
     below_path = data_root / "edges_below_threshold.jsonl"
     below = _load_jsonl(below_path) if below_path.exists() else []
+
+    # Tier-3 Wikidata enrichment: if wikidata_companies.json is present,
+    # merge {qid, country, hq, lat, lon} into each Company node's metadata.
+    # The 3D view uses lat/lon for its globe-mode positioning; the inspector
+    # surfaces the Wikidata link so every node is one click from its source.
+    wiki_path = data_root / "wikidata_companies.json"
+    if wiki_path.exists():
+        wiki = json.loads(wiki_path.read_text(encoding="utf-8"))
+        merged = 0
+        for n in nodes:
+            cik = (n.get("identifiers") or {}).get("cik")
+            if not cik or cik not in wiki:
+                continue
+            md = n.setdefault("metadata", {})
+            md["wikidata"] = wiki[cik]
+            merged += 1
+        log.info("Wikidata enrichment merged into %d company nodes", merged)
     log.info(
         "Inputs: %d nodes, %d edges (above), %d edges (below), %d aliases",
         len(nodes), len(edges), len(below), len(aliases),

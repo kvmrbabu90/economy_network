@@ -292,29 +292,39 @@ fullBtn?.addEventListener("click", () => {
 // view is active.
 // ---------------------------------------------------------------------------
 
-let viewMode: "2d" | "3d" = "2d";
+let viewMode: "2d" | "3d" | "globe" = "2d";
 
-function setView(next: "2d" | "3d") {
+function setView(next: "2d" | "3d" | "globe") {
   if (next === viewMode) return;
   viewMode = next;
   document.querySelectorAll<HTMLButtonElement>(".view-tab").forEach((btn) => {
     btn.classList.toggle("is-active", btn.dataset.view === next);
   });
-  if (next === "3d") {
+  const wantsThree = next === "3d" || next === "globe";
+  if (wantsThree) {
     container.hidden = true;
     container3d.hidden = false;
-    start3D(container3d, g, {
-      onNodeClick: (id) => expandFrom(id).catch(console.error),
-      onNodeDoubleClick: (id) => recenterOn(id).catch(console.error),
-      onEdgeClick: async (id) => {
-        try {
-          const edge = await getEdge(id);
-          showEdge(edge);
-        } catch (err) {
-          console.warn("edge fetch failed", err);
-        }
+    // Tear down + restart when switching between ball <-> globe so the new
+    // layout takes effect (3d-force-graph doesn't recompute fx/fy/fz on
+    // mid-flight option changes).
+    stop3D();
+    start3D(
+      container3d,
+      g,
+      {
+        onNodeClick: (id) => expandFrom(id).catch(console.error),
+        onNodeDoubleClick: (id) => recenterOn(id).catch(console.error),
+        onEdgeClick: async (id) => {
+          try {
+            const edge = await getEdge(id);
+            showEdge(edge);
+          } catch (err) {
+            console.warn("edge fetch failed", err);
+          }
+        },
       },
-    });
+      { layout: next === "globe" ? "globe" : "ball" },
+    );
   } else {
     stop3D();
     container3d.hidden = true;
@@ -325,8 +335,8 @@ function setView(next: "2d" | "3d") {
 
 document.querySelectorAll<HTMLButtonElement>(".view-tab").forEach((btn) => {
   btn.addEventListener("click", () => {
-    const v = btn.dataset.view === "3d" ? "3d" : "2d";
-    setView(v);
+    const v = btn.dataset.view as "2d" | "3d" | "globe" | undefined;
+    setView(v === "3d" || v === "globe" ? v : "2d");
   });
 });
 
