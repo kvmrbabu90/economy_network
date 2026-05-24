@@ -4,45 +4,180 @@
 #
 # Wikipedia's S&P 500 table ships "GICS Sub-Industry" values, which Phase 1
 # stores on each Company node's `industry` field. But config/regulators.yaml
-# is keyed on "GICS Industry" names ("Food Products", "Beverages", ...).
-# Sub-industry != industry -- e.g. "Packaged Foods & Meats" rolls up to
-# "Food Products"; "Soft Drinks & Non-alcoholic Beverages" rolls up to
-# "Beverages". A direct string match against regulators.yaml would silently
-# miss every industry-level regulator.
+# is keyed on "GICS Industry" names. Without this map, the industry-level
+# regulator join silently misses everything.
 #
-# Loader behavior (see pipeline/regulators.py):
-#   resolved_industry = sub_industry_to_industry[node.industry]
-#   raise KeyError if a node's sub-industry isn't in this map -- fail loud,
-#   never assume.
-#
-# Scope: populated for the GICS Sub-Industries actually present in the
-# data/companies.jsonl produced by `python -m pipeline.ingest --sector "Consumer Staples"`.
-# Extend when you add other sectors. This is a hand-maintained mapping, like
-# regulators.yaml.
+# Phase 7 widened this from the 11 Consumer Staples sub-industries to all
+# 127 sub-industries present in the current S&P 500 (across 11 GICS sectors).
+# The loader still raises on an unmapped sub-industry by design.
 
-# --- Consumer Staples -------------------------------------------------------
-# Per the GICS structure (Industry Group "Food, Beverage & Tobacco" and
-# "Household & Personal Products", "Consumer Staples Distribution & Retail").
+# ============================================================================
+# Communication Services
+# ============================================================================
+Advertising: Media
+Broadcasting: Media
+Cable & Satellite: Media
+Publishing: Media
+Movies & Entertainment: Entertainment
+Interactive Home Entertainment: Entertainment
+Interactive Media & Services: Interactive Media & Services
+Integrated Telecommunication Services: Diversified Telecommunication Services
+Wireless Telecommunication Services: Wireless Telecommunication Services
 
-# Industry Group: Food, Beverage & Tobacco
+# ============================================================================
+# Consumer Discretionary
+# ============================================================================
+Automobile Manufacturers: Automobiles
+Automotive Parts & Equipment: Automobile Components
+Consumer Electronics: Household Durables
+Homebuilding: Household Durables
+Apparel, Accessories & Luxury Goods: Textiles, Apparel & Luxury Goods
+Footwear: Textiles, Apparel & Luxury Goods
+Casinos & Gaming: Hotels, Restaurants & Leisure
+Hotels, Resorts & Cruise Lines: Hotels, Restaurants & Leisure
+Restaurants: Hotels, Restaurants & Leisure
+Leisure Products: Leisure Products
+Specialized Consumer Services: Diversified Consumer Services
+Distributors: Distributors
+Broadline Retail: Broadline Retail
+Apparel Retail: Specialty Retail
+Automotive Retail: Specialty Retail
+Computer & Electronics Retail: Specialty Retail
+Home Improvement Retail: Specialty Retail
+Homefurnishing Retail: Specialty Retail
+Other Specialty Retail: Specialty Retail
+
+# ============================================================================
+# Consumer Staples
+# ============================================================================
 Brewers: Beverages
 Distillers & Vintners: Beverages
 Soft Drinks & Non-alcoholic Beverages: Beverages
 Agricultural Products & Services: Food Products
 Packaged Foods & Meats: Food Products
 Tobacco: Tobacco
-
-# Industry Group: Household & Personal Products
 Household Products: Household Products
 Personal Care Products: Personal Care Products
-
-# Industry Group: Consumer Staples Distribution & Retail
-# All three sub-industries roll up under the single GICS Industry name
-# "Consumer Staples Distribution & Retail".
 Consumer Staples Merchandise Retail: Consumer Staples Distribution & Retail
 Food Distributors: Consumer Staples Distribution & Retail
 Food Retail: Consumer Staples Distribution & Retail
 
-# --- Future sectors ---------------------------------------------------------
-# When you run the pipeline on additional GICS Sectors, add their
-# sub-industries here. The loader's KeyError will tell you which ones.
+# ============================================================================
+# Energy
+# ============================================================================
+Oil & Gas Equipment & Services: Energy Equipment & Services
+Integrated Oil & Gas: Oil, Gas & Consumable Fuels
+Oil & Gas Exploration & Production: Oil, Gas & Consumable Fuels
+Oil & Gas Refining & Marketing: Oil, Gas & Consumable Fuels
+Oil & Gas Storage & Transportation: Oil, Gas & Consumable Fuels
+
+# ============================================================================
+# Financials
+# ============================================================================
+Diversified Banks: Banks
+Regional Banks: Banks
+Asset Management & Custody Banks: Capital Markets
+Financial Exchanges & Data: Capital Markets
+Investment Banking & Brokerage: Capital Markets
+Insurance Brokers: Insurance
+Life & Health Insurance: Insurance
+Multi-line Insurance: Insurance
+Property & Casualty Insurance: Insurance
+Reinsurance: Insurance
+Consumer Finance: Consumer Finance
+Multi-Sector Holdings: Diversified Financial Services
+Transaction & Payment Processing Services: Financial Services
+
+# ============================================================================
+# Health Care
+# ============================================================================
+Pharmaceuticals: Pharmaceuticals
+Biotechnology: Biotechnology
+Health Care Equipment: Health Care Equipment & Supplies
+Health Care Supplies: Health Care Equipment & Supplies
+Health Care Distributors: Health Care Providers & Services
+Health Care Facilities: Health Care Providers & Services
+Health Care Services: Health Care Providers & Services
+Managed Health Care: Health Care Providers & Services
+Health Care Technology: Health Care Technology
+Life Sciences Tools & Services: Life Sciences Tools & Services
+
+# ============================================================================
+# Industrials
+# ============================================================================
+Aerospace & Defense: Aerospace & Defense
+Building Products: Building Products
+Construction & Engineering: Construction & Engineering
+Electrical Components & Equipment: Electrical Equipment
+Heavy Electrical Equipment: Electrical Equipment
+Industrial Conglomerates: Industrial Conglomerates
+Agricultural & Farm Machinery: Machinery
+Construction Machinery & Heavy Transportation Equipment: Machinery
+Industrial Machinery & Supplies & Components: Machinery
+Trading Companies & Distributors: Trading Companies & Distributors
+Diversified Support Services: Commercial Services & Supplies
+Environmental & Facilities Services: Commercial Services & Supplies
+Data Processing & Outsourced Services: Professional Services
+Human Resource & Employment Services: Professional Services
+Research & Consulting Services: Professional Services
+Air Freight & Logistics: Air Freight & Logistics
+Passenger Airlines: Passenger Airlines
+Cargo Ground Transportation: Ground Transportation
+Passenger Ground Transportation: Ground Transportation
+Rail Transportation: Ground Transportation
+
+# ============================================================================
+# Information Technology
+# ============================================================================
+Application Software: Software
+Systems Software: Software
+IT Consulting & Other Services: IT Services
+Internet Services & Infrastructure: IT Services
+Communications Equipment: Communications Equipment
+Electronic Components: Electronic Equipment, Instruments & Components
+Electronic Equipment & Instruments: Electronic Equipment, Instruments & Components
+Electronic Manufacturing Services: Electronic Equipment, Instruments & Components
+Technology Distributors: Electronic Equipment, Instruments & Components
+Semiconductors: Semiconductors & Semiconductor Equipment
+Semiconductor Materials & Equipment: Semiconductors & Semiconductor Equipment
+Technology Hardware, Storage & Peripherals: Technology Hardware, Storage & Peripherals
+
+# ============================================================================
+# Materials
+# ============================================================================
+Commodity Chemicals: Chemicals
+Fertilizers & Agricultural Chemicals: Chemicals
+Industrial Gases: Chemicals
+Specialty Chemicals: Chemicals
+Construction Materials: Construction Materials
+Copper: Metals & Mining
+Gold: Metals & Mining
+Steel: Metals & Mining
+Metal, Glass & Plastic Containers: Containers & Packaging
+Paper & Plastic Packaging Products & Materials: Containers & Packaging
+
+# ============================================================================
+# Real Estate
+# ============================================================================
+Health Care REITs: Health Care REITs
+Hotel & Resort REITs: Hotel & Resort REITs
+Industrial REITs: Industrial REITs
+Office REITs: Office REITs
+Retail REITs: Retail REITs
+Multi-Family Residential REITs: Residential REITs
+Single-Family Residential REITs: Residential REITs
+Data Center REITs: Specialized REITs
+Other Specialized REITs: Specialized REITs
+Self-Storage REITs: Specialized REITs
+Telecom Tower REITs: Specialized REITs
+Timber REITs: Specialized REITs
+Real Estate Services: Real Estate Management & Development
+
+# ============================================================================
+# Utilities
+# ============================================================================
+Electric Utilities: Electric Utilities
+Gas Utilities: Gas Utilities
+Multi-Utilities: Multi-Utilities
+Water Utilities: Water Utilities
+Independent Power Producers & Energy Traders: Independent Power and Renewable Electricity Producers

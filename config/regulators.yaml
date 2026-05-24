@@ -87,6 +87,14 @@ sector:
     - id: regulator:cpsc
       name: Consumer Product Safety Commission
       scope: Product safety
+  Real Estate:
+    # REITs are SEC-corporate filers and most of the action is at the SEC.
+    # HUD is added at sector level because its programs touch every real
+    # estate sub-sector (Section 8, FHA, fair-housing) even where it doesn't
+    # directly oversee the REIT entity.
+    - id: regulator:hud
+      name: U.S. Department of Housing and Urban Development
+      scope: Federal housing programs and fair-housing oversight
 
 # ----------------------------------------------------------------------------
 # Industry-level regulators (GICS industry strings). These ADD to sector + default.
@@ -185,6 +193,13 @@ industry:
     - id: regulator:cfpb
       name: Consumer Financial Protection Bureau
       scope: Consumer lending and credit
+  Financial Services:
+    # Post-2023 GICS industry that captures Transaction & Payment Processing
+    # Services (Visa, Mastercard, Fiserv, ...). CFPB and FTC oversee
+    # consumer-payment compliance.
+    - id: regulator:cfpb
+      name: Consumer Financial Protection Bureau
+      scope: Payment products and consumer protection
 
   # --- Energy ---
   Oil, Gas & Consumable Fuels:
