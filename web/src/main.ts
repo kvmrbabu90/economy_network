@@ -264,6 +264,25 @@ wireSearch((hit) => {
 });
 
 // ---------------------------------------------------------------------------
+// "Full graph" button + Esc shortcut: return to the open-on-load view from
+// any zoomed/ego state. Cheap (it re-issues the same /subgraph call) and the
+// most-asked navigation gesture after double-click-to-recenter exists.
+// ---------------------------------------------------------------------------
+
+const fullBtn = document.getElementById("btn-fullview");
+fullBtn?.addEventListener("click", () => {
+  loadFullCore().catch(console.error);
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape") return;
+  // Don't hijack Esc when the user is typing in the search box -- they're
+  // likely trying to close the dropdown / clear the input.
+  const focused = document.activeElement as HTMLElement | null;
+  if (focused && (focused.tagName === "INPUT" || focused.tagName === "TEXTAREA")) return;
+  loadFullCore().catch(console.error);
+});
+
+// ---------------------------------------------------------------------------
 // Initial load
 // ---------------------------------------------------------------------------
 

@@ -82,6 +82,35 @@ html, body {
   letter-spacing: 0.06em;
 }
 
+.topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  background: var(--bg-recess);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text-mute);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+.topbar-btn:hover {
+  color: var(--text);
+  border-color: var(--text-mute);
+}
+.topbar-btn:active {
+  background: var(--bg);
+}
+.topbar-btn-icon {
+  font-size: 14px;
+  opacity: 0.8;
+}
+
 .searchbox {
   position: relative;
   flex: 1;
