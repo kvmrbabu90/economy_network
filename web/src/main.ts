@@ -291,7 +291,7 @@ function showGraphOverlay(): void {
   const overlay = document.getElementById("graph-overlay");
   const stageEl = document.getElementById("graph-overlay-stage");
   if (!overlay || !stageEl) return;
-  overlay.hidden = false;
+  overlay.style.display = "flex";
   const stages = [
     "Connecting to graph database…",
     "Fetching nodes from economy network…",
@@ -316,7 +316,7 @@ function setGraphOverlayStage(msg: string): void {
 function hideGraphOverlay(): void {
   if (_graphOverlayTimer) { clearInterval(_graphOverlayTimer); _graphOverlayTimer = null; }
   const overlay = document.getElementById("graph-overlay");
-  if (overlay) overlay.hidden = true;
+  if (overlay) overlay.style.display = "none";
 }
 
 let _impactOverlayTimer: ReturnType<typeof setInterval> | null = null;
@@ -326,7 +326,7 @@ function showImpactOverlay(provider: string): void {
   const stageEl = document.getElementById("impact-overlay-stage");
   const etaEl  = document.getElementById("impact-overlay-eta");
   if (!overlay || !stageEl) return;
-  overlay.hidden = false;
+  overlay.style.display = "flex";
   if (etaEl) etaEl.textContent = provider === "claude" ? "est. 1–3 min" : "est. 3–8 min";
   const stages = [
     "Parsing event description…",
@@ -348,7 +348,7 @@ function showImpactOverlay(provider: string): void {
 function hideImpactOverlay(): void {
   if (_impactOverlayTimer) { clearInterval(_impactOverlayTimer); _impactOverlayTimer = null; }
   const overlay = document.getElementById("impact-overlay");
-  if (overlay) overlay.hidden = true;
+  if (overlay) overlay.style.display = "none";
 }
 
 // ---------------------------------------------------------------------------
