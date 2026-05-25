@@ -302,21 +302,27 @@ export function start3D(
     instance
       .linkThreeObjectExtend(false)
       .linkThreeObject((link: ForceLink) => {
-        const mat = new THREE.LineBasicMaterial({
+        // Real 3D tubes (not 1px THREE.Line) so they stay visible at any
+        // zoom and depth-test properly against node spheres. Geometry is
+        // built lazily in buildArcs() once node positions resolve.
+        const mat = new THREE.MeshBasicMaterial({
           color: link.color,
           transparent: true,
-          opacity: link.below ? 0.20 : 0.55,
+          opacity: link.below ? 0.30 : 0.75,
         });
-        return new THREE.Line(new THREE.BufferGeometry(), mat);
+        return new THREE.Mesh(new THREE.BufferGeometry(), mat);
       });
 
+    const TUBE_RADIUS_CORE = 0.6;
+    const TUBE_RADIUS_AUDIT = 0.3;
+    const TUBE_RADIAL_SEGMENTS = 6;
     const buildArcs = () => {
       if (!instance) return;
       const scene = instance.scene();
       let built = 0, skipped = 0;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       scene.traverse((obj: any) => {
-        if (obj.__graphObjType !== "link" || !obj.isLine) return;
+        if (obj.__graphObjType !== "link" || !obj.isMesh) return;
         const link = obj.__data;
         const src = link && link.source;
         const tgt = link && link.target;
@@ -329,17 +335,14 @@ export function start3D(
         const angle = Math.min(Math.PI, s.angleTo(e) || 0);
         let points: THREE.Vector3[];
         if (angle < MIN_ANGLE) {
-          // Degenerate: endpoints overlap. Draw a tiny straight segment
-          // so the edge still exists on the scene but contributes no
-          // visual noise.
-          points = [s, e];
+          // Degenerate endpoints -- one short stub. Two-point curves
+          // make pathological TubeGeometry; nudge endpoint a hair so
+          // the tube has length.
+          const nudged = e.clone();
+          if (s.distanceTo(e) < 1e-3) nudged.x += 0.5;
+          points = [s, nudged];
         } else {
-          // True spherical (great-circle) interpolation between s and e
-          // along their actual radii, with a radial bump that lifts the
-          // midpoint outward. A Quadratic Bezier with the apex along the
-          // chord-midpoint outward radial sags THROUGH the globe for
-          // antipodal links (chord midpoint = origin), so each curve
-          // segment has to be sampled along the great circle instead.
+          // Great-circle slerp + sine bump. See aa5de4f for derivation.
           const rS = s.length();
           const rE = e.length();
           const sNorm = s.clone().multiplyScalar(1 / rS);
@@ -350,26 +353,32 @@ export function start3D(
           points = new Array(ARC_SEGMENTS + 1);
           for (let i = 0; i <= ARC_SEGMENTS; i++) {
             const t = i / ARC_SEGMENTS;
-            // slerp: spherical linear interpolation between the unit
-            // direction vectors. Stays on the unit sphere for all t.
             const a = Math.sin((1 - t) * angle) / sinA;
             const b = Math.sin(t * angle) / sinA;
             const dir = sNorm.clone().multiplyScalar(a).add(
               eNorm.clone().multiplyScalar(b),
             );
-            // Radius along the path: lerp the endpoint radii (so both
-            // ends stay anchored to their nodes' positions) plus a
-            // sine-bump that peaks at t=0.5 and tapers to 0 at the ends.
             const baseR = rS * (1 - t) + rE * t;
             const bump = Math.sin(Math.PI * t) * heightPct;
             points[i] = dir.multiplyScalar(baseR + bump);
           }
         }
-        obj.geometry.setFromPoints(points);
-        obj.frustumCulled = false;  // bezier apex sits well outside the
-                                    // sphere; the line's auto-bounding
-                                    // sphere is tight and would cull it
-                                    // when zoomed close.
+        // Replace the placeholder BufferGeometry with a TubeGeometry
+        // along a CatmullRom curve through the slerp samples. CatmullRom
+        // smooths the polyline. Tube radius is small (0.3 - 0.6 units
+        // against a 200-unit globe) -- thick enough to read at any
+        // zoom, thin enough not to choke the GPU at 6.5k tubes.
+        const curve = new THREE.CatmullRomCurve3(points);
+        const tubeGeom = new THREE.TubeGeometry(
+          curve,
+          ARC_SEGMENTS,
+          link.below ? TUBE_RADIUS_AUDIT : TUBE_RADIUS_CORE,
+          TUBE_RADIAL_SEGMENTS,
+          false,
+        );
+        if (obj.geometry) obj.geometry.dispose();
+        obj.geometry = tubeGeom;
+        obj.frustumCulled = false;
         built++;
       });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
