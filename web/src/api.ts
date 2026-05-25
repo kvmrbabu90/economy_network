@@ -249,7 +249,7 @@ export async function describeNode(nodeId: string): Promise<DescribeResponse> {
 
 export async function runImpact(
   text: string,
-  opts: { provider?: ImpactProvider } = {},
+  opts: { provider?: ImpactProvider; signal?: AbortSignal } = {},
 ): Promise<ImpactResponse> {
   const url = new URL("/impact", API_BASE_URL);
   inflight += 1;
@@ -261,6 +261,7 @@ export async function runImpact(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: opts.signal,
     });
     if (!resp.ok) {
       const respBody = await resp.text().catch(() => "");

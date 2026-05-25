@@ -687,8 +687,13 @@ function applyImpactToScene(state: ImpactState | null): void {
 const impactInput = document.getElementById("impact-input") as HTMLInputElement | null;
 const impactRunBtn = document.getElementById("impact-run") as HTMLButtonElement | null;
 const impactClearBtn = document.getElementById("impact-clear") as HTMLButtonElement | null;
+const impactCancelBtn = document.getElementById("impact-cancel-btn") as HTMLButtonElement | null;
 const impactStatusEl = document.getElementById("impact-status") as HTMLDivElement | null;
 const impactProviderEl = document.getElementById("impact-provider") as HTMLSelectElement | null;
+
+// AbortController for the in-flight /impact fetch — lets the Cancel button
+// terminate the LLM call without a page reload.
+let _impactAbortController: AbortController | null = null;
 
 function setImpactStatus(msg: string | null): void {
   if (!impactStatusEl) return;
@@ -706,8 +711,12 @@ async function handleImpactRun(): Promise<void> {
   impactRunBtn.disabled = true;
   setImpactStatus(null);
   showImpactOverlay(provider);
+
+  // Create a fresh AbortController for this run so Cancel works.
+  _impactAbortController = new AbortController();
+
   try {
-    const resp: ImpactResponse = await runImpact(text, { provider });
+    const resp: ImpactResponse = await runImpact(text, { provider, signal: _impactAbortController.signal });
     if (resp.error || !resp.seed) {
       setImpactStatus(`Failed: ${resp.error || "no seed identified"}`);
       return;
@@ -720,9 +729,14 @@ async function handleImpactRun(): Promise<void> {
       `[${niceProvider}] Seed: ${resp.seed.name} (${resp.seed.direction}) → ${resp.impacts.length} nodes touched across ${resp.max_hops || 3} hops`,
     );
   } catch (err) {
-    console.error(err);
-    setImpactStatus(`Error: ${String((err as Error).message || err)}`);
+    if ((err as Error).name === "AbortError") {
+      setImpactStatus("Impact trace cancelled.");
+    } else {
+      console.error(err);
+      setImpactStatus(`Error: ${String((err as Error).message || err)}`);
+    }
   } finally {
+    _impactAbortController = null;
     hideImpactOverlay();
     impactRunBtn.disabled = false;
   }
@@ -742,6 +756,34 @@ if (impactInput) impactInput.addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") { ev.preventDefault(); handleImpactRun().catch(console.error); }
 });
 if (impactClearBtn) impactClearBtn.addEventListener("click", handleImpactClear);
+if (impactCancelBtn) impactCancelBtn.addEventListener("click", () => {
+  _impactAbortController?.abort();
+});
+
+// ---------------------------------------------------------------------------
+// Collapsible inspector panel
+// ---------------------------------------------------------------------------
+
+(function wireInspectorToggle() {
+  const appEl     = document.getElementById("app");
+  const toggleBtn = document.getElementById("inspector-toggle") as HTMLButtonElement | null;
+  if (!appEl || !toggleBtn) return;
+
+  function setCollapsed(collapsed: boolean) {
+    appEl!.classList.toggle("inspector-collapsed", collapsed);
+    toggleBtn!.textContent = collapsed ? "›" : "‹";
+    toggleBtn!.title = collapsed ? "Expand inspector" : "Collapse inspector";
+    localStorage.setItem("inspectorCollapsed", String(collapsed));
+  }
+
+  // Restore preference from previous session.
+  const stored = localStorage.getItem("inspectorCollapsed");
+  if (stored === "true") setCollapsed(true);
+
+  toggleBtn.addEventListener("click", () => {
+    setCollapsed(!appEl!.classList.contains("inspector-collapsed"));
+  });
+})();
 
 // ---------------------------------------------------------------------------
 // Initial load

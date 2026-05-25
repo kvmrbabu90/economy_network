@@ -180,6 +180,7 @@
             <div class="go-title">TRACING ECONOMIC IMPACT</div>
             <div class="go-stage" id="impact-overlay-stage">Parsing event description…</div>
             <div class="go-ticker" id="impact-overlay-eta"></div>
+            <button id="impact-cancel-btn" class="impact-cancel-btn">✕ Cancel</button>
           </div>
         </div>
         <div id="impact-bar" class="impact-bar">
@@ -217,9 +218,12 @@
       </main>
 
       <section class="inspector" id="inspector">
-        <div class="inspector-empty">
-          <div class="inspector-empty-title">Inspector</div>
-          <p>Hover or click any node or edge to see details and provenance.</p>
+        <button class="inspector-toggle-btn" id="inspector-toggle" title="Collapse inspector" aria-label="Toggle inspector">‹</button>
+        <div class="inspector-body">
+          <div class="inspector-empty">
+            <div class="inspector-empty-title">Inspector</div>
+            <p>Hover or click any node or edge to see details and provenance.</p>
+          </div>
         </div>
       </section>
     </div>

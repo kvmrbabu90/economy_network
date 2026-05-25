@@ -559,6 +559,26 @@ html, body {
   100% { transform: translate(-50%, -50%) scale(5.5); opacity: 0; }
 }
 
+/* Cancel button inside impact overlay */
+.impact-cancel-btn {
+  margin-top: 18px;
+  background: transparent;
+  border: 1px solid rgba(30, 232, 216, 0.30);
+  border-radius: 6px;
+  color: rgba(30, 232, 216, 0.70);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 5px 16px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.impact-cancel-btn:hover {
+  border-color: rgba(30, 232, 216, 0.70);
+  color: #1ee8d8;
+  background: rgba(30, 232, 216, 0.06);
+}
+
 .impact-bar {
   position: absolute;
   left: 50%;
@@ -866,6 +886,57 @@ html, body {
   color: var(--text-mute);
 }
 
+/* -------- INSPECTOR COLLAPSE ---------------------------------------- */
+
+/* The toggle sits on the left edge of the inspector panel */
+.inspector {
+  position: relative; /* anchor for the toggle button */
+}
+
+.inspector-toggle-btn {
+  position: absolute;
+  top: 50%;
+  left: -14px;
+  transform: translateY(-50%);
+  z-index: 20;
+  width: 20px;
+  height: 40px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 4px 0 0 4px;
+  color: var(--text-mute);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+  padding: 0;
+}
+.inspector-toggle-btn:hover {
+  color: var(--text);
+  background: var(--bg-recess);
+}
+
+/* Collapsed state: shrink the inspector column to just the toggle button */
+#app.inspector-collapsed {
+  grid-template-columns: 260px 1fr 20px;
+}
+#app.inspector-collapsed .inspector-body {
+  display: none;
+}
+#app.inspector-collapsed .inspector-toggle-btn {
+  border-radius: 4px;
+  left: -14px;
+}
+
+/* Smooth column resize transition */
+#app {
+  transition: grid-template-columns 0.22s ease;
+}
+
 @media (max-width: 1100px) {
   #app { grid-template-columns: 220px 1fr 300px; }
+  #app.inspector-collapsed { grid-template-columns: 220px 1fr 20px; }
 }
