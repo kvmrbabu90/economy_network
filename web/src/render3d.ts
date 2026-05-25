@@ -286,9 +286,19 @@ export function start3D(
   // which point 3d-force-graph has resolved each link's .source /
   // .target string ids into real node objects with x/y/z positions.
   if (currentLayout === "globe") {
-    const ARC_BASE_HEIGHT = GLOBE_RADIUS * 0.10;
-    const ARC_MAX_HEIGHT = GLOBE_RADIUS * 0.65;
+    // Arc heights tuned so even antipodal links stay close to the
+    // surface -- previous max of 0.65*R made arcs visually larger than
+    // the globe itself when zoomed out. 0.06 + 0.18 by angular sep
+    // keeps every arc inside a thin shell hugging the wireframe.
+    const ARC_BASE_HEIGHT = GLOBE_RADIUS * 0.03;
+    const ARC_MAX_HEIGHT = GLOBE_RADIUS * 0.22;
     const ARC_SEGMENTS = 24;
+    // Below this angular separation (in radians) two endpoints are
+    // effectively co-located -- typically because they both fell back
+    // to the same country centroid. Bezier through co-located points
+    // builds a degenerate curve and pushes the apex in an arbitrary
+    // direction; skip and draw a tiny straight segment instead.
+    const MIN_ANGLE = 0.005;
     instance
       .linkThreeObjectExtend(false)
       .linkThreeObject((link: ForceLink) => {
@@ -316,15 +326,23 @@ export function start3D(
         }
         const s = new THREE.Vector3(src.x, src.y, src.z);
         const e = new THREE.Vector3(tgt.x, tgt.y, tgt.z);
-        const mid = s.clone().add(e).multiplyScalar(0.5);
-        const outwardLen = mid.length() || 1;
-        const outward = mid.clone().multiplyScalar(1 / outwardLen);
         const angle = Math.min(Math.PI, s.angleTo(e) || 0);
-        const t = angle / Math.PI;
-        const height = ARC_BASE_HEIGHT + (ARC_MAX_HEIGHT - ARC_BASE_HEIGHT) * t;
-        const apex = mid.clone().add(outward.multiplyScalar(height));
-        const curve = new THREE.QuadraticBezierCurve3(s, apex, e);
-        const points = curve.getPoints(ARC_SEGMENTS);
+        let points: THREE.Vector3[];
+        if (angle < MIN_ANGLE) {
+          // Degenerate: endpoints overlap. Draw a tiny straight segment
+          // so the edge still exists on the scene but contributes no
+          // visual noise.
+          points = [s, e];
+        } else {
+          const mid = s.clone().add(e).multiplyScalar(0.5);
+          const outwardLen = mid.length() || 1;
+          const outward = mid.clone().multiplyScalar(1 / outwardLen);
+          const t = angle / Math.PI;
+          const height = ARC_BASE_HEIGHT + (ARC_MAX_HEIGHT - ARC_BASE_HEIGHT) * t;
+          const apex = mid.clone().add(outward.multiplyScalar(height));
+          const curve = new THREE.QuadraticBezierCurve3(s, apex, e);
+          points = curve.getPoints(ARC_SEGMENTS);
+        }
         obj.geometry.setFromPoints(points);
         obj.frustumCulled = false;  // bezier apex sits well outside the
                                     // sphere; the line's auto-bounding
