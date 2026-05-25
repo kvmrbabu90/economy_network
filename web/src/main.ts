@@ -242,8 +242,11 @@ function refreshEdgeVisibility(): void {
         // of overlapping 20%-alpha lines composite up to bright white.
         // Use a dark opaque grey only ~3 levels above the page background
         // so non-chain edges visually recede instead of stacking.
-        color: inChain ? "#e8e3da" : "#1a1d22",
-        size: inChain ? (eattrs.size ?? 1) * 2.8 : (eattrs.size ?? 1) * 0.25,
+        // Chain edges: a muted steel-blue accent — visible as "connected"
+        // without compositing into a blinding white sheet at high density.
+        // Width barely changes; color does the differentiation work.
+        color: inChain ? "#4a7a94" : "#1c2228",
+        size: inChain ? (eattrs.size ?? 1) * 1.2 : (eattrs.size ?? 1) * 0.3,
       };
     }
     return { ...eattrs, hidden: baseHidden };
@@ -280,10 +283,14 @@ function refreshEdgeVisibility(): void {
         ...nattrs,
         label: isImpacted ? label : "",
         hidden: hide,
-        color: tint ?? "#22262c",
-        size: isImpacted ? (nattrs.size ?? 6) * 2.5 : (nattrs.size ?? 6) * 0.3,
+        color: tint ?? "#1e2228",
+        // 1.8× is meaningfully larger than background without merging into blobs.
+        // 0.45× keeps non-impacted nodes as faint context dots, not invisible.
+        size: isImpacted ? (nattrs.size ?? 6) * 1.8 : (nattrs.size ?? 6) * 0.45,
         zIndex: isImpacted ? 10 : 0,
-        forceLabel: isImpacted,
+        // Only force-show labels on the seed node and high-confidence
+        // impacted nodes. 140+ simultaneous labels creates unreadable soup.
+        forceLabel: isImpacted && (verdict!.hop === 0 || verdict!.magnitude >= 0.6),
       };
     }
     return { ...nattrs, label, hidden: hide };
