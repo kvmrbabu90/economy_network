@@ -289,13 +289,15 @@ export function start3D(
     // surface -- previous max of 0.65*R made arcs visually larger than
     // the globe itself when zoomed out. 0.06 + 0.18 by angular sep
     // keeps every arc inside a thin shell hugging the wireframe.
-    // Arc heights -- bumped so even short hops have a visible bulge
-    // above the surface. User repeatedly reported arcs still looked like
-    // chords through the globe at 0.06 / 0.35. Going to 0.15 / 0.70 so
-    // the curve is unmistakable: 70% of globe radius at antipode (peak
-    // at radius 340 against a 200-unit globe).
-    const ARC_BASE_HEIGHT = GLOBE_RADIUS * 0.15;
-    const ARC_MAX_HEIGHT = GLOBE_RADIUS * 0.70;
+    // Arc heights -- moderate bowl. Earlier 0.15/0.70 swung so high that
+    // far-side arc midpoints sat behind the globe relative to the camera,
+    // so users saw only the near-endpoint stub climbing up like a radial
+    // antenna. 0.08/0.30 keeps the apex hugging the surface (peak radius
+    // 220-260 against a 200-unit globe) so arcs read as ribbons over
+    // the planet rather than spikes. Paired with depthTest=false on the
+    // arc material so the back half stays visible.
+    const ARC_BASE_HEIGHT = GLOBE_RADIUS * 0.08;
+    const ARC_MAX_HEIGHT = GLOBE_RADIUS * 0.30;
     const ARC_SEGMENTS = 24;
     // Below this angular separation (in radians) two endpoints are
     // effectively co-located -- typically because they both fell back
@@ -307,14 +309,29 @@ export function start3D(
       .linkThreeObjectExtend(false)
       .linkThreeObject((link: ForceLink) => {
         // Real 3D tubes (not 1px THREE.Line) so they stay visible at any
-        // zoom and depth-test properly against node spheres. Geometry is
-        // built lazily in buildArcs() once node positions resolve.
+        // zoom. Geometry is built lazily in buildArcs() once node
+        // positions resolve.
+        //
+        // depthTest=false so the back half of each great-circle arc still
+        // renders through the globe sphere -- otherwise far-side arcs
+        // look like radial spikes climbing up from near-side endpoints
+        // before disappearing behind the horizon. depthWrite=false keeps
+        // overlapping arcs from punching holes in each other's alpha.
+        // Lower opacity (0.45 / 0.18) because depthTest off means arcs
+        // pile on top of nodes + each other; thinner alpha prevents the
+        // network from washing out the surface beneath.
         const mat = new THREE.MeshBasicMaterial({
           color: link.color,
           transparent: true,
-          opacity: link.below ? 0.30 : 0.75,
+          opacity: link.below ? 0.18 : 0.45,
+          depthTest: false,
+          depthWrite: false,
         });
-        return new THREE.Mesh(new THREE.BufferGeometry(), mat);
+        const mesh = new THREE.Mesh(new THREE.BufferGeometry(), mat);
+        // Render arcs AFTER the globe sphere (renderOrder default 0) so
+        // alpha-blending stacks them correctly against the dark surface.
+        mesh.renderOrder = 5;
+        return mesh;
       });
 
     const TUBE_RADIUS_CORE = 0.6;
