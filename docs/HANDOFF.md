@@ -79,6 +79,14 @@ Each stage reads the previous stage's JSONL files from `data/`. Re-runnable inde
 - Samsung/Sony/Sanofi acceptance tests pass; 4,194 supplies edges
 - `company_sub_industry_overrides.yaml` for Wikidata companies misclassified as Industrial Conglomerates
 
+### Phase E: Geography-Aware Impact Reasoning (complete 2026-05-25)
+- `supply_geography` field added to `Edge` Pydantic model + SQLite DDL
+- `build_graph.py` infers scope from provenance: LLM/10-K → "US", Wikidata/Wikipedia → "global", rule → null
+- `api/impact.py` ring and refinement prompts extended with GEOGRAPHY RULE (country + edge_geo guards)
+- DB: 316 US edges, 103 global, 5,671 null (correct by design)
+- Acceptance: "Chick-fil-A enters India" → Tyson Foods `no_effect`, India Consumer Market `positive`, 155/187 filtered to `no_effect`
+- Commit: f2d8a2a
+
 ### Phase F: Exchange-Index Global Expansion (complete 2026-05-25)
 - **1,449 new companies** from 9 major stock exchanges (NSE India 187, TSE Japan 329,
   LSE UK 276, FSE Germany 60, KRX Korea 195, ASX Australia 230, SSE China 170,
@@ -202,7 +210,7 @@ Each stage reads the previous stage's JSONL files from `data/`. Re-runnable inde
 
 ---
 
-## 8. Phase F (Complete) — Exchange-Index Global Expansion
+## 8. Phase F (Complete 2026-05-25) — Exchange-Index Global Expansion
 
 See Phase History above for full details. Key stats: 2,862 companies in companies.jsonl
 (up from 1,253 pre-Phase F), 5,328 graph nodes, 18,528 edges, 6,090 supply edges.
@@ -220,16 +228,24 @@ python -m pipeline.build_graph
 
 ---
 
-## 9. Phase E (Backlog) — Geography-Aware Impact Reasoning
+## 9. Phase E (Complete 2026-05-25) — Geography-Aware Impact Reasoning
 
-Root cause: LLM assigns benefit to Tyson Foods when "Chic-fil-A enters India" because the `supplies` edge is US-scoped but has no geographic metadata.
+Both tracks shipped simultaneously. See Phase History for full detail.
 
-- **Track A** (prompt fix, ~1 day): add geography-reasoning step to `api/impact.py`; instruct LLM to check supplier country vs. event geography before assigning a positive verdict.
-- **Track B** (data fix, ~3-4 days): add `supply_geography` field to Edge schema + SQLite; extract from filing context (default "US" for 10-K).
+**Track A** (prompt engineering): Impact ring and refinement prompts now include a GEOGRAPHY RULE
+section. The LLM is instructed to assign `no_effect` when a candidate's `country` and `edge_geo`
+are both outside the event's geography. Candidate lines now show `country=<ISO-2> | edge_geo=<US|global|?>`.
+
+**Track B** (schema + inference): `supply_geography: Optional[str]` added to `Edge` model and SQLite.
+`build_graph.py` populates it via `_infer_supply_geography()` — no re-extraction needed.
+
+**Acceptance test PASS**: "Chick-fil-A enters India" → Tyson Foods `no_effect` (0.0, "US-domestic
+poultry supplier; no India operations"); India Consumer Market `positive` (0.85); 155/187 nodes
+correctly filtered to `no_effect`.
 
 ---
 
-## 9. Running the Stack
+## 10. Running the Stack
 
 ```bash
 # Backend (from repo root)
@@ -250,8 +266,8 @@ python pipeline/build_graph.py
 
 ---
 
-## 10. Open Questions / Decisions Needed
+## 11. Open Questions / Decisions Needed
 
 1. **Phase D**: should the country-default markets be additive (base markets UNION country markets) or restrictive (base markets INTERSECTION country markets)? Current plan: additive union capped by the industry base list. If a Korean telco's industry_to_retail is [us, eu], it should stay [us, eu, kr, jp, cn, sea] not lose US.
 2. **Phase B follow-up**: 6 companies in `foreign_filers.yaml` commented out (Tata Motors, CBD, Westpac, MercadoLibre, Yum China, BeiGene) — all addressable via Phase B Wikidata path. Do now or defer?
-3. **Phase E Track A**: prompt is a 1-day change. Recommended to deploy before Track B.
+3. **Phase E**: complete. No open questions remaining on this phase.

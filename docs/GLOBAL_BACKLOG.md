@@ -265,4 +265,16 @@ routing adds more geography signals to the graph.
   Acceptance tests: India ≥100 ✅, UK ≥100 ✅, Germany ≥30 ✅, Japan ≥80 ✅,
   Korea ≥100 ✅, Australia ≥100 ✅.
 
-- Phase E: backlog.
+- Phase E: **complete** (2026-05-25). Geography-aware impact reasoning — two tracks shipped together.
+  Track A (prompt engineering): `api/impact.py` ring and refinement prompts extended with explicit
+  GEOGRAPHY RULE — LLM instructed to assign `no_effect` when a candidate company's country and
+  supply edge_geo are both outside the event's geography. Candidate lines now include
+  `country=<ISO-2> | edge_geo=<US|global|?>`. Track B (schema + inference): `supply_geography`
+  field added to `Edge` Pydantic model and SQLite DDL; `build_graph.py` infers scope
+  deterministically from provenance — LLM/10-K edges → "US", Wikidata/Wikipedia edges → "global",
+  rule-extracted edges → null. DB populated: 316 US edges, 103 global, 5,671 null.
+  Acceptance test PASS: "Chick-fil-A enters India" → Tyson Foods verdict=`no_effect` (hop 1,
+  reasoning: "US-domestic poultry supplier; no India operations to serve expansion."); India
+  Consumer Market verdict=`positive` (0.85); Zomato verdict=`positive` (0.50); Yum! Brands
+  verdict=`negative` (0.20, KFC competes in India). 155/187 scored nodes correctly filtered to
+  `no_effect`. Commit: f2d8a2a.
