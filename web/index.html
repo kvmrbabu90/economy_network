@@ -55,6 +55,14 @@
       </header>
 
       <aside class="filters" aria-label="Filters">
+        <!-- Tab strip -->
+        <div class="sidebar-tabs" role="tablist" aria-label="Sidebar panels">
+          <button type="button" class="sidebar-tab is-active" data-tab="filters" role="tab" aria-selected="true">Filters</button>
+          <button type="button" class="sidebar-tab" data-tab="archive" role="tab" aria-selected="false">Archive</button>
+        </div>
+
+        <!-- Filters panel -->
+        <div id="panel-filters" class="sidebar-panel">
         <div class="filter-section">
           <div class="filter-title">Layout (2D)</div>
           <div class="layout-segmented" role="radiogroup">
@@ -107,6 +115,12 @@
             <li><strong>Click</strong> an edge — read the filing snippet.</li>
             <li><strong>Scroll</strong> to zoom, <strong>drag</strong> to pan.</li>
           </ul>
+        </div>
+        </div><!-- /#panel-filters -->
+
+        <!-- Archive panel -->
+        <div id="panel-archive" class="sidebar-panel" hidden>
+          <div id="archive-list"></div>
         </div>
       </aside>
 

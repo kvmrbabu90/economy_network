@@ -53,6 +53,12 @@ import {
   tintColorRGB,
   type ImpactState,
 } from "./impact";
+import {
+  loadArchive,
+  saveToArchive,
+  removeFromArchive,
+  type ArchiveEntry,
+} from "./impact-archive";
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -732,6 +738,8 @@ async function handleImpactRun(): Promise<void> {
     setImpactStatus(
       `[${niceProvider}] Seed: ${resp.seed.name} (${resp.seed.direction}) → ${resp.impacts.length} nodes touched across ${resp.max_hops || 3} hops`,
     );
+    // Persist to the 24-h archive so the user can replay without re-running.
+    saveToArchive(text, provider, resp);
   } catch (err) {
     if ((err as Error).name === "AbortError") {
       setImpactStatus("Impact trace cancelled.");
@@ -786,6 +794,117 @@ if (impactCancelBtn) impactCancelBtn.addEventListener("click", () => {
 
   toggleBtn.addEventListener("click", () => {
     setCollapsed(!appEl!.classList.contains("inspector-collapsed"));
+  });
+})();
+
+// ---------------------------------------------------------------------------
+// Impact archive — render list + restore
+// ---------------------------------------------------------------------------
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+function expiresIn(expiresAt: number): string {
+  const diff = expiresAt - Date.now();
+  if (diff <= 0) return "expired";
+  if (diff < 3_600_000) return `expires in ${Math.ceil(diff / 60_000)}m`;
+  return `expires in ${Math.ceil(diff / 3_600_000)}h`;
+}
+
+function renderArchiveList(): void {
+  const listEl = document.getElementById("archive-list");
+  if (!listEl) return;
+  const entries = loadArchive();
+  if (entries.length === 0) {
+    listEl.innerHTML =
+      '<div class="archive-empty">No saved traces yet.<br>Run an impact trace and it will appear here automatically.</div>';
+    return;
+  }
+  listEl.innerHTML = entries
+    .map(
+      (e) => `
+    <div class="archive-entry" data-id="${e.id}">
+      <div class="archive-entry-header">
+        <span class="archive-entry-seed ${e.seedDirection}">${escapeHtml(e.seedName)}</span>
+        <button class="archive-entry-delete" data-id="${e.id}" title="Delete entry">×</button>
+      </div>
+      <div class="archive-entry-text">${escapeHtml(e.text)}</div>
+      <div class="archive-entry-meta">
+        <span>${e.nodesCount} nodes</span>
+        <span>${e.maxHops} hops</span>
+        <span>${e.provider}</span>
+      </div>
+      <div class="archive-entry-time">
+        <span>${relativeTime(e.timestamp)}</span>
+        <span class="ae-expiry">${expiresIn(e.expiresAt)}</span>
+      </div>
+    </div>`,
+    )
+    .join("");
+
+  listEl.querySelectorAll<HTMLElement>(".archive-entry").forEach((el) => {
+    el.addEventListener("click", (ev) => {
+      const target = ev.target as HTMLElement;
+      if (target.classList.contains("archive-entry-delete")) {
+        ev.stopPropagation();
+        removeFromArchive(target.dataset.id!);
+        renderArchiveList();
+        return;
+      }
+      const id = el.dataset.id!;
+      const entry = loadArchive().find((e) => e.id === id);
+      if (entry) restoreFromArchive(entry).catch(console.error);
+    });
+  });
+}
+
+async function restoreFromArchive(entry: ArchiveEntry): Promise<void> {
+  // Ensure the full graph is loaded so all impacted nodes are present.
+  await loadFullCore();
+  impactState = buildImpactState(g, entry.response);
+  refreshEdgeVisibility();
+  applyImpactToScene(impactState);
+  if (impactClearBtn) impactClearBtn.hidden = false;
+  if (impactInput) impactInput.value = entry.text;
+  setImpactStatus(
+    `[Archived] ${entry.seedName} (${entry.seedDirection}) → ${entry.nodesCount} nodes across ${entry.maxHops} hops`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar tab switching (Filters ↔ Archive)
+// ---------------------------------------------------------------------------
+
+(function wireSidebarTabs() {
+  const tabs = document.querySelectorAll<HTMLButtonElement>(".sidebar-tab");
+  const panelFilters = document.getElementById("panel-filters");
+  const panelArchive = document.getElementById("panel-archive");
+  if (!panelFilters || !panelArchive) return;
+
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const target = tab.dataset.tab;
+      tabs.forEach((t) => {
+        t.classList.toggle("is-active", t.dataset.tab === target);
+        t.setAttribute("aria-selected", String(t.dataset.tab === target));
+      });
+      panelFilters.hidden = target !== "filters";
+      panelArchive.hidden = target !== "archive";
+      if (target === "archive") renderArchiveList();
+    });
   });
 })();
 
