@@ -275,10 +275,16 @@ export function start3D(
   // great-circle-style arcs that bulge outward from the sphere center.
   // Chord-lines cutting through the globe interior obscure the surface
   // and the rest of the network; arcing them above the wireframe makes
-  // long-haul edges (Lithium-in-Australia -> Tesla-in-California, etc.)
-  // legible. Bezier control point sits along the outward radial at the
-  // edge midpoint; apex height scales with angular separation so short
-  // edges stay flat and trans-oceanic edges arc higher.
+  // long-haul edges legible.
+  //
+  // Why we don't use linkPositionUpdate: 3d-force-graph only calls it
+  // when the force simulation moves a node. All globe nodes are pinned
+  // (fx/fy/fz set), so the simulation never ticks and the accessor
+  // never fires -- leaving the BufferGeometry empty and the link
+  // invisible. Instead we register an empty Line via linkThreeObject
+  // and then walk the scene once on the next animation frame, by
+  // which point 3d-force-graph has resolved each link's .source /
+  // .target string ids into real node objects with x/y/z positions.
   if (currentLayout === "globe") {
     const ARC_BASE_HEIGHT = GLOBE_RADIUS * 0.10;
     const ARC_MAX_HEIGHT = GLOBE_RADIUS * 0.65;
@@ -292,29 +298,51 @@ export function start3D(
           opacity: link.below ? 0.20 : 0.55,
         });
         return new THREE.Line(new THREE.BufferGeometry(), mat);
-      })
+      });
+
+    const buildArcs = () => {
+      if (!instance) return;
+      const scene = instance.scene();
+      let built = 0, skipped = 0;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .linkPositionUpdate((lineObj: any, { start, end }: any) => {
-        if (!lineObj || !start || !end) return true;
-        const s = new THREE.Vector3(start.x, start.y, start.z);
-        const e = new THREE.Vector3(end.x, end.y, end.z);
+      scene.traverse((obj: any) => {
+        if (obj.__graphObjType !== "link" || !obj.isLine) return;
+        const link = obj.__data;
+        const src = link && link.source;
+        const tgt = link && link.target;
+        if (!src || !tgt || typeof src.x !== "number" || typeof tgt.x !== "number") {
+          skipped++;
+          return;
+        }
+        const s = new THREE.Vector3(src.x, src.y, src.z);
+        const e = new THREE.Vector3(tgt.x, tgt.y, tgt.z);
         const mid = s.clone().add(e).multiplyScalar(0.5);
-        // outward radial at midpoint (since both endpoints sit on the
-        // globe sphere of equal radius, mid is along their bisecting
-        // radial which is perpendicular to the line s->e).
         const outwardLen = mid.length() || 1;
         const outward = mid.clone().multiplyScalar(1 / outwardLen);
-        // angular separation in [0, pi]; longer arcs need taller apex
-        // to clear the surface convincingly.
         const angle = Math.min(Math.PI, s.angleTo(e) || 0);
-        const t = angle / Math.PI;       // 0..1
+        const t = angle / Math.PI;
         const height = ARC_BASE_HEIGHT + (ARC_MAX_HEIGHT - ARC_BASE_HEIGHT) * t;
         const apex = mid.clone().add(outward.multiplyScalar(height));
         const curve = new THREE.QuadraticBezierCurve3(s, apex, e);
         const points = curve.getPoints(ARC_SEGMENTS);
-        lineObj.geometry.setFromPoints(points);
-        return true;  // we handled positioning; skip default
+        obj.geometry.setFromPoints(points);
+        obj.frustumCulled = false;  // bezier apex sits well outside the
+                                    // sphere; the line's auto-bounding
+                                    // sphere is tight and would cull it
+                                    // when zoomed close.
+        built++;
       });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__arcBuilt = { built, skipped };
+    };
+    // First pass: positions are set as soon as 3d-force-graph copies the
+    // graphData into its internal sim. A single rAF is usually enough;
+    // a 100ms safety net catches any later resolution.
+    requestAnimationFrame(buildArcs);
+    setTimeout(buildArcs, 100);
+    setTimeout(buildArcs, 600);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__rebuildArcs = buildArcs;
   }
 
   // Zoom-aware node + link scaling. Piggybacks on the user's mouse-wheel
