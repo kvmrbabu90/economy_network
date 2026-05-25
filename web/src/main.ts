@@ -10,6 +10,7 @@ import {
   getNode,
   getSubgraph,
   onLoadingChange,
+  type SubgraphResponse,
 } from "./api";
 import {
   FULL_VIEW_HOPS,
@@ -372,8 +373,56 @@ function hideImpactOverlay(): void {
 // Loaders
 // ---------------------------------------------------------------------------
 
+// Full-graph cache — avoids re-fetching and re-running FA2 on every
+// "Full graph" / Esc press. Three tiers:
+//   1. Already in full view          → cameraReset() only            (instant)
+//   2. Graph replaced but cache warm → restore from memory, skip FA2 (~200ms)
+//   3. Cold / filter changed         → network + FA2                  (full load)
+//
+// Cache key encodes the filter flags that change what the API returns.
+// The positions snapshot is only saved for "force" layout (FA2 is the
+// expensive step; sector + bubble layout is cheap to recompute).
+let _fvResponse: SubgraphResponse | null = null;
+let _fvCacheKey = "";
+let _fvPositions: Map<string, { x: number; y: number }> | null = null;
+let _graphIsFullView = false;
+
+function _fvKey(): string {
+  return `${filters.includeProvisional}:${filters.includeInferred}`;
+}
+
 async function loadFullCore(): Promise<void> {
+  const cacheKey = _fvKey();
+
+  // Tier 1: already showing the full graph with the same filter settings.
+  // Nothing to rebuild — just snap the camera back to the overview.
+  if (_graphIsFullView && _fvCacheKey === cacheKey) {
+    cameraReset();
+    return;
+  }
+
+  // Tier 2: we have a cached response + saved positions. Skip the network
+  // call and FA2 entirely; just restore graph state from memory.
+  if (_fvResponse && _fvCacheKey === cacheKey && _fvPositions) {
+    replaceGraph(g, _fvResponse.nodes, _fvResponse.edges);
+    restyleAfterMerge(g);
+    // Restore FA2 positions so the graph appears instantly settled.
+    _fvPositions.forEach((pos, id) => {
+      if (g.hasNode(id)) {
+        g.setNodeAttribute(id, "x", pos.x);
+        g.setNodeAttribute(id, "y", pos.y);
+      }
+    });
+    refreshEdgeVisibility();
+    renderer.refresh();
+    cameraReset();
+    _graphIsFullView = true;
+    return;
+  }
+
+  // Tier 3: cold load — hit the API and run layout from scratch.
   showGraphOverlay();
+  _graphIsFullView = false;
   try {
     // /subgraph seeded at SEC at hops=3 covers every filer + their high-confidence
     // neighbors. Provisional layer respects the user's current toggle (default off).
@@ -382,6 +431,9 @@ async function loadFullCore(): Promise<void> {
       includeProvisional: filters.includeProvisional,
       includeInferred: filters.includeInferred,
     });
+    _fvResponse = resp;
+    _fvCacheKey = cacheKey;
+    _fvPositions = null; // will be populated after layout below
     setGraphOverlayStage(
       `Rendering ${resp.nodes.length.toLocaleString()} nodes, ${resp.edges.length.toLocaleString()} edges…`
     );
@@ -389,12 +441,26 @@ async function loadFullCore(): Promise<void> {
     restyleAfterMerge(g);
     applyLayout();
     cameraReset();
+    // Snapshot FA2 node positions so the next "Full graph" press
+    // can restore them without re-running the physics simulation.
+    if (layoutMode === "force") {
+      const snap: Map<string, { x: number; y: number }> = new Map();
+      g.forEachNode((id) => {
+        snap.set(id, {
+          x: g.getNodeAttribute(id, "x") ?? 0,
+          y: g.getNodeAttribute(id, "y") ?? 0,
+        });
+      });
+      _fvPositions = snap;
+    }
+    _graphIsFullView = true;
   } finally {
     hideGraphOverlay();
   }
 }
 
 async function recenterOn(id: string): Promise<void> {
+  _graphIsFullView = false; // graph is about to be replaced with an ego subgraph
   const resp = await getEgo(id, {
     types: ["supplies", "customer_of", "competes_with", "regulated_by"],
     includeProvisional: filters.includeProvisional,
