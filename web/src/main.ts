@@ -450,6 +450,7 @@ renderer.on("clickNode", (event) => {
     id,
     timer: window.setTimeout(() => {
       pendingClick = null;
+      setInspectorCollapsed(false); // expand so the user sees the node details
       expandFrom(id).catch(console.error);
     }, DOUBLE_CLICK_WINDOW_MS),
   };
@@ -476,6 +477,7 @@ renderer.on("leaveNode", () => {
 });
 
 renderer.on("clickEdge", async (event) => {
+  setInspectorCollapsed(false); // show details when user clicks an edge
   // Edge click -> provenance panel. Source/target node attrs come from the
   // live graph so we can show the human names alongside the snippet.
   const eattrs = g.getEdgeAttributes(event.edge);
@@ -776,24 +778,27 @@ if (impactCancelBtn) impactCancelBtn.addEventListener("click", () => {
 // Collapsible inspector panel
 // ---------------------------------------------------------------------------
 
+// Lifted to module scope so node/edge click handlers can expand the panel.
+const _inspectorAppEl     = document.getElementById("app");
+const _inspectorToggleBtn = document.getElementById("inspector-toggle") as HTMLButtonElement | null;
+
+function setInspectorCollapsed(collapsed: boolean): void {
+  if (!_inspectorAppEl || !_inspectorToggleBtn) return;
+  _inspectorAppEl.classList.toggle("inspector-collapsed", collapsed);
+  _inspectorToggleBtn.textContent = collapsed ? "›" : "‹";
+  _inspectorToggleBtn.title = collapsed ? "Expand inspector" : "Collapse inspector";
+  localStorage.setItem("inspectorCollapsed", String(collapsed));
+}
+
+// Default: collapsed unless the user explicitly opened it in a previous session.
 (function wireInspectorToggle() {
-  const appEl     = document.getElementById("app");
-  const toggleBtn = document.getElementById("inspector-toggle") as HTMLButtonElement | null;
-  if (!appEl || !toggleBtn) return;
-
-  function setCollapsed(collapsed: boolean) {
-    appEl!.classList.toggle("inspector-collapsed", collapsed);
-    toggleBtn!.textContent = collapsed ? "›" : "‹";
-    toggleBtn!.title = collapsed ? "Expand inspector" : "Collapse inspector";
-    localStorage.setItem("inspectorCollapsed", String(collapsed));
-  }
-
-  // Restore preference from previous session.
+  if (!_inspectorAppEl || !_inspectorToggleBtn) return;
   const stored = localStorage.getItem("inspectorCollapsed");
-  if (stored === "true") setCollapsed(true);
+  // "false" means the user manually opened it last time; anything else → collapsed.
+  setInspectorCollapsed(stored !== "false");
 
-  toggleBtn.addEventListener("click", () => {
-    setCollapsed(!appEl!.classList.contains("inspector-collapsed"));
+  _inspectorToggleBtn.addEventListener("click", () => {
+    setInspectorCollapsed(!_inspectorAppEl!.classList.contains("inspector-collapsed"));
   });
 })();
 

@@ -86,11 +86,18 @@ export function wireFilters(onChange: FilterListener): FilterState {
     });
   });
 
+  // All edge types in display order — used as fallback when no filter chips
+  // are present in the DOM (they were removed from the sidebar in the UI
+  // cleanup; we always show all edge types unless a chip opts one out).
+  const ALL_EDGE_TYPES: EdgeType[] = ["supplies", "customer_of", "competes_with", "regulated_by"];
+
   function readState(): FilterState {
     const types: EdgeType[] = [];
     for (const c of chips) {
       if (c.checked) types.push(c.dataset.edgeType as EdgeType);
     }
+    // No chips in DOM → treat every type as checked.
+    const effectiveTypes = chips.length === 0 ? ALL_EDGE_TYPES : types;
     // Determine market filter: null if all selected, otherwise list of keys
     const selectedMarkets = marketCbs
       .filter((c) => c.checked)
@@ -99,7 +106,7 @@ export function wireFilters(onChange: FilterListener): FilterState {
       selectedMarkets.length === ALL_MARKET_KEYS.length ? null : selectedMarkets;
 
     return {
-      types,
+      types: effectiveTypes,
       includeProvisional: provisional?.checked ?? false,
       includeInferred:    inferred?.checked    ?? false,
       markets,
