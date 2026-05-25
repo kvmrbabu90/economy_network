@@ -126,7 +126,7 @@ export function refreshBubbleEdges(g: EconGraph): void {
     if (!g.hasNode(sourceBubble) || !g.hasNode(targetBubble)) return;
     const eid = `${BUBBLE_EDGE_PREFIX}${v.type}:${v.sA}:${v.sB}`;
     if (g.hasEdge(eid)) return;
-    const color = EDGE_COLOR[v.type] ?? "#9c978a";
+    const color = EDGE_COLOR[v.type] ?? "#c4c8ce";
     const apiEdge: ApiEdge = {
       key: eid,
       source: sourceBubble,
@@ -232,12 +232,12 @@ export function updateBubbleAppearance(g: EconGraph, expanded: Set<string>): voi
     if (isExpanded) {
       g.setNodeAttribute(id, "label", `${sector} ✕`);
       g.setNodeAttribute(id, "size", 6);
-      g.setNodeAttribute(id, "color", "#6e6a62");
+      g.setNodeAttribute(id, "color", "#4a4e54"); // recede when expanded
       g.setNodeAttribute(id, "displayLabel", `${sector} ✕`);
     } else {
       g.setNodeAttribute(id, "label", `${sector} (${n})`);
       g.setNodeAttribute(id, "size", Math.max(12, 8 + Math.sqrt(n) * 1.6));
-      g.setNodeAttribute(id, "color", "#6ea8f0");
+      g.setNodeAttribute(id, "color", "#8a8f96"); // medium-grey hub
       g.setNodeAttribute(id, "displayLabel", `${sector} (${n})`);
     }
   });

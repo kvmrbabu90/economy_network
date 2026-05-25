@@ -266,9 +266,8 @@ export function start3D(
     .linkColor((l: ForceLink) => l.color)
     .linkWidth((l: ForceLink) => (l.below ? 0.4 : 1.2))
     .linkOpacity((l: ForceLink) => (l.below ? 0.18 : 0.6))
-    .linkDirectionalArrowLength((l: ForceLink) => (l.edgeType === "competes_with" ? 0 : 3))
-    .linkDirectionalArrowRelPos(0.92)
-    .linkDirectionalArrowColor((l: ForceLink) => l.color)
+    // Arrows disabled (monochrome theme, per user request).
+    .linkDirectionalArrowLength(0)
     .showNavInfo(false);
 
   // Globe mode: replace 3d-force-graph's straight tube links with

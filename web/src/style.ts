@@ -3,29 +3,34 @@
 
 import type { ApiEdge, ApiNode, EdgeType } from "./api";
 
-// Dark-mode palette. Kept in lockstep with styles.css custom properties.
-// Edge colors are the brightened relationship hues; node colors are tuned
-// so real Companies read as cool gray, Regulators echo the regulated_by
-// blue, and provisional slugs sit darker so they recede behind the core.
+// Monochrome palette: all edges are a light shade of grey regardless of
+// relationship type, and node greys step from black (Regulator) -> dark
+// (Region/consumer market) -> medium (Commodity) -> light (Company).
+// Provisional / unknown stay dark so they recede behind the core data.
 export const EDGE_COLOR: Record<EdgeType, string> = {
-  supplies: "#2ec5b4",
-  customer_of: "#b07ee0",
-  competes_with: "#ff8a6b",
-  regulated_by: "#6ea8f0",
-  part_of: "#7a7268",
+  supplies: "#c4c8ce",
+  customer_of: "#c4c8ce",
+  competes_with: "#c4c8ce",
+  regulated_by: "#c4c8ce",
+  part_of: "#c4c8ce",
 };
 
 export const NODE_COLOR = {
-  Company: "#aab2bc",
-  Regulator: "#6ea8f0",
-  Provisional: "#4a4e54",
+  Regulator: "#0a0c10",   // black
+  Region: "#3a3e44",      // dark grey -- consumer markets
+  Commodity: "#7a7e84",   // medium grey
+  Company: "#c8ccd2",     // light grey -- businesses
+  Provisional: "#4a4e54", // recedes behind the core
   Default: "#8d8e94",
 } as const;
 
 export function nodeColor(n: ApiNode): string {
   if (n.attributes.provisional) return NODE_COLOR.Provisional;
-  if (n.attributes.type === "Regulator") return NODE_COLOR.Regulator;
-  if (n.attributes.type === "Company") return NODE_COLOR.Company;
+  const t = n.attributes.type;
+  if (t === "Regulator") return NODE_COLOR.Regulator;
+  if (t === "Region")    return NODE_COLOR.Region;
+  if (t === "Commodity") return NODE_COLOR.Commodity;
+  if (t === "Company")   return NODE_COLOR.Company;
   return NODE_COLOR.Default;
 }
 
@@ -61,10 +66,13 @@ export function edgeAttributes(e: ApiEdge) {
     color = toRgba(base, 0.22);
     size = 0.5;
   }
+  // `directed` is intentionally ignored -- monochrome theme has no
+  // arrowheads (per user request). All edges render as plain lines.
+  void directed;
   return {
     color,
     size,
-    type: directed ? "arrow" : "line",
+    type: "line",
   };
 }
 

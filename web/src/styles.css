@@ -17,17 +17,20 @@
   --text-faint: #6e6a62;
   --accent: #f0ebe2;         /* "do something" actions stay near-white */
 
-  /* Relationship palette -- lifted ~20% so it pops on dark without losing
-     its identity. Still teal / purple / coral / blue. */
-  --c-supplies: #2ec5b4;
-  --c-customer_of: #b07ee0;
-  --c-competes_with: #ff8a6b;
-  --c-regulated_by: #6ea8f0;
+  /* Monochrome relationship palette -- all edge types share one light
+     grey. Differentiation moved to node shading; edges are just plumbing. */
+  --c-supplies: #c4c8ce;
+  --c-customer_of: #c4c8ce;
+  --c-competes_with: #c4c8ce;
+  --c-regulated_by: #c4c8ce;
 
-  /* Node types. Company nodes shift to a cool grey that reads on dark; the
-     provisional outline gets brighter so the dashed circle is visible. */
-  --n-company: #aab2bc;
-  --n-regulator: #6ea8f0;
+  /* Node type greys, dark to light: regulators are the bullseye anchors,
+     consumer markets sit above them, then commodities, then companies as
+     the lightest read. Provisional stays even darker so it recedes. */
+  --n-regulator: #0a0c10;
+  --n-region: #3a3e44;
+  --n-commodity: #7a7e84;
+  --n-company: #c8ccd2;
   --n-provisional: #4a4e54;
   --n-provisional-stroke: #8e887a;
 }
@@ -384,8 +387,10 @@ html, body {
 .legend-line.e-competes_with { background: var(--c-competes_with); }
 .legend-line.e-regulated_by { background: var(--c-regulated_by); }
 .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+.legend-dot.n-regulator { background: var(--n-regulator); border: 1px solid #4a4e54; }
+.legend-dot.n-region { background: var(--n-region); }
+.legend-dot.n-commodity { background: var(--n-commodity); }
 .legend-dot.n-company { background: var(--n-company); }
-.legend-dot.n-regulator { background: var(--n-regulator); }
 .legend-dot.n-provisional { background: var(--n-provisional); border: 1px dashed var(--n-provisional-stroke); }
 
 /* -------- INSPECTOR ------------------------------------------------- */

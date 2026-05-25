@@ -64,7 +64,7 @@ const g: EconGraph = createGraph();
 
 const renderer = new Sigma(g, container, {
   renderEdgeLabels: false,
-  defaultEdgeType: "arrow",
+  defaultEdgeType: "line",
   labelDensity: 1,
   labelGridCellSize: 80,
   labelRenderedSizeThreshold: 6,
@@ -72,6 +72,10 @@ const renderer = new Sigma(g, container, {
   // Dark-mode label color, matched to --text in styles.css.
   labelColor: { color: "#e8e3da" },
   labelSize: 11,
+  // Don't bail out when the container measures 0 on first mount -- CSS grid
+  // can take a frame to settle, and Sigma would otherwise refuse to render
+  // until the next ResizeObserver tick, leaving the canvas blank.
+  allowInvalidContainer: true,
 });
 // node/edge reducers are installed once in refreshEdgeVisibility() so they
 // can read the live `filters` closure on every render.
