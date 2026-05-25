@@ -252,6 +252,49 @@ html, body {
 .chip input:checked + .chip-swatch { opacity: 1; }
 .chip:has(input:not(:checked)) { color: var(--text-faint); }
 
+/* ---- Market filter grid ---- */
+.market-all-chip {
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-mute);
+  padding: 4px 0;
+  gap: 8px;
+}
+.market-all-chip input {
+  /* visible checkbox for "All markets" */
+  position: static;
+  opacity: 1;
+  pointer-events: auto;
+  accent-color: var(--text-mute);
+  width: 13px;
+  height: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.market-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 6px;
+}
+.market-chip {
+  padding: 3px 0;
+  gap: 6px;
+  font-size: 12px;
+}
+.market-chip input {
+  position: static;
+  opacity: 1;
+  pointer-events: auto;
+  accent-color: var(--text-mute);
+  width: 12px;
+  height: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.market-chip:has(input:not(:checked)) { color: var(--text-faint); }
+.market-chip:has(input:checked) span { color: var(--text); }
+
 .toggle { display: flex; align-items: center; gap: 12px; cursor: pointer; font-size: 13px; user-select: none; }
 .toggle input { position: absolute; opacity: 0; pointer-events: none; }
 .toggle-track {

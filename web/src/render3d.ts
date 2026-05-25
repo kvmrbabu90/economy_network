@@ -46,7 +46,59 @@ const GLOBE_RADIUS = 200;
 // the SPARQL net). The MVP corpus is 100% US, so only "US" matters
 // today -- add countries here as the corpus expands.
 const COUNTRY_CENTROID: Record<string, { lat: number; lon: number }> = {
-  US: { lat: 39.83, lon: -98.58 }, // Lebanon, KS -- contiguous-US centroid
+  // North America
+  US: { lat: 39.83, lon: -98.58 },
+  CA: { lat: 56.13, lon: -106.35 },
+  MX: { lat: 23.63, lon: -102.55 },
+  // Europe
+  GB: { lat: 55.38, lon:   -3.44 },
+  DE: { lat: 51.17, lon:   10.45 },
+  FR: { lat: 46.23, lon:    2.21 },
+  NL: { lat: 52.13, lon:    5.29 },
+  IT: { lat: 41.87, lon:   12.57 },
+  ES: { lat: 40.46, lon:   -3.75 },
+  SE: { lat: 60.13, lon:   18.64 },
+  DK: { lat: 56.26, lon:    9.50 },
+  FI: { lat: 61.92, lon:   25.75 },
+  AT: { lat: 47.52, lon:   14.55 },
+  PT: { lat: 39.40, lon:   -8.22 },
+  IE: { lat: 53.41, lon:   -8.24 },
+  BE: { lat: 50.50, lon:    4.47 },
+  NO: { lat: 60.47, lon:    8.47 },
+  CH: { lat: 46.82, lon:    8.23 },
+  PL: { lat: 51.92, lon:   19.15 },
+  // Asia
+  JP: { lat: 36.20, lon:  138.25 },
+  CN: { lat: 35.86, lon:  104.20 },
+  KR: { lat: 35.91, lon:  127.77 },
+  TW: { lat: 23.70, lon:  121.00 },
+  IN: { lat: 20.59, lon:   78.96 },
+  SG: { lat:  1.35, lon:  103.82 },
+  MY: { lat:  4.21, lon:  108.46 },
+  TH: { lat: 15.87, lon:  100.99 },
+  ID: { lat: -0.79, lon:  113.92 },
+  // Oceania
+  AU: { lat: -25.27, lon: 133.78 },
+  NZ: { lat: -40.90, lon: 174.89 },
+  // Middle East
+  SA: { lat: 23.89, lon:  45.08 },
+  AE: { lat: 23.42, lon:  53.85 },
+  // Africa
+  EG: { lat: 26.82, lon:  30.80 },
+  ZA: { lat: -30.56, lon:  22.94 },
+  NG: { lat:  9.08, lon:   8.68 },
+  MA: { lat: 31.79, lon:  -7.09 },
+  // Latin America
+  BR: { lat: -14.24, lon: -51.93 },
+  AR: { lat: -38.42, lon: -63.62 },
+  CL: { lat: -35.68, lon: -71.54 },
+  CO: { lat:   4.57, lon: -74.30 },
+  PE: { lat:  -9.19, lon: -75.02 },
+  VE: { lat:   6.42, lon: -66.59 },
+  EC: { lat:  -1.83, lon: -78.18 },
+  BO: { lat: -16.29, lon: -63.59 },
+  PY: { lat: -23.44, lon: -58.44 },
+  UY: { lat: -32.52, lon: -55.77 },
 };
 
 /**

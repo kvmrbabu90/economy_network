@@ -41,7 +41,7 @@ import {
   stop3D,
   update3D,
 } from "./render3d";
-import { wireFilters, type FilterState } from "./ui/filters";
+import { wireFilters, countryInMarkets, type FilterState } from "./ui/filters";
 import { showEdge, showEmpty, showNode, type NodeExtras } from "./ui/inspector";
 import { wireSearch } from "./ui/search";
 import { startStatusPolling } from "./ui/status";
@@ -134,7 +134,7 @@ window.__ec = {
 
 // Current filter state -- declared so all callbacks can read it without
 // dragging it through arguments.
-let filters: FilterState = { types: [], includeProvisional: false, includeInferred: false };
+let filters: FilterState = { types: [], includeProvisional: false, includeInferred: false, markets: null };
 
 // Layout mode for the 2D view. Force = FA2; sector = GICS clusters;
 // bubble = each sector collapsed into a clickable hub with expand/collapse.
@@ -251,7 +251,17 @@ function refreshEdgeVisibility(): void {
       return { ...nattrs, hidden: true, label: "" };
     }
     const isProv = !!nattrs.apiNode.attributes.provisional;
-    const hide = isProv && !filters.includeProvisional;
+    // Market filter: hide Company nodes whose country isn't in the selected markets.
+    // Non-company nodes (Commodity, Regulator, Region) are always visible.
+    let hiddenByMarket = false;
+    if (filters.markets !== null && filters.markets.length > 0) {
+      const nodeType    = nattrs.apiNode.attributes.type;
+      const nodeCountry = nattrs.apiNode.attributes.country;
+      if (nodeType === "Company" && nodeCountry) {
+        hiddenByMarket = !countryInMarkets(nodeCountry, filters.markets);
+      }
+    }
+    const hide = (isProv && !filters.includeProvisional) || hiddenByMarket;
     const label = isBubbleNode ? nattrs.label : (nattrs.displayLabel || "");
     if (impactState) {
       const verdict = impactState.byNode.get(id);
