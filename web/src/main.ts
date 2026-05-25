@@ -214,7 +214,10 @@ function refreshEdgeVisibility(): void {
       return {
         ...eattrs,
         hidden: baseHidden,
-        color: inChain ? "#e8e3da" : "#2a2e34",
+        // In-chain edges pop at full opacity; everything else fades to
+        // 20% via rgba so the impacted subgraph reads cleanly through
+        // the rest of the network.
+        color: inChain ? "rgba(232, 227, 218, 0.95)" : "rgba(196, 200, 206, 0.18)",
         size: inChain ? (eattrs.size ?? 1) * 1.4 : (eattrs.size ?? 1) * 0.5,
       };
     }
@@ -234,11 +237,14 @@ function refreshEdgeVisibility(): void {
     if (impactState) {
       const verdict = impactState.byNode.get(id);
       const tint = tintColor(verdict);
+      // In-chain: keep the verdict tint; outside-chain: drop the node
+      // to ~20% opacity grey so it recedes but the structure stays
+      // visible enough for orientation.
       return {
         ...nattrs,
         label,
         hidden: hide,
-        color: tint ?? "#3a3e44",
+        color: tint ?? "rgba(168, 174, 184, 0.20)",
       };
     }
     return { ...nattrs, label, hidden: hide };
@@ -514,15 +520,22 @@ function applyImpactToScene(state: ImpactState | null): void {
       if (state) {
         const verdict = data ? state.byNode.get(data.id) : undefined;
         const tint = tintColorRGB(verdict);
+        obj.material.transparent = true;
         if (tint) {
+          // In-chain node: full opacity verdict tint.
           obj.material.color.setRGB(tint.r, tint.g, tint.b);
+          obj.material.opacity = 1.0;
         } else {
+          // Outside the chain: dim base grey at 20% opacity so the
+          // affected subgraph dominates the visual field.
           const dim = dimColor();
           obj.material.color.setRGB(dim.r, dim.g, dim.b);
+          obj.material.opacity = 0.20;
         }
       } else if (data && data.color) {
         // restore the data-driven base colour
         obj.material.color.set(data.color);
+        obj.material.opacity = 0.95;
       }
       obj.material.needsUpdate = true;
     } else if (obj.__graphObjType === "link" && obj.material && obj.material.color) {
@@ -533,10 +546,12 @@ function applyImpactToScene(state: ImpactState | null): void {
         const inChain = src && tgt && state.byNode.has(src) && state.byNode.has(tgt);
         if (inChain) {
           obj.material.color.setRGB(0.91, 0.89, 0.85);
-          obj.material.opacity = 0.85;
+          obj.material.opacity = 0.95;
         } else {
-          obj.material.color.setRGB(0.15, 0.17, 0.20);
-          obj.material.opacity = 0.18;
+          // Dim non-chain edges hard so the chain reads through the
+          // background mesh.
+          obj.material.color.setRGB(0.77, 0.78, 0.81);
+          obj.material.opacity = 0.08;
         }
       } else if (data && data.color) {
         obj.material.color.set(data.color);
