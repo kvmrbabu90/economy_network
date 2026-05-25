@@ -56,39 +56,12 @@
 
       <aside class="filters" aria-label="Filters">
         <div class="filter-section">
-          <div class="filter-title">Relationships</div>
-          <label class="chip chip-supplies">
-            <input type="checkbox" data-edge-type="supplies" checked />
-            <span class="chip-swatch"></span>supplies
-          </label>
-          <label class="chip chip-customer_of">
-            <input type="checkbox" data-edge-type="customer_of" checked />
-            <span class="chip-swatch"></span>customer_of (derived)
-          </label>
-          <label class="chip chip-competes_with">
-            <input type="checkbox" data-edge-type="competes_with" checked />
-            <span class="chip-swatch"></span>competes_with
-          </label>
-          <label class="chip chip-regulated_by">
-            <input type="checkbox" data-edge-type="regulated_by" checked />
-            <span class="chip-swatch"></span>regulated_by
-          </label>
-        </div>
-        <div class="filter-section">
           <div class="filter-title">Layout (2D)</div>
           <div class="layout-segmented" role="radiogroup">
             <button type="button" class="layout-tab is-active" data-layout="force" role="radio">Force</button>
             <button type="button" class="layout-tab" data-layout="sector" role="radio">By sector</button>
             <button type="button" class="layout-tab" data-layout="bubble" role="radio">Bubbles</button>
           </div>
-          <p class="hint">
-            "By sector" pins each company at its GICS sector cluster.
-            "Bubbles" collapses each sector into one clickable hub --
-            click a bubble to <strong>expand</strong> it into its
-            companies; click any of its companies to <strong>collapse</strong>
-            it back. Aggregated cross-sector edges show how the 11
-            sectors connect.
-          </p>
         </div>
 
         <div class="filter-section">
@@ -98,21 +71,11 @@
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
             <span class="toggle-label">show provisional layer (Nestlé, Unilever, …)</span>
           </label>
-          <p class="hint">
-            Below-threshold edges to non-filer slug nodes (companies named in
-            10-Ks but not in the S&amp;P 500). Dimmed to ~22% so they read as
-            a background halo.
-          </p>
-          <label class="toggle" style="margin-top: 14px;">
+          <label class="toggle">
             <input type="checkbox" id="toggle-inferred" />
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
             <span class="toggle-label">show inferred competitors (co-mention)</span>
           </label>
-          <p class="hint">
-            Tier-2 derivation: pairs of competitors named together in the
-            same filing snippet. Same provenance, lower confidence. Shows
-            the "Target ↔ Walmart" pair from Costco's competitor list.
-          </p>
         </div>
         <div class="filter-section">
           <div class="filter-title">Markets</div>
