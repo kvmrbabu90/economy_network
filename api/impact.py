@@ -27,8 +27,11 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 import urllib.request
@@ -36,12 +39,17 @@ import urllib.error
 
 log = logging.getLogger(__name__)
 
+# LLM provider switch. "claude" routes through the local Claude Code CLI
+# (`claude -p ... --output-format json`) so it bills against the user's
+# Max plan instead of API credits. "ollama" keeps the local Gemma 4
+# fallback for offline use.
+LLM_PROVIDER = os.environ.get("IMPACT_LLM_PROVIDER", "claude").lower()
+
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.environ.get("ECONGRAPH_LLM_MODEL", "gemma4:26b")
 MAX_HOPS = int(os.environ.get("IMPACT_MAX_HOPS", "3"))
-# Per-ring cap. Gemma 4 26B takes ~30-60s for ~15-20 verdicts on local
-# hardware; anything bigger blows past the per-request timeout. We
-# still see the whole frontier, just sliced.
+# Per-ring cap. Both providers handle ~16 verdicts comfortably; Gemma
+# tops out around 20, Claude can go higher but we keep it consistent.
 MAX_RING_CANDIDATES = int(os.environ.get("IMPACT_MAX_RING", "16"))
 LLM_TIMEOUT_SECONDS = int(os.environ.get("IMPACT_LLM_TIMEOUT", "600"))
 
@@ -49,6 +57,82 @@ LLM_TIMEOUT_SECONDS = int(os.environ.get("IMPACT_LLM_TIMEOUT", "600"))
 # ---------------------------------------------------------------------------
 # Ollama client
 # ---------------------------------------------------------------------------
+
+_CLAUDE_BIN_CACHE: Optional[str] = None
+
+
+def _resolve_claude_binary() -> str:
+    """Find the Claude Code CLI. Same search order pipeline.extractor uses.
+    Cached after first lookup."""
+    global _CLAUDE_BIN_CACHE
+    if _CLAUDE_BIN_CACHE:
+        return _CLAUDE_BIN_CACHE
+    candidates = [
+        os.environ.get("CLAUDE_CLI"),
+        str(Path.home() / ".local" / "bin" / "claude.exe"),
+        shutil.which("claude.exe"),
+        shutil.which("claude"),
+    ]
+    for c in candidates:
+        if c and Path(c).exists():
+            _CLAUDE_BIN_CACHE = c
+            return c
+    raise RuntimeError(
+        "Could not find the `claude` CLI. Install via "
+        "`irm https://claude.ai/install.ps1 | iex` and run `claude login`, "
+        "then set CLAUDE_CLI to its full path or put it on PATH."
+    )
+
+
+def _claude_call(prompt: str) -> str:
+    """Single Claude Code CLI call. Returns the model's text (the
+    `result` field of the JSON envelope). Empty string on error -- the
+    caller's tolerant JSON parser handles it the same way it handles
+    Ollama failures."""
+    binary = _resolve_claude_binary()
+    cmd = [binary, "-p", prompt, "--output-format", "json"]
+    t0 = time.time()
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        log.warning("claude CLI timeout after %ds", LLM_TIMEOUT_SECONDS)
+        return ""
+    log.info("claude CLI call (%.1fs, %d bytes prompt, exit=%d)",
+             time.time() - t0, len(prompt), proc.returncode)
+    if proc.returncode != 0:
+        log.warning("claude CLI non-zero exit: %s", (proc.stderr or "")[:300])
+        return ""
+    try:
+        envelope = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        log.warning("claude CLI envelope parse failed: %s; head=%s",
+                    exc, (proc.stdout or "")[:300])
+        return ""
+    if envelope.get("is_error"):
+        log.warning("claude CLI is_error=true: %s", envelope.get("result", ""))
+        return ""
+    return envelope.get("result", "") or ""
+
+
+def _llm_call(prompt: str, *, fmt_json: bool = False) -> str:
+    """Dispatch to the configured LLM provider. Returns the raw text the
+    provider emitted; callers run _parse_llm_json on it."""
+    if LLM_PROVIDER == "claude":
+        return _claude_call(prompt)
+    if LLM_PROVIDER == "ollama":
+        return _ollama_call(prompt, fmt_json=fmt_json)
+    raise RuntimeError(
+        f"Unknown IMPACT_LLM_PROVIDER={LLM_PROVIDER!r}; use 'claude' or 'ollama'."
+    )
+
 
 def _ollama_call(prompt: str, *, fmt_json: bool = False) -> str:
     """Single non-streaming call to Ollama. Returns the raw `response`
@@ -312,7 +396,7 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
         candidates="\n".join(candidate_lines),
     )
     log.info("identifying seed (candidates: %d)", len(candidate_lines))
-    seed_raw = _ollama_call(seed_prompt)
+    seed_raw = _llm_call(seed_prompt)
     seed_obj = _parse_llm_json(seed_raw) or {}
     seed_id = seed_obj.get("node_id")
     if not seed_id:
@@ -381,7 +465,7 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
             candidates="\n".join(cand_lines),
         )
         log.info("scoring hop %d ring of %d candidates", hop, len(ring))
-        ring_raw = _ollama_call(ring_prompt)
+        ring_raw = _llm_call(ring_prompt)
         debug_log.append(f"hop {hop}: LLM raw_len={len(ring_raw)} head={(ring_raw or '')[:120]!r}")
         ring_parsed = _parse_llm_json(ring_raw)
         # tolerate either {"results": [...]} or [...] directly
@@ -429,7 +513,8 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
     return {
         "seed": impacts[seed_id],
         "impacts": list(impacts.values()),
-        "model": OLLAMA_MODEL,
+        "provider": LLM_PROVIDER,
+        "model": "claude-code-cli" if LLM_PROVIDER == "claude" else OLLAMA_MODEL,
         "max_hops": MAX_HOPS,
         "debug": debug_log,
     }
