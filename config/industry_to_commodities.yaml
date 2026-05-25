@@ -106,15 +106,15 @@ Telecom Tower REITs: [steel, copper]
 # ------------------------------------------------------------------
 # CONSUMER STAPLES & FOOD
 # ------------------------------------------------------------------
-Packaged Foods & Meats: [wheat, corn, soybeans, sugar, palm-oil, dairy, beef, pork, chicken, eggs, paper, polyethylene, pet]
+Packaged Foods & Meats: [wheat, corn, soybeans, sugar, palm-oil, dairy, beef, pork, chicken, fish, eggs, paper, polyethylene, pet]
 Soft Drinks & Non-alcoholic Beverages: [sugar, corn, aluminum, pet, water, coffee, tea, orange-juice]
 Brewers: [barley, aluminum, water, sugar]
 Distillers & Vintners: [corn, wheat, sugar, water]
 Tobacco: [tobacco]
 Household Products: [palm-oil, pulp, ethylene, polypropylene, caustic-soda]
 Personal Care Products: [palm-oil, sugar, ethylene, polyethylene]
-Food Distributors: []
-Food Retail: []
+Food Distributors: [fish, beef, chicken, pork, dairy, eggs]
+Food Retail: [fish, beef, chicken, pork, dairy, eggs, wheat, corn]
 Agricultural Products & Services: [wheat, corn, soybeans, rice, sugar, palm-oil, sunflower-oil, rapeseed]
 
 # ------------------------------------------------------------------
@@ -123,7 +123,7 @@ Agricultural Products & Services: [wheat, corn, soybeans, rice, sugar, palm-oil,
 Apparel, Accessories & Luxury Goods: [cotton, wool, silk, leather, rubber, synthetic-rubber]
 Apparel Retail: []
 Footwear: [rubber, synthetic-rubber, leather, cotton]
-Restaurants: [beef, chicken, pork, corn, wheat, soybeans, palm-oil, sugar, coffee, dairy, eggs]
+Restaurants: [beef, chicken, pork, fish, corn, wheat, soybeans, palm-oil, sugar, coffee, dairy, eggs]
 Consumer Staples Merchandise Retail: []
 Broadline Retail: []
 Home Improvement Retail: []

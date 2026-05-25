@@ -214,11 +214,12 @@ function refreshEdgeVisibility(): void {
       return {
         ...eattrs,
         hidden: baseHidden,
-        // In-chain edges pop at full opacity; everything else fades to
-        // 20% via rgba so the impacted subgraph reads cleanly through
-        // the rest of the network.
-        color: inChain ? "rgba(232, 227, 218, 0.95)" : "rgba(196, 200, 206, 0.18)",
-        size: inChain ? (eattrs.size ?? 1) * 1.4 : (eattrs.size ?? 1) * 0.5,
+        // Translucent rgba doesn't work at this edge density -- thousands
+        // of overlapping 20%-alpha lines composite up to bright white.
+        // Use a dark opaque grey only ~3 levels above the page background
+        // so non-chain edges visually recede instead of stacking.
+        color: inChain ? "#e8e3da" : "#1a1d22",
+        size: inChain ? (eattrs.size ?? 1) * 1.4 : (eattrs.size ?? 1) * 0.4,
       };
     }
     return { ...eattrs, hidden: baseHidden };
@@ -237,14 +238,14 @@ function refreshEdgeVisibility(): void {
     if (impactState) {
       const verdict = impactState.byNode.get(id);
       const tint = tintColor(verdict);
-      // In-chain: keep the verdict tint; outside-chain: drop the node
-      // to ~20% opacity grey so it recedes but the structure stays
-      // visible enough for orientation.
+      // Dark opaque grey for off-chain -- close to the page background
+      // so non-impacted nodes recede without alpha-stacking into bright
+      // smudges. Tinted nodes pop.
       return {
         ...nattrs,
         label,
         hidden: hide,
-        color: tint ?? "rgba(168, 174, 184, 0.20)",
+        color: tint ?? "#22262c",
       };
     }
     return { ...nattrs, label, hidden: hide };
@@ -520,22 +521,22 @@ function applyImpactToScene(state: ImpactState | null): void {
       if (state) {
         const verdict = data ? state.byNode.get(data.id) : undefined;
         const tint = tintColorRGB(verdict);
-        obj.material.transparent = true;
         if (tint) {
-          // In-chain node: full opacity verdict tint.
           obj.material.color.setRGB(tint.r, tint.g, tint.b);
           obj.material.opacity = 1.0;
+          obj.material.transparent = true;
         } else {
-          // Outside the chain: dim base grey at 20% opacity so the
-          // affected subgraph dominates the visual field.
-          const dim = dimColor();
-          obj.material.color.setRGB(dim.r, dim.g, dim.b);
-          obj.material.opacity = 0.20;
+          // Dark opaque grey -- alpha-stacking thousands of translucent
+          // node spheres produces a bright glow in WebGL; opaque dark
+          // recedes cleanly against the dark background.
+          obj.material.color.setRGB(0.13, 0.15, 0.17);
+          obj.material.opacity = 1.0;
+          obj.material.transparent = false;
         }
       } else if (data && data.color) {
-        // restore the data-driven base colour
         obj.material.color.set(data.color);
         obj.material.opacity = 0.95;
+        obj.material.transparent = true;
       }
       obj.material.needsUpdate = true;
     } else if (obj.__graphObjType === "link" && obj.material && obj.material.color) {
@@ -547,15 +548,17 @@ function applyImpactToScene(state: ImpactState | null): void {
         if (inChain) {
           obj.material.color.setRGB(0.91, 0.89, 0.85);
           obj.material.opacity = 0.95;
+          obj.material.transparent = true;
         } else {
-          // Dim non-chain edges hard so the chain reads through the
-          // background mesh.
-          obj.material.color.setRGB(0.77, 0.78, 0.81);
-          obj.material.opacity = 0.08;
+          // Same reasoning: dark opaque, not translucent.
+          obj.material.color.setRGB(0.11, 0.12, 0.14);
+          obj.material.opacity = 1.0;
+          obj.material.transparent = false;
         }
       } else if (data && data.color) {
         obj.material.color.set(data.color);
         obj.material.opacity = data.below ? 0.30 : 0.75;
+        obj.material.transparent = true;
       }
       obj.material.needsUpdate = true;
     }
