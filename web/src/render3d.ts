@@ -289,8 +289,13 @@ export function start3D(
     // surface -- previous max of 0.65*R made arcs visually larger than
     // the globe itself when zoomed out. 0.06 + 0.18 by angular sep
     // keeps every arc inside a thin shell hugging the wireframe.
-    const ARC_BASE_HEIGHT = GLOBE_RADIUS * 0.03;
-    const ARC_MAX_HEIGHT = GLOBE_RADIUS * 0.22;
+    // Arc heights -- bumped so even short hops have a visible bulge
+    // above the surface (user reported "lines going through the globe"
+    // at the previous 0.03 floor). 0.06 lifts even neighbour-hop arcs
+    // clearly off the sphere; 0.35 gives antipodal arcs a pronounced
+    // bowl shape so the great-circle path reads at a glance.
+    const ARC_BASE_HEIGHT = GLOBE_RADIUS * 0.06;
+    const ARC_MAX_HEIGHT = GLOBE_RADIUS * 0.35;
     const ARC_SEGMENTS = 24;
     // Below this angular separation (in radians) two endpoints are
     // effectively co-located -- typically because they both fell back

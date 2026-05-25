@@ -461,6 +461,19 @@ function setView(next: "2d" | "3d" | "globe") {
       },
       { layout: next === "globe" ? "globe" : "ball" },
     );
+    // CRITICAL: re-apply impact tinting if an impact run is active.
+    // start3D() creates a fresh scene with default colours; without this
+    // the user switches 2D -> 3D/Globe and loses the red/green tint
+    // even though impactState is still set. Globe arcs need a moment
+    // for buildArcs() rAF callbacks to populate geometry, so we
+    // schedule the impact re-tint a few times to win whichever frame
+    // wins last.
+    if (impactState) {
+      const reapply = () => applyImpactToScene(impactState);
+      requestAnimationFrame(reapply);
+      setTimeout(reapply, 200);
+      setTimeout(reapply, 800);
+    }
   } else {
     stop3D();
     container3d.hidden = true;
