@@ -73,6 +73,13 @@ const g: EconGraph = createGraph();
 const renderer = new Sigma(g, container, {
   renderEdgeLabels: false,
   defaultEdgeType: "line",
+  // Sigma defaults edge colour to "#ccc" (light grey) which fights the
+  // dark theme everywhere and SHOWS THROUGH the impact dimming whenever
+  // the reducer's per-edge colour isn't applied (e.g. some render
+  // paths). Pin it to the monochrome grey we use elsewhere so dim
+  // fallbacks don't look bright white.
+  defaultEdgeColor: "#c4c8ce",
+  defaultNodeColor: "#c8ccd2",
   labelDensity: 1,
   labelGridCellSize: 80,
   labelRenderedSizeThreshold: 6,
@@ -195,6 +202,17 @@ function inspectorExtrasFor(nodeId: string): NodeExtras {
 refreshEdgeVisibility(); // initial pass (everything visible)
 
 function refreshEdgeVisibility(): void {
+  // Belt-and-braces: while an impact run is active, flip the SIGMA
+  // default colours dark too, so the rare edge / node that slips past
+  // the reducer (different render program, race during HMR, etc.)
+  // doesn't pop as bright white over the dimmed background.
+  if (impactState) {
+    renderer.setSetting("defaultEdgeColor", "#1a1d22");
+    renderer.setSetting("defaultNodeColor", "#22262c");
+  } else {
+    renderer.setSetting("defaultEdgeColor", "#c4c8ce");
+    renderer.setSetting("defaultNodeColor", "#c8ccd2");
+  }
   renderer.setSetting("edgeReducer", (eid, eattrs) => {
     // Aggregated bubble<->bubble edges only belong in Bubbles layout.
     const isVirtualBubbleEdge = eid.startsWith("bubble-edge:");
