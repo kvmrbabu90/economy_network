@@ -221,6 +221,32 @@ export interface ImpactResponse {
 
 export type ImpactProvider = "claude" | "ollama";
 
+export interface DescribeResponse {
+  node_id: string;
+  description: string;
+}
+
+export async function describeNode(nodeId: string): Promise<DescribeResponse> {
+  const url = new URL(`/describe/${encodeURI(nodeId)}`, API_BASE_URL);
+  inflight += 1;
+  notifyLoading();
+  try {
+    const resp = await fetch(url.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      throw new ApiError(resp.status, `${resp.statusText} - ${body.slice(0, 200)}`);
+    }
+    return (await resp.json()) as DescribeResponse;
+  } finally {
+    inflight -= 1;
+    notifyLoading();
+  }
+}
+
 export async function runImpact(
   text: string,
   opts: { provider?: ImpactProvider } = {},

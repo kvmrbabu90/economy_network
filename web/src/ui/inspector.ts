@@ -2,8 +2,13 @@
 // the auditability payoff -- every relationship surfaces the verbatim filing
 // snippet that justified it.
 
-import type { ApiEdge, ApiNode, EdgeType } from "../api";
+import type { ApiEdge, ApiNode, EdgeType, ImpactVerdict } from "../api";
 import type { EconGraph } from "../graph";
+
+export interface NodeExtras {
+  impact?: ImpactVerdict;
+  onDescribe?: (nodeId: string) => Promise<string>;
+}
 
 const root = () => document.getElementById("inspector")!;
 
@@ -39,7 +44,7 @@ export function showEmpty() { emptyState(); }
 // Node view
 // ---------------------------------------------------------------------------
 
-export function showNode(node: ApiNode, g: EconGraph): void {
+export function showNode(node: ApiNode, g: EconGraph, extras: NodeExtras = {}): void {
   const a = node.attributes;
   const r = root();
   r.replaceChildren();
@@ -55,6 +60,58 @@ export function showNode(node: ApiNode, g: EconGraph): void {
   pills.forEach((p) => pillBox.appendChild(p));
   r.appendChild(pillBox);
 
+  // Impact verdict (most valuable info when impact run is active).
+  if (extras.impact) {
+    const v = extras.impact;
+    const dirClass = v.direction === "positive" ? "impact-pos"
+      : v.direction === "negative" ? "impact-neg" : "impact-neutral";
+    const dirLabel = v.direction === "positive" ? "POSITIVE"
+      : v.direction === "negative" ? "NEGATIVE" : "NO EFFECT";
+    const box = el("div", { class: `impact-box ${dirClass}` });
+    box.appendChild(el("div", { class: "impact-header" },
+      el("span", { class: "impact-dir" }, dirLabel),
+      el("span", { class: "impact-mag" }, `magnitude ${v.magnitude.toFixed(2)}`),
+      el("span", { class: "impact-hop" }, `hop ${v.hop}`),
+    ));
+    if (v.reasoning) {
+      box.appendChild(el("p", { class: "impact-reasoning" }, v.reasoning));
+    }
+    if (v.via_parent && v.edge_type) {
+      box.appendChild(el("p", { class: "impact-via" },
+        `via ${v.via_parent} (${v.edge_type})`,
+      ));
+    }
+    r.appendChild(box);
+  }
+
+  // Describe button -- LLM-generated 2-3 sentence business description.
+  const md = (a.metadata as Record<string, unknown> | undefined) ?? {};
+  const wd = (md.wikidata as Record<string, unknown> | undefined) ?? {};
+  const hqLabel = typeof wd.hq === "string" ? wd.hq : null;
+  if (extras.onDescribe) {
+    const aboutBox = el("div", { class: "about-box" });
+    const descBtn = el("button", { class: "describe-btn", type: "button" },
+      "Describe this " + (a.type === "Company" ? "business" : a.type.toLowerCase()),
+    );
+    const descBody = el("p", { class: "about-body" });
+    descBtn.addEventListener("click", async () => {
+      descBtn.setAttribute("disabled", "true");
+      descBtn.textContent = "Asking Claude...";
+      try {
+        const text = await extras.onDescribe!(node.key);
+        descBody.textContent = text || "(no description returned)";
+        descBtn.remove();
+      } catch (err) {
+        descBody.textContent = `Error: ${String((err as Error).message || err)}`;
+        descBtn.removeAttribute("disabled");
+        descBtn.textContent = "Retry";
+      }
+    });
+    aboutBox.appendChild(descBtn);
+    aboutBox.appendChild(descBody);
+    r.appendChild(aboutBox);
+  }
+
   const dl = el("dl");
   function row(label: string, value: string | null | undefined) {
     if (!value) return;
@@ -66,6 +123,7 @@ export function showNode(node: ApiNode, g: EconGraph): void {
   row("Sector", a.sector);
   row("Industry", a.industry);
   row("Country", a.country);
+  if (hqLabel) row("HQ", hqLabel);
   if (a.identifiers && Object.keys(a.identifiers).length) {
     const lines = Object.entries(a.identifiers).map(([k, v]) => `${k}: ${String(v)}`);
     row("Identifiers", lines.join(" · "));

@@ -42,10 +42,10 @@ import {
   update3D,
 } from "./render3d";
 import { wireFilters, type FilterState } from "./ui/filters";
-import { showEdge, showEmpty, showNode } from "./ui/inspector";
+import { showEdge, showEmpty, showNode, type NodeExtras } from "./ui/inspector";
 import { wireSearch } from "./ui/search";
 import { startStatusPolling } from "./ui/status";
-import { runImpact, type ImpactResponse } from "./api";
+import { describeNode, runImpact, type ImpactResponse } from "./api";
 import {
   buildImpactState,
   dimColor,
@@ -175,6 +175,23 @@ filters = wireFilters((next) => {
 // separately in applyImpactToScene().
 let impactState: ImpactState | null = null;
 
+// Build the inspector's contextual extras: surfaces the LLM verdict
+// (if a propagation run is active for this node) and wires the
+// "Describe" button to the cached /describe endpoint.
+function inspectorExtrasFor(nodeId: string): NodeExtras {
+  const extras: NodeExtras = {
+    onDescribe: async (id: string) => {
+      const resp = await describeNode(id);
+      return resp.description;
+    },
+  };
+  if (impactState) {
+    const v = impactState.byNode.get(nodeId);
+    if (v) extras.impact = v;
+  }
+  return extras;
+}
+
 refreshEdgeVisibility(); // initial pass (everything visible)
 
 function refreshEdgeVisibility(): void {
@@ -259,7 +276,7 @@ async function recenterOn(id: string): Promise<void> {
   cameraReset();
   // Show the focused node in the inspector.
   const center = resp.nodes.find((n) => n.key === resp.center);
-  if (center) showNode(center, g);
+  if (center) showNode(center, g, inspectorExtrasFor(center.key));
 }
 
 async function expandFrom(id: string): Promise<void> {
@@ -328,7 +345,7 @@ renderer.on("doubleClickNode", (event) => {
 // Hovering shows node detail without committing to a navigation.
 renderer.on("enterNode", (event) => {
   const attrs = g.getNodeAttributes(event.node);
-  showNode(attrs.apiNode, g);
+  showNode(attrs.apiNode, g, inspectorExtrasFor(event.node));
 });
 renderer.on("leaveNode", () => {
   // Keep the panel pinned to whatever the user last selected; don't blank it

@@ -537,3 +537,64 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
         "max_hops": MAX_HOPS,
         "debug": debug_log,
     }
+
+
+# ---------------------------------------------------------------------------
+# Node descriptions (LLM-generated, cached per-process)
+# ---------------------------------------------------------------------------
+
+_DESCRIBE_CACHE: dict[str, str] = {}
+
+_DESCRIBE_PROMPT_TEMPLATE = """Write a 2-3 sentence description of the following entity for someone
+who has never heard of it. Plain English, no jargon. Focus on:
+  - what they actually do (make, sell, mine, grow, regulate, etc.)
+  - who their customers are
+  - why they matter in the value chain (scale, niche, market position)
+
+ENTITY:
+  name: {name}
+  type: {type}
+  sector: {sector}
+  industry: {industry}
+  country: {country}
+  tickers: {tickers}
+  hq: {hq}
+
+Respond with ONLY the description text, no preamble, no quotes, no bullet points.
+"""
+
+
+def describe_node(
+    *,
+    name: str,
+    node_type: str,
+    sector: Optional[str] = None,
+    industry: Optional[str] = None,
+    country: Optional[str] = None,
+    tickers: Optional[list[str]] = None,
+    hq: Optional[str] = None,
+    cache_key: Optional[str] = None,
+) -> str:
+    """One-shot business description via the configured LLM provider.
+    Cached per-process by cache_key (typically the node id) so repeated
+    inspector clicks don't re-hit the LLM."""
+    if cache_key and cache_key in _DESCRIBE_CACHE:
+        return _DESCRIBE_CACHE[cache_key]
+    prompt = _DESCRIBE_PROMPT_TEMPLATE.format(
+        name=name,
+        type=node_type,
+        sector=sector or "-",
+        industry=industry or "-",
+        country=country or "-",
+        tickers=", ".join(tickers or []) or "-",
+        hq=hq or "-",
+    )
+    raw = _llm_call(prompt)
+    # Strip any leading/trailing whitespace + accidental quote-wrapping.
+    text = (raw or "").strip().strip('"').strip("'").strip()
+    # Trim Claude's occasional "Here is a description:" preamble.
+    text = re.sub(r"^(here\s+is\s+(a\s+)?description[:\s\-]*)", "", text, flags=re.IGNORECASE)
+    text = text.strip()
+    if cache_key:
+        _DESCRIBE_CACHE[cache_key] = text
+    return text

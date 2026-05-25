@@ -207,6 +207,41 @@ def get_edge_endpoint(edge_id: str, conn: sqlite3.Connection = Depends(get_conn)
     return edge
 
 
+@app.post("/describe/{node_id:path}")
+def post_describe(
+    node_id: str,
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """LLM-generated 2-3 sentence description of a node aimed at
+    someone who has never heard of it. Cached per-process by node_id
+    so repeated inspector clicks are free.
+
+    Picks fields off the node row to give the LLM something to ground
+    on: sector / industry / country / tickers / wikidata HQ if known.
+    """
+    node = q.get_node(conn, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Node not found: {node_id!r}")
+    a = node.get("attributes", {})
+    md = a.get("metadata") or {}
+    wd = md.get("wikidata") or {}
+    hq = wd.get("hq") if isinstance(wd, dict) else None
+    try:
+        description = impact_mod.describe_node(
+            name=a.get("label") or node_id,
+            node_type=a.get("type") or "Entity",
+            sector=a.get("sector"),
+            industry=a.get("industry"),
+            country=a.get("country"),
+            tickers=a.get("tickers") or [],
+            hq=hq,
+            cache_key=node_id,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return {"node_id": node_id, "description": description}
+
+
 @app.post("/impact")
 def post_impact(
     payload: dict = Body(...),

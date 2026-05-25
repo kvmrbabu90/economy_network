@@ -534,6 +534,73 @@ html, body {
 .inspector .pill.derived { background: rgba(176, 126, 224, 0.12); color: var(--c-customer_of); }
 .inspector .pill.below-threshold { background: rgba(255, 255, 255, 0.04); color: var(--text-faint); }
 
+/* Impact-verdict box -- shown when a propagation run is active. */
+.impact-box {
+  margin: 14px 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border-left: 3px solid #6e6a62;
+  background: rgba(255, 255, 255, 0.03);
+}
+.impact-box.impact-pos { border-left-color: #40c86e; background: rgba(64, 200, 110, 0.08); }
+.impact-box.impact-neg { border-left-color: #e25454; background: rgba(226, 84, 84, 0.08); }
+.impact-box.impact-neutral { border-left-color: #6e6a62; }
+.impact-header {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.impact-dir {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.impact-box.impact-pos .impact-dir { color: #40c86e; }
+.impact-box.impact-neg .impact-dir { color: #e25454; }
+.impact-box.impact-neutral .impact-dir { color: var(--text-mute); }
+.impact-mag, .impact-hop {
+  font-size: 11px;
+  color: var(--text-mute);
+}
+.impact-reasoning {
+  margin: 0 0 4px 0;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.45;
+}
+.impact-via {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+/* "Describe this business" -- LLM-generated summary block. */
+.about-box {
+  margin: 12px 0;
+  padding: 0;
+}
+.describe-btn {
+  background: #2a2e34;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.describe-btn:hover:not([disabled]) { background: #36393f; border-color: var(--text-mute); }
+.describe-btn[disabled] { opacity: 0.6; cursor: wait; }
+.about-body {
+  margin: 8px 0 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
 .provenance {
   background: var(--bg-recess);
   border-left: 3px solid var(--c-supplies);
