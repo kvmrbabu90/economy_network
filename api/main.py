@@ -19,11 +19,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from schema.store import connect
 
+from . import impact as impact_mod
 from . import query as q
 
 
@@ -204,3 +205,23 @@ def get_edge_endpoint(edge_id: str, conn: sqlite3.Connection = Depends(get_conn)
     if edge is None:
         raise HTTPException(status_code=404, detail=f"Edge not found: {edge_id!r}")
     return edge
+
+
+@app.post("/impact")
+def post_impact(
+    payload: dict = Body(...),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    """News-event impact propagation. Sends the supplied text to the
+    local LLM (Ollama / gemma4:26b by default), picks a seed
+    commodity-or-region node, then BFS-propagates verdicts ring-by-ring
+    up to MAX_HOPS. Returns the full impact list for the frontend to
+    tint."""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="`text` is required")
+    try:
+        return impact_mod.run_impact(text, conn=conn)
+    except RuntimeError as e:
+        # Most likely: Ollama isn't running. Surface clearly.
+        raise HTTPException(status_code=502, detail=str(e)) from e
