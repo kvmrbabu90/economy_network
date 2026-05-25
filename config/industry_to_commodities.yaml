@@ -1,169 +1,533 @@
-# GICS sub-industry -> commodities used (supplies edges).
-#
-# Semantics: each entry means "every S&P 500 filer in this sub-industry
-# is treated as a consumer of the listed commodities."  An edge
-#       commodity:X --supplies--> cik:Y
-# is generated per (commodity, filer) pair.
-#
-# This is intentionally a *coarse* map -- one row per industry, not per
-# company. Companies that are themselves commodity *producers* will end
-# up with a self-loop (commodity:crude-oil -> exxon, because exxon's
-# industry is Integrated Oil & Gas which consumes crude oil to refine).
-# That's fine; the graph then shows ExxonMobil sitting next to its
-# producer commodity rather than as a downstream consumer alone.
-#
-# Format: each top-level key is the sub-industry name (must match the
-# value in data/companies.jsonl's `sub_industry` field exactly).
-
-# ------------------------------------------------------------------
-# ENERGY
-# ------------------------------------------------------------------
-Integrated Oil & Gas: [crude-oil, natural-gas, sulfur, hydrogen]
-Oil & Gas Exploration & Production: [crude-oil, natural-gas, silica-sand]
-Oil & Gas Refining & Marketing: [crude-oil, ethylene, propylene, sulfur, hydrogen]
-Oil & Gas Storage & Transportation: [crude-oil, natural-gas]
-Oil & Gas Equipment & Services: [steel, silica-sand]
-
-# ------------------------------------------------------------------
-# UTILITIES
-# ------------------------------------------------------------------
-Electric Utilities: [coal, natural-gas, uranium, water]
-Multi-Utilities: [coal, natural-gas, uranium, water]
-Independent Power Producers & Energy Traders: [coal, natural-gas, uranium]
-Gas Utilities: [natural-gas]
-Water Utilities: [water, chlorine]
-
-# ------------------------------------------------------------------
-# MATERIALS
-# ------------------------------------------------------------------
-Steel: [iron-ore, coal, limestone, manganese, chromium, nickel]
-Copper: [copper]
-Gold: [gold]
-Commodity Chemicals: [crude-oil, natural-gas, ethylene, propylene, ammonia, chlorine, caustic-soda, methanol]
-Specialty Chemicals: [methanol, ammonia, caustic-soda, sulfuric-acid, ethylene, propylene]
-Industrial Gases: [hydrogen, helium, ammonia, nitrogen-fertilizer]
-Fertilizers & Agricultural Chemicals: [potash, phosphate, nitrogen-fertilizer, ammonia, sulfuric-acid]
-Construction Materials: [limestone, gypsum, cement, sand-gravel]
-Paper & Plastic Packaging Products & Materials: [pulp, paper, polyethylene, polypropylene, pet]
-Metal, Glass & Plastic Containers: [aluminum, steel, silica-sand, pet, polyethylene]
-
-# ------------------------------------------------------------------
-# AUTOMOTIVE & TRANSPORT
-# ------------------------------------------------------------------
-Automobile Manufacturers: [steel, aluminum, copper, lithium, cobalt, nickel, manganese, rubber, synthetic-rubber, lead]
-Automotive Parts & Equipment: [steel, aluminum, copper, rubber, synthetic-rubber]
+Integrated Oil & Gas:
+- carbon-credits
+- crude-oil
+- hydrogen
+- natural-gas
+- sulfur
+Oil & Gas Exploration & Production:
+- crude-oil
+- natural-gas
+- silica-sand
+Oil & Gas Refining & Marketing:
+- carbon-credits
+- crude-oil
+- ethylene
+- hydrogen
+- propylene
+- sulfur
+Oil & Gas Storage & Transportation:
+- crude-oil
+- natural-gas
+Oil & Gas Equipment & Services:
+- molybdenum
+- silica-sand
+- steel
+Electric Utilities:
+- carbon-credits
+- coal
+- hydrogen
+- natural-gas
+- uranium
+- water
+Multi-Utilities:
+- carbon-credits
+- coal
+- hydrogen
+- natural-gas
+- uranium
+- water
+Independent Power Producers & Energy Traders:
+- carbon-credits
+- coal
+- natural-gas
+- uranium
+- zirconium
+Gas Utilities:
+- natural-gas
+Water Utilities:
+- chlorine
+- salt
+- water
+Steel:
+- carbon-credits
+- chromium
+- coal
+- iron-ore
+- limestone
+- manganese
+- molybdenum
+- nickel
+- niobium
+- vanadium
+- zinc
+Copper:
+- copper
+Gold:
+- gold
+Commodity Chemicals:
+- ammonia
+- caustic-soda
+- chlorine
+- crude-oil
+- ethylene
+- methanol
+- natural-gas
+- phosphate
+- propylene
+- salt
+- soda-ash
+Specialty Chemicals:
+- ammonia
+- caustic-soda
+- chlorine
+- ethylene
+- mercury
+- methanol
+- palladium
+- platinum
+- propylene
+- sulfuric-acid
+Industrial Gases:
+- ammonia
+- helium
+- hydrogen
+- nitrogen-fertilizer
+Fertilizers & Agricultural Chemicals:
+- ammonia
+- nitrogen-fertilizer
+- phosphate
+- potash
+- sulfuric-acid
+Construction Materials:
+- bauxite
+- carbon-credits
+- cement
+- gypsum
+- limestone
+- sand-gravel
+- soda-ash
+Paper & Plastic Packaging Products & Materials:
+- paper
+- pet
+- polyethylene
+- polypropylene
+- pulp
+Metal, Glass & Plastic Containers:
+- aluminum
+- pet
+- polyethylene
+- polypropylene
+- silica-sand
+- soda-ash
+- steel
+- tin
+Automobile Manufacturers:
+- aluminum
+- antimony
+- cobalt
+- copper
+- dysprosium
+- graphite
+- lead
+- lithium
+- lithium-carbonate
+- magnesium
+- manganese
+- manganese-sulfate
+- nickel
+- nickel-sulfate
+- palladium
+- platinum
+- polypropylene
+- rhodium
+- rubber
+- steel
+- synthetic-rubber
+- vanadium
+- zinc
+Automotive Parts & Equipment:
+- aluminum
+- copper
+- rubber
+- steel
+- synthetic-rubber
 Automotive Retail: []
-Passenger Airlines: [crude-oil, aluminum, titanium]
-Rail Transportation: [coal, crude-oil, steel]
-Cargo Ground Transportation: [crude-oil, natural-gas]
-Air Freight & Logistics: [crude-oil]
-Passenger Ground Transportation: [crude-oil]
-
-# ------------------------------------------------------------------
-# CONSTRUCTION / INDUSTRIAL
-# ------------------------------------------------------------------
-Construction & Engineering: [steel, cement, copper, aluminum, sand-gravel, lumber]
-Construction Machinery & Heavy Transportation Equipment: [steel, copper, aluminum, rubber]
-Industrial Machinery & Supplies & Components: [steel, copper, aluminum]
-Agricultural & Farm Machinery: [steel, rubber, copper]
-Heavy Electrical Equipment: [copper, steel, aluminum, silicon]
-Electrical Components & Equipment: [copper, aluminum, silicon]
-Industrial Conglomerates: [steel, copper, aluminum, silicon]
-Building Products: [steel, aluminum, copper, lumber, gypsum, cement, silica-sand]
-Homebuilding: [lumber, gypsum, cement, copper, steel, sand-gravel]
+Passenger Airlines:
+- aluminum
+- biodiesel
+- carbon-credits
+- crude-oil
+- titanium
+Rail Transportation:
+- biodiesel
+- coal
+- crude-oil
+- steel
+Cargo Ground Transportation:
+- biodiesel
+- crude-oil
+- natural-gas
+Air Freight & Logistics:
+- biodiesel
+- carbon-credits
+- crude-oil
+Passenger Ground Transportation:
+- crude-oil
+Construction & Engineering:
+- aluminum
+- cement
+- copper
+- lumber
+- pvc
+- sand-gravel
+- steel
+Construction Machinery & Heavy Transportation Equipment:
+- aluminum
+- copper
+- rubber
+- steel
+Industrial Machinery & Supplies & Components:
+- aluminum
+- copper
+- steel
+Agricultural & Farm Machinery:
+- copper
+- rubber
+- steel
+Heavy Electrical Equipment:
+- aluminum
+- copper
+- dysprosium
+- silicon
+- steel
+Electrical Components & Equipment:
+- aluminum
+- copper
+- silicon
+Industrial Conglomerates:
+- aluminum
+- copper
+- silicon
+- steel
+Building Products:
+- aluminum
+- antimony
+- cement
+- copper
+- gypsum
+- lumber
+- pvc
+- silica-sand
+- steel
+- synthetic-rubber
+- zinc
+Homebuilding:
+- cement
+- copper
+- gypsum
+- lumber
+- pvc
+- sand-gravel
+- steel
 Environmental & Facilities Services: []
 Trading Companies & Distributors: []
 Distributors: []
-
-# ------------------------------------------------------------------
-# AEROSPACE / DEFENSE
-# ------------------------------------------------------------------
-Aerospace & Defense: [aluminum, titanium, steel, copper, nickel, beryllium, tungsten, rare-earths]
-
-# ------------------------------------------------------------------
-# TECHNOLOGY / SEMICONDUCTORS
-# ------------------------------------------------------------------
-Semiconductors: [silicon, gallium, germanium, indium, copper, gold, rare-earths, neodymium]
-Semiconductor Materials & Equipment: [silicon, gallium, germanium, tellurium, hydrogen, helium]
-Technology Hardware, Storage & Peripherals: [silicon, copper, aluminum, gold, cobalt, lithium, neodymium]
-Communications Equipment: [silicon, copper, gold, neodymium, rare-earths]
-Consumer Electronics: [silicon, copper, gold, cobalt, lithium, neodymium]
-Electronic Components: [silicon, copper, gold, tantalum]
-Electronic Equipment & Instruments: [silicon, copper, gold]
-Electronic Manufacturing Services: [silicon, copper, gold, tantalum]
+Aerospace & Defense:
+- aluminum
+- antimony
+- beryllium
+- copper
+- helium
+- magnesium
+- molybdenum
+- nickel
+- niobium
+- rare-earths
+- steel
+- tantalum
+- titanium
+- tungsten
+- vanadium
+- zirconium
+Semiconductors:
+- copper
+- gallium
+- germanium
+- gold
+- graphite
+- helium
+- indium
+- neodymium
+- rare-earths
+- silicon
+- silver
+- tellurium
+- tin
+Semiconductor Materials & Equipment:
+- gallium
+- germanium
+- helium
+- hydrogen
+- silicon
+- tellurium
+Technology Hardware, Storage & Peripherals:
+- aluminum
+- cobalt
+- copper
+- gold
+- graphite
+- lithium
+- lithium-carbonate
+- neodymium
+- silicon
+Communications Equipment:
+- copper
+- germanium
+- gold
+- neodymium
+- rare-earths
+- silicon
+- silver
+- tantalum
+Consumer Electronics:
+- cobalt
+- copper
+- gold
+- indium
+- lithium
+- lithium-carbonate
+- magnesium
+- neodymium
+- silicon
+Electronic Components:
+- copper
+- gold
+- silicon
+- silver
+- tantalum
+- tin
+Electronic Equipment & Instruments:
+- copper
+- gold
+- silicon
+Electronic Manufacturing Services:
+- copper
+- gold
+- silicon
+- tantalum
 Technology Distributors: []
 Computer & Electronics Retail: []
 Application Software: []
 Systems Software: []
-Internet Services & Infrastructure: [silicon, copper]
+Internet Services & Infrastructure:
+- copper
+- silicon
 IT Consulting & Other Services: []
 Data Processing & Outsourced Services: []
-Interactive Media & Services: [silicon, copper]
-Interactive Home Entertainment: [silicon, copper]
-Data Center REITs: [copper, aluminum, silicon, water]
-Telecom Tower REITs: [steel, copper]
-
-# ------------------------------------------------------------------
-# CONSUMER STAPLES & FOOD
-# ------------------------------------------------------------------
-Packaged Foods & Meats: [wheat, corn, soybeans, sugar, palm-oil, dairy, beef, pork, chicken, fish, eggs, paper, polyethylene, pet]
-Soft Drinks & Non-alcoholic Beverages: [sugar, corn, aluminum, pet, water, coffee, tea, orange-juice]
-Brewers: [barley, aluminum, water, sugar]
-Distillers & Vintners: [corn, wheat, sugar, water]
-Tobacco: [tobacco]
-Household Products: [palm-oil, pulp, ethylene, polypropylene, caustic-soda]
-Personal Care Products: [palm-oil, sugar, ethylene, polyethylene]
-Food Distributors: [fish, beef, chicken, pork, dairy, eggs]
-Food Retail: [fish, beef, chicken, pork, dairy, eggs, wheat, corn]
-Agricultural Products & Services: [wheat, corn, soybeans, rice, sugar, palm-oil, sunflower-oil, rapeseed]
-
-# ------------------------------------------------------------------
-# CONSUMER DISCRETIONARY
-# ------------------------------------------------------------------
-Apparel, Accessories & Luxury Goods: [cotton, wool, silk, leather, rubber, synthetic-rubber]
+Interactive Media & Services:
+- copper
+- silicon
+Interactive Home Entertainment:
+- copper
+- silicon
+Data Center REITs:
+- aluminum
+- copper
+- silicon
+- water
+Telecom Tower REITs:
+- copper
+- steel
+Packaged Foods & Meats:
+- barley
+- beef
+- chicken
+- cocoa
+- corn
+- dairy
+- eggs
+- fish
+- oats
+- palm-oil
+- paper
+- pet
+- polyethylene
+- pork
+- rapeseed
+- rice
+- salt
+- sorghum
+- soybeans
+- sugar
+- sunflower-oil
+- wheat
+Soft Drinks & Non-alcoholic Beverages:
+- aluminum
+- coffee
+- corn
+- ethanol
+- orange-juice
+- pet
+- sugar
+- tea
+- water
+Brewers:
+- aluminum
+- barley
+- sorghum
+- sugar
+- water
+Distillers & Vintners:
+- corn
+- sorghum
+- sugar
+- water
+- wheat
+Tobacco:
+- tobacco
+Household Products:
+- caustic-soda
+- cotton
+- ethylene
+- palm-oil
+- polypropylene
+- pulp
+- salt
+- soda-ash
+Personal Care Products:
+- bismuth
+- cotton
+- ethanol
+- ethylene
+- palm-oil
+- polyethylene
+- rapeseed
+- sugar
+- sunflower-oil
+Food Distributors:
+- beef
+- chicken
+- dairy
+- eggs
+- fish
+- pork
+Food Retail:
+- beef
+- chicken
+- cocoa
+- coffee
+- corn
+- dairy
+- eggs
+- fish
+- oats
+- orange-juice
+- pork
+- rice
+- salt
+- tea
+- wheat
+Agricultural Products & Services:
+- corn
+- palm-oil
+- rapeseed
+- rice
+- soybeans
+- sugar
+- sunflower-oil
+- wheat
+Apparel, Accessories & Luxury Goods:
+- cotton
+- diamond
+- leather
+- rubber
+- silk
+- synthetic-rubber
+- wool
 Apparel Retail: []
-Footwear: [rubber, synthetic-rubber, leather, cotton]
-Restaurants: [beef, chicken, pork, fish, corn, wheat, soybeans, palm-oil, sugar, coffee, dairy, eggs]
+Footwear:
+- cotton
+- leather
+- rubber
+- synthetic-rubber
+Restaurants:
+- beef
+- chicken
+- cocoa
+- coffee
+- corn
+- dairy
+- eggs
+- fish
+- oats
+- palm-oil
+- pork
+- rice
+- sorghum
+- soybeans
+- sugar
+- sunflower-oil
+- tea
+- wheat
 Consumer Staples Merchandise Retail: []
 Broadline Retail: []
 Home Improvement Retail: []
 Homefurnishing Retail: []
 Other Specialty Retail: []
 Casinos & Gaming: []
-Hotels, Resorts & Cruise Lines: [crude-oil]
-Leisure Products: [aluminum, rubber, lumber]
+Hotels, Resorts & Cruise Lines:
+- crude-oil
+Leisure Products:
+- aluminum
+- lumber
+- rubber
 Specialized Consumer Services: []
 Consumer Finance: []
-
-# ------------------------------------------------------------------
-# HEALTH CARE
-# ------------------------------------------------------------------
-Pharmaceuticals: [ethanol, sulfuric-acid, palladium, water]
-Biotechnology: [water]
+Pharmaceuticals:
+- bismuth
+- ethanol
+- palladium
+- platinum
+- sulfuric-acid
+- water
+Biotechnology:
+- water
 Life Sciences Tools & Services: []
-Health Care Equipment: [steel, titanium, silicon]
-Health Care Supplies: [paper, pulp, pet, polyethylene]
+Health Care Equipment:
+- helium
+- silicon
+- steel
+- titanium
+Health Care Supplies:
+- cotton
+- paper
+- pet
+- polyethylene
+- pulp
+- pvc
+- silver
 Health Care Distributors: []
 Health Care Facilities: []
-Health Care Services: []
+Health Care Services:
+- chlorine
 Health Care Technology: []
 Managed Health Care: []
 Health Care REITs: []
-
-# ------------------------------------------------------------------
-# COMMUNICATION SERVICES (already covered in Tech section)
-# ------------------------------------------------------------------
 Movies & Entertainment: []
 Advertising: []
-Publishing: [paper, pulp]
+Publishing:
+- paper
+- pulp
 Broadcasting: []
 Cable & Satellite: []
-Integrated Telecommunication Services: [silicon, copper]
-Wireless Telecommunication Services: [silicon, copper, neodymium]
-
-# ------------------------------------------------------------------
-# FINANCIALS / REAL ESTATE (mostly no direct commodity consumption)
-# ------------------------------------------------------------------
+Integrated Telecommunication Services:
+- copper
+- silicon
+Wireless Telecommunication Services:
+- copper
+- dysprosium
+- neodymium
+- silicon
 Diversified Banks: []
 Regional Banks: []
 Asset Management & Custody Banks: []
@@ -184,12 +548,11 @@ Office REITs: []
 Self-Storage REITs: []
 Other Specialized REITs: []
 Hotel & Resort REITs: []
-Timber REITs: [lumber, hardwood, pulp]
+Timber REITs:
+- hardwood
+- lumber
+- pulp
 Real Estate Services: []
-
-# ------------------------------------------------------------------
-# OTHER
-# ------------------------------------------------------------------
 Diversified Support Services: []
 Research & Consulting Services: []
 Human Resource & Employment Services: []
