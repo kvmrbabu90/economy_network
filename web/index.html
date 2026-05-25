@@ -137,6 +137,10 @@
             placeholder="Describe a news event or hypothetical -- e.g. 'A new pest infection is destroying sugarcane crops worldwide'"
             autocomplete="off"
           />
+          <select id="impact-provider" class="impact-select" title="LLM provider">
+            <option value="claude" selected>Claude</option>
+            <option value="ollama">Gemma (local)</option>
+          </select>
           <button id="impact-run" class="impact-btn">Trace impact</button>
           <button id="impact-clear" class="impact-btn impact-btn-secondary" hidden>Clear</button>
           <div id="impact-status" class="impact-status" hidden></div>

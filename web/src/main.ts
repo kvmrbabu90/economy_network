@@ -534,6 +534,7 @@ const impactInput = document.getElementById("impact-input") as HTMLInputElement 
 const impactRunBtn = document.getElementById("impact-run") as HTMLButtonElement | null;
 const impactClearBtn = document.getElementById("impact-clear") as HTMLButtonElement | null;
 const impactStatusEl = document.getElementById("impact-status") as HTMLDivElement | null;
+const impactProviderEl = document.getElementById("impact-provider") as HTMLSelectElement | null;
 
 function setImpactStatus(msg: string | null): void {
   if (!impactStatusEl) return;
@@ -546,10 +547,13 @@ async function handleImpactRun(): Promise<void> {
   if (!impactInput || !impactRunBtn) return;
   const text = impactInput.value.trim();
   if (!text) return;
+  const provider = (impactProviderEl?.value as "claude" | "ollama" | undefined) ?? "claude";
   impactRunBtn.disabled = true;
-  setImpactStatus("Asking Gemma... (60-120s for a 3-hop walk)");
+  const niceProvider = provider === "claude" ? "Claude" : "Gemma";
+  const eta = provider === "claude" ? "~30-90s" : "~60-180s";
+  setImpactStatus(`Asking ${niceProvider}... (${eta} for a 3-hop walk)`);
   try {
-    const resp: ImpactResponse = await runImpact(text);
+    const resp: ImpactResponse = await runImpact(text, { provider });
     if (resp.error || !resp.seed) {
       setImpactStatus(`Failed: ${resp.error || "no seed identified"}`);
       return;
@@ -559,7 +563,7 @@ async function handleImpactRun(): Promise<void> {
     applyImpactToScene(impactState);
     if (impactClearBtn) impactClearBtn.hidden = false;
     setImpactStatus(
-      `Seed: ${resp.seed.name} (${resp.seed.direction}) -> ${resp.impacts.length} nodes touched across ${resp.max_hops || 3} hops`,
+      `[${niceProvider}] Seed: ${resp.seed.name} (${resp.seed.direction}) -> ${resp.impacts.length} nodes touched across ${resp.max_hops || 3} hops`,
     );
   } catch (err) {
     console.error(err);

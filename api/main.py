@@ -213,15 +213,33 @@ def post_impact(
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     """News-event impact propagation. Sends the supplied text to the
-    local LLM (Ollama / gemma4:26b by default), picks a seed
-    commodity-or-region node, then BFS-propagates verdicts ring-by-ring
-    up to MAX_HOPS. Returns the full impact list for the frontend to
-    tint."""
+    selected LLM provider, picks a seed commodity-or-region node, then
+    BFS-propagates verdicts ring-by-ring up to MAX_HOPS. Returns the
+    full impact list for the frontend to tint.
+
+    Optional `provider` in the body overrides the IMPACT_LLM_PROVIDER
+    env default for this request: 'claude' (Claude Code CLI) or
+    'ollama' (local Gemma). Lets the UI flip providers per-call.
+    """
     text = (payload.get("text") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="`text` is required")
+    provider_override = (payload.get("provider") or "").strip().lower() or None
+    if provider_override and provider_override not in ("claude", "ollama"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown provider {provider_override!r}; use 'claude' or 'ollama'",
+        )
     try:
-        return impact_mod.run_impact(text, conn=conn)
+        # Per-request override via a thread-local-ish swap on the module
+        # global; restore even on error so concurrent requests don't see
+        # the swap.
+        prev_provider = impact_mod.LLM_PROVIDER
+        if provider_override:
+            impact_mod.LLM_PROVIDER = provider_override
+        try:
+            return impact_mod.run_impact(text, conn=conn)
+        finally:
+            impact_mod.LLM_PROVIDER = prev_provider
     except RuntimeError as e:
-        # Most likely: Ollama isn't running. Surface clearly.
         raise HTTPException(status_code=502, detail=str(e)) from e

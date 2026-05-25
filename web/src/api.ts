@@ -212,25 +212,33 @@ export interface ImpactVerdict {
 export interface ImpactResponse {
   seed: ImpactVerdict | null;
   impacts: ImpactVerdict[];
+  provider?: string;
   model?: string;
   max_hops?: number;
   debug?: string[];
   error?: string;
 }
 
-export async function runImpact(text: string): Promise<ImpactResponse> {
+export type ImpactProvider = "claude" | "ollama";
+
+export async function runImpact(
+  text: string,
+  opts: { provider?: ImpactProvider } = {},
+): Promise<ImpactResponse> {
   const url = new URL("/impact", API_BASE_URL);
   inflight += 1;
   notifyLoading();
   try {
+    const body: Record<string, string> = { text };
+    if (opts.provider) body.provider = opts.provider;
     const resp = await fetch(url.toString(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(body),
     });
     if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      throw new ApiError(resp.status, `${resp.statusText} - ${body.slice(0, 200)}`);
+      const respBody = await resp.text().catch(() => "");
+      throw new ApiError(resp.status, `${resp.statusText} - ${respBody.slice(0, 200)}`);
     }
     return (await resp.json()) as ImpactResponse;
   } finally {
