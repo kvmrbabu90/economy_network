@@ -29,6 +29,7 @@ Wireless Telecommunication Services: Wireless Telecommunication Services
 # ============================================================================
 Automobile Manufacturers: Automobiles
 Automotive Parts & Equipment: Automobile Components
+Auto Parts & Equipment: Automobile Components
 Consumer Electronics: Household Durables
 Homebuilding: Household Durables
 Apparel, Accessories & Luxury Goods: Textiles, Apparel & Luxury Goods
@@ -153,6 +154,9 @@ Construction Materials: Construction Materials
 Copper: Metals & Mining
 Gold: Metals & Mining
 Steel: Metals & Mining
+Metals & Mining: Metals & Mining
+Diversified Metals & Mining: Metals & Mining
+Silver: Metals & Mining
 Metal, Glass & Plastic Containers: Containers & Packaging
 Paper & Plastic Packaging Products & Materials: Containers & Packaging
 

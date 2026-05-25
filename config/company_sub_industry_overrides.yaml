@@ -69,3 +69,55 @@
 # ── Middle East ───────────────────────────────────────────────────────────────
 
 # Saudi Aramco (SA) — B2B/B2G oil; intentionally NOT added.
+
+# ── Phase F additions ─────────────────────────────────────────────────────────
+
+# Taiwan — consumer electronics / PC OEMs
+"wikidata:Q463094": "Technology Hardware, Storage & Peripherals"   # Foxconn
+"wikidata:Q481778": "Technology Hardware, Storage & Peripherals"   # Acer (alt Q-id)
+"wikidata:Q502935": "Technology Hardware, Storage & Peripherals"   # Micro-Star International
+"wikidata:Q93894":  "Technology Hardware, Storage & Peripherals"   # ASRock
+"wikidata:Q303580": "Communications Equipment"                     # D-Link
+"wikidata:Q245283": "Communications Equipment"                     # Zyxel
+"wikidata:Q300120": "Electronic Equipment & Instruments"           # AUO Corporation
+"wikidata:Q6059838": "Technology Hardware, Storage & Peripherals"  # Inventec
+"wikidata:Q324901": "Technology Hardware, Storage & Peripherals"   # Transcend Information
+"wikidata:Q696743": "Technology Hardware, Storage & Peripherals"   # Quanta Computer
+"wikidata:Q703557": "Leisure Products"                             # Giant Bicycles
+"wikidata:Q14799":  "Technology Hardware, Storage & Peripherals"   # Lenovo (CN/HK)
+
+# China — consumer internet / auto
+"wikidata:Q151135": "Internet Services & Infrastructure"           # Youku
+"wikidata:Q814825": "Automobile Manufacturers"                     # Foton Motor
+
+# India — sector corrections (B2B/defense, not retail, but fix for regulators)
+"wikidata:Q908931": "Integrated Oil & Gas"                         # Reliance Industries
+"wikidata:Q357095": "Aerospace & Defense"                          # Hindustan Aeronautics
+"wikidata:Q3630918": "Electronic Equipment & Instruments"          # Bharat Electronics
+"wikidata:Q3530250": "Aerospace & Defense"                         # Bharat Dynamics
+
+# South Korea
+"wikidata:Q185564": "Oil & Gas Refining & Marketing"               # S-Oil
+"wikidata:Q152517": "Aerospace & Defense"                          # Hyundai Rotem
+
+# Germany — automotive / industrial (correction; not retail overrides)
+"wikidata:Q156578": "Automobile Manufacturers"                     # Volkswagen Group
+"wikidata:Q26678":  "Automobile Manufacturers"                     # BMW
+"wikidata:Q138133": "Electric Utilities"                           # RWE
+"wikidata:Q81230":  "Industrial Machinery & Supplies & Components" # Siemens
+"wikidata:Q9396":   "Integrated Telecommunication Services"        # Deutsche Telekom
+
+# Japan
+"wikidata:Q207784": "Interactive Home Entertainment"               # Square Enix
+"wikidata:Q1648148": "Auto Parts & Equipment"                      # Sumitomo Rubber
+
+# Australia — banking / biotech
+"wikidata:Q285328": "Diversified Banks"                            # Commonwealth Bank
+"wikidata:Q908265": "Biotechnology"                                # CSL Limited
+"wikidata:Q1430985": "Diversified Banks"                           # National Australia Bank
+"wikidata:Q2031726": "Diversified Banks"                           # Westpac
+"wikidata:Q714641": "Diversified Banks"                            # ANZ Banking Group
+
+# United Kingdom
+"wikidata:Q122141": "Wireless Telecommunication Services"          # Vodafone
+"wikidata:Q821293": "Diversified Metals & Mining"                  # Rio Tinto Group

@@ -12,7 +12,7 @@ A single, queryable, directed, typed graph of the global economy.
 - **`customer_of` is derived**: never stored. It's the reversal of `supplies` computed at query time.
 - **Every edge has provenance**: filing accession, URL, verbatim snippet, extracted_by tag.
 
-Current scale: **3,743 nodes**, **12,907 edges** (7,493 core + 5,414 audit/inferred).
+Current scale: **5,328 nodes**, **18,528 edges** (13,435 core + 5,093 audit/inferred).
 
 ---
 
@@ -72,6 +72,28 @@ Each stage reads the previous stage's JSONL files from `data/`. Re-runnable inde
 - `config/country_regulators.yaml` covering ~40 countries
 - Two-tier routing: wikidata: companies → country-only regs; cik: foreign 20-F → US + country
 - Acceptance: Toyota (JP), Toyota-Astra (ID), ASML (NL) all routing correctly
+
+### Phase D: Country-Aware Retail Routing (complete 2026-05-25)
+- 7 new region nodes (14 total): Korea, Australia, Canada, Mexico, Middle East, Sub-Saharan Africa, LatAm
+- `config/country_default_retail_markets.yaml` for 40+ country codes
+- Samsung/Sony/Sanofi acceptance tests pass; 4,194 supplies edges
+- `company_sub_industry_overrides.yaml` for Wikidata companies misclassified as Industrial Conglomerates
+
+### Phase F: Exchange-Index Global Expansion (complete 2026-05-25)
+- **1,449 new companies** from 9 major stock exchanges (NSE India 187, TSE Japan 329,
+  LSE UK 276, FSE Germany 60, KRX Korea 195, ASX Australia 230, SSE China 170,
+  HKEX 65, TWSE Taiwan 150)
+- Strategy: Wikidata SPARQL P:17 (HQ country) + P:414 (any exchange listing)
+- Wikipedia LLM extraction: ~73 new edges from Phase F companies
+- Wikidata P1830 competitor enrichment: +1,088 competes_with edges
+- **Final graph: 5,328 nodes, 18,528 edges, largest component 5,223 nodes**
+- Supply layer: 6,090 supplies edges (up from 4,194)
+- New file: `pipeline/ingest_phase_f.py`
+- Config: 36 new overrides in `company_sub_industry_overrides.yaml`; 4 new entries in
+  `gics_subindustry_to_industry.yaml`
+- TypeScript fix: `render3d.ts` TS2448 (apiNode used before declaration)
+- Acceptance tests: all 6 geography tests PASS (India ≥100, UK ≥100, Germany ≥30,
+  Japan ≥80, Korea ≥100, Australia ≥100)
 
 ---
 
@@ -180,7 +202,25 @@ Each stage reads the previous stage's JSONL files from `data/`. Re-runnable inde
 
 ---
 
-## 8. Phase E (Backlog) — Geography-Aware Impact Reasoning
+## 8. Phase F (Complete) — Exchange-Index Global Expansion
+
+See Phase History above for full details. Key stats: 2,862 companies in companies.jsonl
+(up from 1,253 pre-Phase F), 5,328 graph nodes, 18,528 edges, 6,090 supply edges.
+
+Pipeline execution order for rebuild:
+```bash
+python -m pipeline.commodities       # generates commodity/retail nodes
+python -m pipeline.extract           # TRUNCATES edges_raw.jsonl — run FIRST
+python -m pipeline.extract_wikipedia # APPENDs wikipedia edges
+python -m pipeline.wikidata_phase_b  # APPENDs P1830 competitor edges
+python -m pipeline.resolve
+python -m pipeline.build_graph
+# restart uvicorn on port 8101
+```
+
+---
+
+## 9. Phase E (Backlog) — Geography-Aware Impact Reasoning
 
 Root cause: LLM assigns benefit to Tyson Foods when "Chic-fil-A enters India" because the `supplies` edge is US-scoped but has no geographic metadata.
 
@@ -193,7 +233,7 @@ Root cause: LLM assigns benefit to Tyson Foods when "Chic-fil-A enters India" be
 
 ```bash
 # Backend (from repo root)
-uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn api.main:app --host 0.0.0.0 --port 8101 --reload
 
 # Frontend (dev)
 cd web && npm run dev

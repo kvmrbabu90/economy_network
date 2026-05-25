@@ -182,6 +182,8 @@ filters = wireFilters((next) => {
   // We don't refetch here -- the UI honors what's currently in the graph by
   // hiding edges whose type isn't in `filters.types`. Pure-visual change.
   refreshEdgeVisibility();
+  // Propagate market / provisional filter to 3D view if it's active.
+  if (is3DRunning()) update3D(g, filters);
 });
 
 // Global node scale — adjusted with [ / ] keys. Applied in the nodeReducer
@@ -634,7 +636,7 @@ function setView(next: "2d" | "3d" | "globe") {
           }
         },
       },
-      { layout: next === "globe" ? "globe" : "ball" },
+      { layout: next === "globe" ? "globe" : "ball", filterState: filters },
     );
     // CRITICAL: re-apply impact tinting if an impact run is active.
     // start3D() creates a fresh scene with default colours; without this
@@ -681,16 +683,16 @@ document.querySelectorAll<HTMLButtonElement>(".layout-tab").forEach((btn) => {
 // view is active.
 function refreshAll() {
   renderer.refresh();
-  if (is3DRunning()) update3D(g);
+  if (is3DRunning()) update3D(g, filters);
 }
 
 // Override the existing call sites that previously only refreshed Sigma.
 // We monkey-patch in a tiny way: the original functions call renderer.refresh();
 // we ALSO call update3D when the 3D renderer is alive. The cheapest path is
 // to add a global graph-change listener -- graphology emits events.
-g.on("nodeAdded", () => { if (is3DRunning()) update3D(g); });
-g.on("edgeAdded", () => { if (is3DRunning()) update3D(g); });
-g.on("cleared",   () => { if (is3DRunning()) update3D(g); });
+g.on("nodeAdded", () => { if (is3DRunning()) update3D(g, filters); });
+g.on("edgeAdded", () => { if (is3DRunning()) update3D(g, filters); });
+g.on("cleared",   () => { if (is3DRunning()) update3D(g, filters); });
 
 // Resize handling for the 3D canvas.
 const ro3d = new ResizeObserver(() => {

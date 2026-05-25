@@ -25,6 +25,7 @@ import landTopo from "world-atlas/land-110m.json";
 import { feature as topoFeature } from "topojson-client";
 
 import type { EconGraph } from "./graph";
+import { countryInMarkets, type FilterState } from "./ui/filters";
 
 export interface View3DCallbacks {
   onNodeClick?: (id: string) => void;
@@ -36,6 +37,10 @@ export interface View3DOptions {
   /** "globe" pins nodes at their Wikidata HQ lat/lon on a sphere; "ball"
       uses 3d-force-graph's default force-directed layout. */
   layout?: "ball" | "globe";
+  /** Current filter state — used to hide Company nodes that don't match the
+      selected market chips, and to hide provisional nodes when the toggle is
+      off. Mirrors the same logic as the Sigma 2D nodeReducer. */
+  filterState?: FilterState | null;
 }
 
 const GLOBE_RADIUS = 200;
@@ -229,6 +234,7 @@ interface ForceLink {
 
 function toForceData(g: EconGraph, opts: View3DOptions = {}) {
   const layout = opts.layout ?? "ball";
+  const fs = opts.filterState ?? null;
   const nodes: ForceNode[] = [];
   const links: ForceLink[] = [];
   // For globe mode: track each node's intended (lat, lon) separately so we
@@ -237,12 +243,30 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
   // projecting to xyz. Without this pass the spheres stack on a single
   // pixel and become un-pickable.
   const globePos: Array<{ idx: number; lat: number; lon: number }> = [];
+  // Track which node IDs are hidden so we can drop their edges too.
+  const hiddenIds = new Set<string>();
 
   g.forEachNode((id, attrs) => {
     // Skip bubble-layout sector hubs — they only exist for the 2D "Bubbles"
     // mode and have no meaningful position or edges in 3D space.
     if (id.startsWith("bubble:")) return;
     const apiNode = attrs.apiNode;
+    // --- Market filter (mirrors Sigma 2D nodeReducer) ---
+    // Only Company nodes are subject to market filtering.
+    // Commodity, Regulator, Region nodes are always visible.
+    if (fs) {
+      const nodeType    = apiNode.attributes.type as string;
+      const nodeCountry = apiNode.attributes.country as string | undefined;
+      const isProv      = !!apiNode.attributes.provisional;
+      if (isProv && !fs.includeProvisional) { hiddenIds.add(id); return; }
+      if (
+        nodeType === "Company" &&
+        nodeCountry &&
+        fs.markets !== null &&
+        fs.markets.length > 0 &&
+        !countryInMarkets(nodeCountry, fs.markets)
+      ) { hiddenIds.add(id); return; }
+    }
     const node: ForceNode = {
       id,
       label: attrs.label,
@@ -352,6 +376,8 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
   g.forEachEdge((id, attrs, src, tgt) => {
     // Skip any edge that touches a bubble hub node.
     if (src.startsWith("bubble:") || tgt.startsWith("bubble:") || id.startsWith("bubble-edge:")) return;
+    // Skip edges where either endpoint was filtered out by the market filter.
+    if (hiddenIds.has(src) || hiddenIds.has(tgt)) return;
     links.push({
       source: src,
       target: tgt,
@@ -734,9 +760,9 @@ export function start3D(
   }
 }
 
-export function update3D(g: EconGraph): void {
+export function update3D(g: EconGraph, filterState?: FilterState | null): void {
   if (!instance) return;
-  instance.graphData(toForceData(g, { layout: currentLayout }));
+  instance.graphData(toForceData(g, { layout: currentLayout, filterState }));
 }
 
 export function resize3D(width: number, height: number): void {

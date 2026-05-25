@@ -245,4 +245,24 @@ routing adds more geography signals to the graph.
 - Phase D: complete (2026-05-25). Country-aware retail routing; 7 new region nodes;
   `country_default_retail_markets.yaml` for 40+ countries; Samsung/Sony/Sanofi acceptance
   tests pass. Graph: 4,194 supplies edges (up from 3,745).
+
+- Phase F: **complete** (2026-05-25). Exchange-index expansion — added 1,449 companies
+  from 9 major non-US stock exchanges (NSE/India 187, TSE/Japan 329, LSE/UK 276,
+  FSE/Germany 60, KRX/Korea 195, ASX/Australia 230, SSE/China 170, HKEX/HK 65,
+  TWSE/Taiwan 150). Strategy: Wikidata SPARQL P:17 (country) + P:414 (any exchange),
+  excluding dissolved companies and existing SEC filers. Wikipedia LLM extraction
+  added ~73 new supply/competitor edges from Phase F companies. Wikidata P1830
+  competitor enrichment added 1,088 more edges. Final graph: 5,328 nodes (up from
+  3,743), 18,528 edges (up from 12,907), largest component 5,223 nodes.
+  Supply layer: 6,090 `supplies` edges (up from 4,194).
+  New files: `pipeline/ingest_phase_f.py`.
+  Config additions: 36 entries in `company_sub_industry_overrides.yaml` for retail
+  routing; 4 new entries in `gics_subindustry_to_industry.yaml` (Metals & Mining,
+  Diversified Metals & Mining, Silver, Auto Parts & Equipment). Country corrections:
+  38 companies fixed from default GB to correct country (Russian/Greek/Israeli GDR
+  listings caught by LSE first-pass run). TypeScript fix: `render3d.ts` TS2448 error
+  (apiNode used before declaration in toForceData).
+  Acceptance tests: India ≥100 ✅, UK ≥100 ✅, Germany ≥30 ✅, Japan ≥80 ✅,
+  Korea ≥100 ✅, Australia ≥100 ✅.
+
 - Phase E: backlog.
