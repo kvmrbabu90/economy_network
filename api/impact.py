@@ -553,6 +553,32 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
             break
         frontier = new_frontier
 
+    # -- Step N+1: refinement pass -----------------------------------------
+    # The hop-by-hop BFS is myopic: each node is scored ONCE, against ONE
+    # parent's verdict, even when many other impacted neighbours connect
+    # to it. Canonical failure mode is "India under Ukraine war" -- India
+    # gets scored at hop 2 via the wheat path ("self-sufficient in wheat;
+    # no effect") and the model never sees that sunflower-oil (also at
+    # hop 2, scored in parallel) is also negative and feeds the same
+    # node via different companies.
+    #
+    # The fix: find every node currently no_effect / low-magnitude that
+    # has TWO OR MORE impacted neighbours, then re-score those nodes
+    # with the full set of neighbour verdicts shown to the LLM at once.
+    # Only apply the new verdict if it strengthens (higher magnitude or
+    # flipped direction from no_effect to a definite call) -- never
+    # downgrade an already-strong verdict.
+    refinement_summary = _refinement_pass(
+        text=text,
+        impacts=impacts,
+        seed_id=seed_id,
+        seed_summary=seed_summary,
+        seed_direction=seed_direction,
+        seed_reasoning=seed_reasoning,
+        conn=conn,
+        debug_log=debug_log,
+    )
+
     return {
         "seed": impacts[seed_id],
         "impacts": list(impacts.values()),
@@ -560,6 +586,240 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
         "model": "claude-code-cli" if LLM_PROVIDER == "claude" else OLLAMA_MODEL,
         "max_hops": MAX_HOPS,
         "debug": debug_log,
+        "refinement": refinement_summary,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Refinement pass (Fix A)
+# ---------------------------------------------------------------------------
+
+# How many candidates to refine per run. Caps wall time and credit usage.
+REFINEMENT_MAX_NODES = int(os.environ.get("IMPACT_REFINE_MAX", "60"))
+# Minimum impacted-neighbour count for a node to be eligible for refinement.
+# 2 keeps the volume high but still meaningful; 1 would trigger on every
+# weakly-connected node.
+REFINEMENT_MIN_PARENTS = int(os.environ.get("IMPACT_REFINE_MIN_PARENTS", "2"))
+# Only refine nodes currently below this magnitude (or "no_effect").
+REFINEMENT_MAGNITUDE_THRESHOLD = float(
+    os.environ.get("IMPACT_REFINE_MAG_THRESHOLD", "0.35")
+)
+
+_REFINE_PROMPT_TEMPLATE = """You are an economist refining an impact assessment.
+
+NEWS:
+\"\"\"
+{news}
+\"\"\"
+
+SEED (the original shock): {seed_id} ({seed_name}, {seed_type})
+SEED DIRECTION: {seed_direction}  -- {seed_reasoning}
+
+The node below was initially scored against ONE parent. It actually has
+MULTIPLE impacted neighbours that may collectively affect it. Re-score
+considering ALL the signals listed.
+
+NODE: {node_id} ({node_name}, {node_type}, sector={node_sector})
+INITIAL VERDICT: direction={direction}, magnitude={magnitude:.2f}
+INITIAL REASONING: {reasoning}
+
+ALL IMPACTED NEIGHBOURS (already classified earlier in the propagation):
+{neighbour_lines}
+
+Refine the verdict given the FULL picture. If multiple negative neighbours
+collectively put pressure on this node, the verdict may flip from
+no_effect to negative or strengthen an existing call. If signals offset
+(positive + negative neighbours), explain how they net out.
+
+Respond with STRICT JSON only, nothing else:
+{{"direction": "positive" | "negative" | "no_effect", "magnitude": 0.0 to 1.0, "reasoning": "<short>"}}
+"""
+
+
+def _refinement_pass(
+    *,
+    text: str,
+    impacts: dict[str, dict[str, Any]],
+    seed_id: str,
+    seed_summary: dict[str, Any],
+    seed_direction: str,
+    seed_reasoning: str,
+    conn: sqlite3.Connection,
+    debug_log: list[str],
+) -> dict[str, Any]:
+    """Re-score weakly-classified nodes with full multi-parent context.
+    Returns a summary dict for the API response."""
+    # Build: for every node in `impacts`, the set of OTHER nodes in
+    # `impacts` that share an edge with it.
+    if len(impacts) < 3:
+        debug_log.append("refine: too few impacted nodes; skipping")
+        return {"considered": 0, "rescored": 0, "applied": 0}
+
+    impacted_ids = list(impacts.keys())
+    placeholders = ",".join("?" for _ in impacted_ids)
+    edge_rows = conn.execute(
+        f"""
+        SELECT source, target, type FROM edges
+        WHERE below_threshold = 0
+          AND source IN ({placeholders})
+          AND target IN ({placeholders})
+        """,
+        impacted_ids + impacted_ids,
+    ).fetchall()
+
+    # neighbours[node_id] = list of (other_id, edge_type, direction-as-seen-from-node)
+    # We don't differentiate source vs target direction -- impact flows
+    # both ways through value-chain edges in practice.
+    neighbours: dict[str, list[tuple[str, str]]] = {}
+    for src, tgt, etype in edge_rows:
+        neighbours.setdefault(src, []).append((tgt, etype))
+        neighbours.setdefault(tgt, []).append((src, etype))
+
+    # Eligible: nodes with WEAK initial verdict + 2+ impacted neighbours
+    eligible: list[tuple[str, int]] = []
+    for nid, v in impacts.items():
+        if nid == seed_id:
+            continue
+        direction = v.get("direction", "no_effect")
+        magnitude = float(v.get("magnitude", 0.0))
+        is_weak = (
+            direction == "no_effect"
+            or magnitude < REFINEMENT_MAGNITUDE_THRESHOLD
+        )
+        if not is_weak:
+            continue
+        nb_count = sum(
+            1 for (other, _et) in neighbours.get(nid, [])
+            if other in impacts and impacts[other].get("direction") in ("positive", "negative")
+            and float(impacts[other].get("magnitude", 0.0)) >= 0.20
+        )
+        if nb_count >= REFINEMENT_MIN_PARENTS:
+            eligible.append((nid, nb_count))
+
+    # Sort by neighbour count descending (most-connected first) and cap.
+    eligible.sort(key=lambda x: -x[1])
+    eligible = eligible[:REFINEMENT_MAX_NODES]
+    debug_log.append(
+        f"refine: {len(eligible)} eligible nodes (weak verdict + "
+        f">= {REFINEMENT_MIN_PARENTS} impacted neighbours)"
+    )
+    if not eligible:
+        return {"considered": 0, "rescored": 0, "applied": 0}
+
+    # Build prompts and dispatch in parallel.
+    prompts: list[str] = []
+    eligible_meta: list[dict[str, Any]] = []
+    for nid, _nb_count in eligible:
+        v = impacts[nid]
+        # Gather impacted neighbour lines, capped at 25 entries so the
+        # prompt stays tractable. Sort by magnitude descending so the
+        # strongest signals come first.
+        nb_lines = []
+        for other, etype in neighbours.get(nid, []):
+            ov = impacts.get(other)
+            if not ov:
+                continue
+            d = ov.get("direction", "no_effect")
+            m = float(ov.get("magnitude", 0.0))
+            if d == "no_effect" or m < 0.15:
+                continue
+            nb_lines.append((
+                m,
+                f"  {other} | {ov.get('name', '')[:40]} | {d} mag={m:.2f} | edge={etype} | {ov.get('reasoning', '')[:80]}",
+            ))
+        if len(nb_lines) < REFINEMENT_MIN_PARENTS:
+            continue
+        nb_lines.sort(key=lambda x: -x[0])
+        nb_text = "\n".join(line for _m, line in nb_lines[:25])
+
+        # Get node sector from db for context.
+        node_row = conn.execute(
+            "SELECT sector FROM nodes WHERE id = ?", (nid,)
+        ).fetchone()
+        node_sector = (node_row[0] if node_row else None) or v.get("type", "")
+
+        prompt = _REFINE_PROMPT_TEMPLATE.format(
+            news=text,
+            seed_id=seed_id,
+            seed_name=seed_summary.get("name", ""),
+            seed_type=seed_summary.get("type", ""),
+            seed_direction=seed_direction,
+            seed_reasoning=seed_reasoning[:160],
+            node_id=nid,
+            node_name=v.get("name", ""),
+            node_type=v.get("type", ""),
+            node_sector=node_sector,
+            direction=v.get("direction", "no_effect"),
+            magnitude=float(v.get("magnitude", 0.0)),
+            reasoning=v.get("reasoning", "")[:160],
+            neighbour_lines=nb_text,
+        )
+        prompts.append(prompt)
+        eligible_meta.append({"node_id": nid, "prev": v})
+
+    if not prompts:
+        return {"considered": len(eligible), "rescored": 0, "applied": 0}
+
+    # Reuse RING_PARALLELISM since each refinement is the same shape of
+    # call as a ring chunk.
+    debug_log.append(
+        f"refine: running {len(prompts)} LLM calls at parallelism={RING_PARALLELISM}"
+    )
+    workers = min(RING_PARALLELISM, len(prompts))
+    t_refine = time.time()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(_llm_call, prompts))
+    debug_log.append(f"refine: {len(results)} calls done in {time.time() - t_refine:.1f}s")
+
+    applied = 0
+    rescored = 0
+    for meta, raw in zip(eligible_meta, results):
+        nid = meta["node_id"]
+        prev = meta["prev"]
+        parsed = _parse_llm_json(raw)
+        if not isinstance(parsed, dict):
+            continue
+        rescored += 1
+        new_dir = parsed.get("direction") or prev.get("direction")
+        new_mag = float(parsed.get("magnitude") or 0.0)
+        new_reasoning = parsed.get("reasoning") or prev.get("reasoning", "")
+
+        # Apply only if the new verdict is STRONGER:
+        # - direction flips from no_effect to a definite call, OR
+        # - magnitude rises by >= 0.15 with same direction, OR
+        # - direction reverses with magnitude > 0.30 (clear flip).
+        prev_dir = prev.get("direction", "no_effect")
+        prev_mag = float(prev.get("magnitude", 0.0))
+        should_apply = False
+        if new_dir != "no_effect" and prev_dir == "no_effect" and new_mag >= 0.20:
+            should_apply = True
+        elif new_dir == prev_dir and new_mag - prev_mag >= 0.15:
+            should_apply = True
+        elif new_dir != prev_dir and new_dir != "no_effect" and new_mag >= 0.30:
+            should_apply = True
+
+        if should_apply:
+            impacts[nid] = {
+                **prev,
+                "direction": new_dir,
+                "magnitude": new_mag,
+                "reasoning": new_reasoning,
+                "refined": True,
+                "previous": {
+                    "direction": prev_dir,
+                    "magnitude": prev_mag,
+                    "reasoning": prev.get("reasoning", ""),
+                },
+            }
+            applied += 1
+    debug_log.append(
+        f"refine: rescored={rescored}/{len(prompts)} parsed; applied={applied}"
+    )
+    return {
+        "considered": len(eligible),
+        "rescored": rescored,
+        "applied": applied,
+        "candidates": [m["node_id"] for m in eligible_meta],
     }
 
 
