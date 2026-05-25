@@ -264,7 +264,7 @@ def _list_seed_candidates(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 def _node_summary(conn: sqlite3.Connection, node_id: str) -> Optional[dict[str, Any]]:
     row = conn.execute(
-        "SELECT id, type, name, sector, industry, metadata FROM nodes WHERE id = ?",
+        "SELECT id, type, name, sector, industry, country, metadata FROM nodes WHERE id = ?",
         (node_id,),
     ).fetchone()
     if not row:
@@ -275,6 +275,7 @@ def _node_summary(conn: sqlite3.Connection, node_id: str) -> Optional[dict[str, 
         "name": row["name"],
         "sector": row["sector"],
         "industry": row["industry"],
+        "country": row["country"],  # Phase E: needed for geography filter
     }
 
 
@@ -288,11 +289,13 @@ def _neighbors(conn: sqlite3.Connection, node_ids: list[str], visited: set[str])
     placeholder = ",".join("?" for _ in node_ids)
     rows = conn.execute(
         f"""
-        SELECT DISTINCT source AS parent, target AS child, type AS edge_type
+        SELECT DISTINCT source AS parent, target AS child, type AS edge_type,
+               supply_geography
         FROM edges
         WHERE source IN ({placeholder}) AND below_threshold = 0
         UNION
-        SELECT DISTINCT target AS parent, source AS child, type AS edge_type
+        SELECT DISTINCT target AS parent, source AS child, type AS edge_type,
+               supply_geography
         FROM edges
         WHERE target IN ({placeholder}) AND below_threshold = 0
         """,
@@ -310,6 +313,11 @@ def _neighbors(conn: sqlite3.Connection, node_ids: list[str], visited: set[str])
             continue
         summary["via_parent"] = r["parent"]
         summary["edge_type"] = r["edge_type"]
+        # Phase E: supply_geography is nullable; may not exist on old DBs
+        try:
+            summary["supply_geography"] = r["supply_geography"]
+        except IndexError:
+            summary["supply_geography"] = None
         out.append(summary)
     return out
 
@@ -368,13 +376,37 @@ DIRECTION SEMANTICS:
                loss, demand shifts to it, sells more of an affected input).
   "no_effect" = the shock does not meaningfully reach this node.
 
-Examples for the sugarcane-pest scenario:
-  - Coca-Cola (uses sugar): negative (input cost up)
+GEOGRAPHY RULE (Phase E — read carefully):
+  The "country" column is the company's HQ country (ISO-2 code).
+  The "edge_geo" column is the supply edge's geographic scope:
+    "US"     = relationship extracted from a US 10-K filing (implicitly domestic)
+    "global" = Wikidata / Wikipedia source (international scope)
+    "?"      = unknown
+
+  Before scoring any Company node, ask: is this company plausibly exposed to
+  the EVENT'S geography? Apply these guards:
+  1. If the event is geography-specific (e.g. "enters India", "Ukraine drought",
+     "California port strike") AND the candidate's country AND edge_geo are both
+     clearly outside that geography, assign "no_effect" — cite the mismatch.
+  2. If edge_geo="US" and the event is outside the US, do NOT assume the
+     supply relationship reaches the event's geography unless the company name
+     or sector strongly suggests it (e.g. a global commodity supplier).
+  3. Commodity, Region, and Regulator nodes are exempt from the geography
+     guard — they can be affected globally.
+
+Examples for the sugarcane-pest scenario (global event):
+  - Coca-Cola (uses sugar, country=US, edge_geo=US): negative (input cost up)
   - A beet-sugar producer: positive (substitute demand up)
   - A telecom tower REIT: no_effect (unrelated)
 
+Examples for "Chic-fil-A enters India" (India-specific):
+  - Tyson Foods (poultry supplier, country=US, edge_geo=US): no_effect
+    (US domestic supply relationship; Tyson has no India supply presence)
+  - Indian poultry companies (country=IN): positive (new B2B demand)
+  - Consumer Market India (region): positive (new restaurant traffic)
+
 CANDIDATES at hop {hop_num}:
-  Format: id | type | name | sector | parent | edge_type | parent_direction
+  Format: id | type | name | sector | country | edge_geo | parent | edge_type | parent_direction
 {candidates}
 
 Respond with STRICT JSON only -- a single JSON array, one object per
@@ -480,9 +512,12 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
             cand_lines = []
             for nb in ring:
                 parent_v = impacts.get(nb["via_parent"], {})
+                country = nb.get("country") or "-"
+                geo = nb.get("supply_geography") or "?"
                 cand_lines.append(
                     f"  {nb['id']} | {nb['type']} | {nb['name']} | "
-                    f"{nb.get('sector') or '-'} | parent={nb['via_parent']} | "
+                    f"{nb.get('sector') or '-'} | country={country} | edge_geo={geo} | "
+                    f"parent={nb['via_parent']} | "
                     f"edge={nb['edge_type']} | parent_dir={parent_v.get('direction', '?')}"
                 )
             chunk_prompts.append(_RING_PROMPT_TEMPLATE.format(
@@ -547,6 +582,7 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
                     "reasoning": reasoning,
                     "via_parent": matching["via_parent"],
                     "edge_type": matching["edge_type"],
+                    "country": matching.get("country"),  # Phase E
                 }
                 visited.add(nid)
                 if direction in ("positive", "negative") and magnitude >= 0.15:
@@ -630,6 +666,12 @@ DIRECTION SEMANTICS:
   "positive" = node is HELPED (substitute demand, lower input cost, rival's loss is its gain)
   "no_effect" = shock does not meaningfully reach this node
 
+GEOGRAPHY RULE (Phase E): Each NODE header shows "country=<ISO-2>" (HQ country).
+  If the news event targets a specific geography and this node's country is clearly
+  outside it AND the supply relationships shown are US-domestic (edge_geo=US),
+  prefer "no_effect" citing the geographic mismatch — unless the node itself is
+  a Commodity or Region node, or the sector strongly implies cross-border exposure.
+
 {node_blocks}
 
 Respond with STRICT JSON only -- a single array, one object per node_id
@@ -647,11 +689,13 @@ def _build_refine_node_block(
     nid: str,
     v: dict,
     node_sector: str,
+    node_country: str,
     nb_lines: list[tuple[float, str]],
 ) -> str:
     """Format one node's refinement context block for the batch prompt."""
     lines = [
-        f"NODE: {nid} ({v.get('name', '')}, {v.get('type', '')}, sector={node_sector})",
+        f"NODE: {nid} ({v.get('name', '')}, {v.get('type', '')}, "
+        f"sector={node_sector}, country={node_country})",
         f"  Initial verdict: direction={v.get('direction', 'no_effect')}, "
         f"magnitude={float(v.get('magnitude', 0.0)):.2f}",
         f"  Initial reasoning: {v.get('reasoning', '')[:120]}",
@@ -751,18 +795,20 @@ def _refinement_pass(
             nb_lines.append((
                 m,
                 f"{other} | {ov.get('name', '')[:40]} | {d} mag={m:.2f} | "
-                f"edge={etype} | {ov.get('reasoning', '')[:80]}",
+                f"edge={etype} | country={ov.get('country') or '-'} | "
+                f"{ov.get('reasoning', '')[:80]}",
             ))
         if len(nb_lines) < REFINEMENT_MIN_PARENTS:
             continue
         nb_lines.sort(key=lambda x: -x[0])
 
         node_row = conn.execute(
-            "SELECT sector FROM nodes WHERE id = ?", (nid,)
+            "SELECT sector, country FROM nodes WHERE id = ?", (nid,)
         ).fetchone()
-        node_sector = (node_row[0] if node_row else None) or v.get("type", "")
+        node_sector = (node_row["sector"] if node_row else None) or v.get("type", "")
+        node_country = (node_row["country"] if node_row else None) or v.get("country") or "-"
 
-        block = _build_refine_node_block(nid, v, node_sector, nb_lines)
+        block = _build_refine_node_block(nid, v, node_sector, node_country, nb_lines)
         node_blocks_list.append((nid, block, v))
 
     if not node_blocks_list:

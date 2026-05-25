@@ -63,6 +63,10 @@ CREATE TABLE IF NOT EXISTS edges (
     -- competes_with edges capped low in Phase 3). One source of truth;
     -- the include_provisional API toggle reads this column.
     below_threshold INTEGER NOT NULL DEFAULT 0,
+    -- Phase E: geographic scope of this supply edge. NULL = unknown / not
+    -- applicable. "US" = extracted from a 10-K (implicitly US-domestic).
+    -- "global" = Wikidata / Wikipedia source (no inherent geo-scope).
+    supply_geography TEXT,
     FOREIGN KEY (source) REFERENCES nodes(id),
     FOREIGN KEY (target) REFERENCES nodes(id)
 );
@@ -168,8 +172,8 @@ def upsert_edge(
         """
         INSERT INTO edges (id, source, target, type, directed, confidence, weight,
                            prov_filing, prov_url, prov_snippet, prov_extracted_by,
-                           additional_provenance, below_threshold)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           additional_provenance, below_threshold, supply_geography)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             source=excluded.source,
             target=excluded.target,
@@ -182,7 +186,8 @@ def upsert_edge(
             prov_snippet=excluded.prov_snippet,
             prov_extracted_by=excluded.prov_extracted_by,
             additional_provenance=excluded.additional_provenance,
-            below_threshold=excluded.below_threshold
+            below_threshold=excluded.below_threshold,
+            supply_geography=excluded.supply_geography
         """,
         (
             e.id,
@@ -198,6 +203,7 @@ def upsert_edge(
             e.provenance.extracted_by,
             json.dumps(extra_prov),
             1 if below_threshold else 0,
+            e.supply_geography,
         ),
     )
     conn.commit()
@@ -248,6 +254,7 @@ def get_edge(conn: sqlite3.Connection, edge_id: str) -> Optional[Edge]:
                 "extracted_by": row["prov_extracted_by"],
             },
             "additional_provenance": extra,
+            "supply_geography": row["supply_geography"] if "supply_geography" in row.keys() else None,
         }
     )
 

@@ -48,6 +48,36 @@ def _load_jsonl(path: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Phase E: supply_geography inference
+# ---------------------------------------------------------------------------
+
+def _infer_supply_geography(edge: dict) -> Optional[str]:
+    """Infer geographic scope from provenance — no LLM call needed.
+
+    Rules (in priority order):
+    - rule / gics-peer edges (regulated_by, commodity) → None (no geo)
+    - wikidata-extracted edges → "global"
+    - wikipedia-sourced edges (filing starts "wikipedia:") → "global"
+    - inference:co-mention (LLM snippet from SEC filing) → "US"
+    - all other LLM-extracted edges from SEC filings → "US"
+    - default → None (unknown / not applicable)
+    """
+    prov = edge.get("provenance") or {}
+    extracted_by = prov.get("extracted_by") or ""
+    filing = (prov.get("filing") or "").lower()
+
+    if extracted_by in ("rule", "inference:gics-peer"):
+        return None   # regulatory / commodity edges have no supply geography
+    if extracted_by == "wikidata":
+        return "global"
+    if filing.startswith("wikipedia:") or filing.startswith("wikidata:"):
+        return "global"
+    if extracted_by in ("llm", "llm:claude-cli", "llm:gemma", "inference:co-mention"):
+        return "US"   # SEC 10-K filings are inherently US-scoped
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Part A -- load into SQLite
 # ---------------------------------------------------------------------------
 
@@ -103,10 +133,15 @@ def load_into_sqlite(
         )
 
     for e in edges:
+        # Phase E: populate supply_geography if not already set in the edge dict.
+        if e.get("supply_geography") is None:
+            e = {**e, "supply_geography": _infer_supply_geography(e)}
         upsert_edge(conn, e, below_threshold=False)
     log.info("Loaded %d core edges", len(edges))
 
     for e in below_threshold_edges:
+        if e.get("supply_geography") is None:
+            e = {**e, "supply_geography": _infer_supply_geography(e)}
         upsert_edge(conn, e, below_threshold=True)
     if below_threshold_edges:
         log.info("Loaded %d audit (below-threshold) edges", len(below_threshold_edges))

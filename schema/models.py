@@ -206,6 +206,12 @@ class Edge(BaseModel):
     # Default empty; no impact on Phase 0-2 fixtures.
     additional_provenance: list[Provenance] = Field(default_factory=list)
     weight: Optional[float] = None
+    # Phase E: geographic scope of a supply edge.  Controlled vocabulary:
+    #   "US"     -- extracted from a 10-K filing (implicitly US-scoped)
+    #   "global" -- Wikidata / Wikipedia source (no inherent geography)
+    #   ISO-2    -- single-country scope when explicitly known
+    #   None     -- unknown or not applicable (regulated_by, competes_with, ...)
+    supply_geography: Optional[str] = None
 
     @field_validator("source", "target")
     @classmethod
