@@ -124,7 +124,22 @@ Brazil. The Phase D upgrade is country-aware retail routing.
 
 ## Status
 
-- Phase A: in progress (started 2026-05-25).
+- Phase A: **complete** (2026-05-25). 67 foreign companies ingested
+  via 20-F (Toyota, Samsung, Shell, TSMC, Alibaba, ASML, Petrobras,
+  HSBC, Sanofi, Novartis, AstraZeneca, ...). companies.jsonl 500 →
+  567; total Company nodes 567; supplies edges 2,545 → 3,598;
+  edges_raw 11,477 → 14,000; rebuilt graph 2,483 → 2,781 connected
+  nodes. Verify smoke test: 5/7 PASS, 1 PARTIAL (Alibaba HQ shown
+  as "Binjiang District" — district within Hangzhou, geocode is
+  correct), 1 FAIL (Infosys has no Wikidata CIK→Q-id mapping in
+  Wikidata's data — known gap, not our bug; backlog adds Infosys
+  via Phase B).
+- Phase A follow-ups (low priority, defer to Phase B work):
+  - 6 entries commented out in foreign_filers.yaml because they
+    don't file 20-F today (Tata Motors, CBD, Westpac, MercadoLibre,
+    Yum China, BeiGene). All addressable via Phase B Wikidata path.
+  - Add more European 20-F filers we missed (BNP Paribas, Allianz,
+    Siemens — though most file 6-K + reverse merger paths not 20-F).
 - Phase B: backlog.
 - Phase C: backlog.
 - Phase D: backlog.
