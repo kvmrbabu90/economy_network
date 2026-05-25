@@ -254,10 +254,9 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
     }
     for (const idxs of buckets.values()) {
       if (idxs.length < 2) continue;
-      // ~0.6° per ring step (~65 km) -- enough to read as separate pins
-      // at typical zoom without flinging regulators out of their actual
-      // metropolitan area.
-      const ringDeg = Math.min(2.0, 0.4 + 0.15 * idxs.length);
+      // ~0.2° base + 0.02° per extra node -- keeps pins visually distinct
+      // (~20-45 km radius) without scattering them across the region.
+      const ringDeg = Math.min(0.6, 0.2 + 0.02 * idxs.length);
       for (let k = 0; k < idxs.length; k++) {
         const theta = (2 * Math.PI * k) / idxs.length;
         const gp = globePos[idxs[k]];
