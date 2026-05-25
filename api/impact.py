@@ -49,15 +49,21 @@ LLM_PROVIDER = os.environ.get("IMPACT_LLM_PROVIDER", "claude").lower()
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.environ.get("ECONGRAPH_LLM_MODEL", "gemma4:26b")
 MAX_HOPS = int(os.environ.get("IMPACT_MAX_HOPS", "3"))
-# Per-ring cap. Both providers handle ~16 verdicts comfortably; Gemma
-# tops out around 20, Claude can go higher but we keep it consistent.
-MAX_RING_CANDIDATES = int(os.environ.get("IMPACT_MAX_RING", "16"))
+# Per-ring cap. Claude handles 24 candidates comfortably in one call
+# (same prompt shape, just a longer JSON array); bumped from 16 to cut
+# chunk count by ~33% on large hops.
+MAX_RING_CANDIDATES = int(os.environ.get("IMPACT_MAX_RING", "24"))
 LLM_TIMEOUT_SECONDS = int(os.environ.get("IMPACT_LLM_TIMEOUT", "600"))
-# How many ring chunks to score in parallel. Each is an independent
-# Claude CLI subprocess; 4-6 keeps a typical laptop happy without
-# starving the CLI. Going wider helps wall time but spawns more
-# concurrent claude-cli processes (each ~200-400 MB RSS).
-RING_PARALLELISM = int(os.environ.get("IMPACT_RING_PARALLELISM", "6"))
+# How many ring chunks / refinement batches to score in parallel. Each
+# is an independent Claude CLI subprocess (~200-400 MB RSS). 8 cuts one
+# serial round off large hops vs the old 6 without saturating a typical
+# 16 GB laptop.
+RING_PARALLELISM = int(os.environ.get("IMPACT_RING_PARALLELISM", "8"))
+# How many nodes to pack into a single refinement LLM call. Old code did
+# 1 per call (60 calls → 10 serial rounds at P=8). Batching 6 collapses
+# that to 10 calls → 2 rounds -- ~5x faster with identical quality since
+# Claude already multi-scores ring chunks of 24.
+REFINEMENT_BATCH_SIZE = int(os.environ.get("IMPACT_REFINE_BATCH", "6"))
 
 
 # ---------------------------------------------------------------------------
@@ -605,7 +611,7 @@ REFINEMENT_MAGNITUDE_THRESHOLD = float(
     os.environ.get("IMPACT_REFINE_MAG_THRESHOLD", "0.35")
 )
 
-_REFINE_PROMPT_TEMPLATE = """You are an economist refining an impact assessment.
+_REFINE_BATCH_PROMPT_TEMPLATE = """You are an economist refining impact assessments for MULTIPLE nodes.
 
 NEWS:
 \"\"\"
@@ -615,25 +621,45 @@ NEWS:
 SEED (the original shock): {seed_id} ({seed_name}, {seed_type})
 SEED DIRECTION: {seed_direction}  -- {seed_reasoning}
 
-The node below was initially scored against ONE parent. It actually has
-MULTIPLE impacted neighbours that may collectively affect it. Re-score
-considering ALL the signals listed.
+Each node below was initially scored against ONE parent only. It actually
+has MULTIPLE impacted neighbours that may collectively affect it. Re-score
+each node considering ALL the signals listed for that node.
 
-NODE: {node_id} ({node_name}, {node_type}, sector={node_sector})
-INITIAL VERDICT: direction={direction}, magnitude={magnitude:.2f}
-INITIAL REASONING: {reasoning}
+DIRECTION SEMANTICS:
+  "negative" = node is HURT (higher costs, lost supply, lost demand, regulatory pain)
+  "positive" = node is HELPED (substitute demand, lower input cost, rival's loss is its gain)
+  "no_effect" = shock does not meaningfully reach this node
 
-ALL IMPACTED NEIGHBOURS (already classified earlier in the propagation):
-{neighbour_lines}
+{node_blocks}
 
-Refine the verdict given the FULL picture. If multiple negative neighbours
-collectively put pressure on this node, the verdict may flip from
-no_effect to negative or strengthen an existing call. If signals offset
-(positive + negative neighbours), explain how they net out.
+Respond with STRICT JSON only -- a single array, one object per node_id
+in the SAME ORDER as above. Keep each reasoning under 20 words.
 
-Respond with STRICT JSON only, nothing else:
-{{"direction": "positive" | "negative" | "no_effect", "magnitude": 0.0 to 1.0, "reasoning": "<short>"}}
+[
+  {{"node_id": "<id>", "direction": "positive" | "negative" | "no_effect", "magnitude": 0.0 to 1.0, "reasoning": "<short>"}}
+]
+
+Cover every node_id exactly once.
 """
+
+
+def _build_refine_node_block(
+    nid: str,
+    v: dict,
+    node_sector: str,
+    nb_lines: list[tuple[float, str]],
+) -> str:
+    """Format one node's refinement context block for the batch prompt."""
+    lines = [
+        f"NODE: {nid} ({v.get('name', '')}, {v.get('type', '')}, sector={node_sector})",
+        f"  Initial verdict: direction={v.get('direction', 'no_effect')}, "
+        f"magnitude={float(v.get('magnitude', 0.0)):.2f}",
+        f"  Initial reasoning: {v.get('reasoning', '')[:120]}",
+        "  Impacted neighbours:",
+    ]
+    for _m, line in nb_lines[:20]:
+        lines.append("    " + line)
+    return "\n".join(lines)
 
 
 def _refinement_pass(
@@ -706,15 +732,14 @@ def _refinement_pass(
     if not eligible:
         return {"considered": 0, "rescored": 0, "applied": 0}
 
-    # Build prompts and dispatch in parallel.
-    prompts: list[str] = []
-    eligible_meta: list[dict[str, Any]] = []
+    # Build per-node context blocks, then pack them into REFINEMENT_BATCH_SIZE
+    # batches. One LLM call per batch (same prompt shape as ring scoring --
+    # multi-candidate array response). Old code: 60 calls, 10 serial rounds
+    # at P=8. New code: 10 calls, 2 serial rounds at P=8 -- ~5x faster.
+    node_blocks_list: list[tuple[str, str, dict]] = []   # (nid, block_text, prev_verdict)
     for nid, _nb_count in eligible:
         v = impacts[nid]
-        # Gather impacted neighbour lines, capped at 25 entries so the
-        # prompt stays tractable. Sort by magnitude descending so the
-        # strongest signals come first.
-        nb_lines = []
+        nb_lines: list[tuple[float, str]] = []
         for other, etype in neighbours.get(nid, []):
             ov = impacts.get(other)
             if not ov:
@@ -725,69 +750,82 @@ def _refinement_pass(
                 continue
             nb_lines.append((
                 m,
-                f"  {other} | {ov.get('name', '')[:40]} | {d} mag={m:.2f} | edge={etype} | {ov.get('reasoning', '')[:80]}",
+                f"{other} | {ov.get('name', '')[:40]} | {d} mag={m:.2f} | "
+                f"edge={etype} | {ov.get('reasoning', '')[:80]}",
             ))
         if len(nb_lines) < REFINEMENT_MIN_PARENTS:
             continue
         nb_lines.sort(key=lambda x: -x[0])
-        nb_text = "\n".join(line for _m, line in nb_lines[:25])
 
-        # Get node sector from db for context.
         node_row = conn.execute(
             "SELECT sector FROM nodes WHERE id = ?", (nid,)
         ).fetchone()
         node_sector = (node_row[0] if node_row else None) or v.get("type", "")
 
-        prompt = _REFINE_PROMPT_TEMPLATE.format(
+        block = _build_refine_node_block(nid, v, node_sector, nb_lines)
+        node_blocks_list.append((nid, block, v))
+
+    if not node_blocks_list:
+        return {"considered": len(eligible), "rescored": 0, "applied": 0}
+
+    # Pack into batches.
+    batches: list[list[tuple[str, str, dict]]] = [
+        node_blocks_list[i:i + REFINEMENT_BATCH_SIZE]
+        for i in range(0, len(node_blocks_list), REFINEMENT_BATCH_SIZE)
+    ]
+    prompts: list[str] = []
+    for batch in batches:
+        node_blocks_text = "\n\n".join(block for _, block, _ in batch)
+        prompts.append(_REFINE_BATCH_PROMPT_TEMPLATE.format(
             news=text,
             seed_id=seed_id,
             seed_name=seed_summary.get("name", ""),
             seed_type=seed_summary.get("type", ""),
             seed_direction=seed_direction,
             seed_reasoning=seed_reasoning[:160],
-            node_id=nid,
-            node_name=v.get("name", ""),
-            node_type=v.get("type", ""),
-            node_sector=node_sector,
-            direction=v.get("direction", "no_effect"),
-            magnitude=float(v.get("magnitude", 0.0)),
-            reasoning=v.get("reasoning", "")[:160],
-            neighbour_lines=nb_text,
-        )
-        prompts.append(prompt)
-        eligible_meta.append({"node_id": nid, "prev": v})
+            node_blocks=node_blocks_text,
+        ))
 
-    if not prompts:
-        return {"considered": len(eligible), "rescored": 0, "applied": 0}
-
-    # Reuse RING_PARALLELISM since each refinement is the same shape of
-    # call as a ring chunk.
     debug_log.append(
-        f"refine: running {len(prompts)} LLM calls at parallelism={RING_PARALLELISM}"
+        f"refine: {len(node_blocks_list)} nodes -> {len(prompts)} batch calls "
+        f"(batch_size={REFINEMENT_BATCH_SIZE}, parallelism={RING_PARALLELISM})"
     )
     workers = min(RING_PARALLELISM, len(prompts))
     t_refine = time.time()
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(_llm_call, prompts))
-    debug_log.append(f"refine: {len(results)} calls done in {time.time() - t_refine:.1f}s")
+        batch_raws = list(pool.map(_llm_call, prompts))
+    debug_log.append(f"refine: {len(batch_raws)} batch calls done in {time.time() - t_refine:.1f}s")
+
+    # Flatten verdicts: each raw is a JSON array for its batch.
+    # Index by node_id for O(1) lookup.
+    verdict_by_nid: dict[str, dict] = {}
+    for batch, raw in zip(batches, batch_raws):
+        parsed = _parse_llm_json(raw)
+        if isinstance(parsed, dict) and "results" in parsed:
+            parsed = parsed["results"]
+        if not isinstance(parsed, list):
+            debug_log.append(f"refine batch parse FAIL: type={type(parsed).__name__}")
+            continue
+        for verdict in parsed:
+            if not isinstance(verdict, dict):
+                continue
+            nid = verdict.get("node_id")
+            if nid:
+                verdict_by_nid[nid] = verdict
 
     applied = 0
     rescored = 0
-    for meta, raw in zip(eligible_meta, results):
-        nid = meta["node_id"]
-        prev = meta["prev"]
-        parsed = _parse_llm_json(raw)
-        if not isinstance(parsed, dict):
+    for nid, _block, prev in node_blocks_list:
+        verdict = verdict_by_nid.get(nid)
+        if not verdict:
             continue
         rescored += 1
-        new_dir = parsed.get("direction") or prev.get("direction")
-        new_mag = float(parsed.get("magnitude") or 0.0)
-        new_reasoning = parsed.get("reasoning") or prev.get("reasoning", "")
+        new_dir = verdict.get("direction") or prev.get("direction")
+        new_mag = float(verdict.get("magnitude") or 0.0)
+        new_reasoning = verdict.get("reasoning") or prev.get("reasoning", "")
 
-        # Apply only if the new verdict is STRONGER:
-        # - direction flips from no_effect to a definite call, OR
-        # - magnitude rises by >= 0.15 with same direction, OR
-        # - direction reverses with magnitude > 0.30 (clear flip).
+        # Apply only if the new verdict STRENGTHENS the existing one --
+        # never downgrade a confident call to no_effect via refinement.
         prev_dir = prev.get("direction", "no_effect")
         prev_mag = float(prev.get("magnitude", 0.0))
         should_apply = False
@@ -812,14 +850,15 @@ def _refinement_pass(
                 },
             }
             applied += 1
+
     debug_log.append(
-        f"refine: rescored={rescored}/{len(prompts)} parsed; applied={applied}"
+        f"refine: rescored={rescored}/{len(node_blocks_list)} parsed; applied={applied}"
     )
     return {
         "considered": len(eligible),
         "rescored": rescored,
         "applied": applied,
-        "candidates": [m["node_id"] for m in eligible_meta],
+        "candidates": [nid for nid, _, _ in node_blocks_list],
     }
 
 
