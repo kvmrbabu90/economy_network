@@ -12,14 +12,19 @@ Two product additions stacked into one rule-based pipeline:
      graph. Provenance: the YAML row that placed the commodity.
 
   2. Retail-consumer markets. ``config/retail_markets.yaml`` defines
-     a fixed roster of regional sink nodes (US, EU, China, India,
-     Japan, Brazil, Southeast Asia) with their lat/lon. Each
-     ``config/industry_to_retail.yaml`` row maps a B2C sub-industry
-     to the markets it serves; we emit
-       cik:Y --supplies--> region:M-consumer
-     for every (filer, market) pair, which the API surfaces as a
-     derived ``customer_of`` edge (region M-consumer is a customer of
-     the filer).
+     regional sink nodes (US, EU, China, India, Japan, Brazil, SEA, Korea,
+     Australia, Canada, Mexico, Middle East, Africa, LatAm) with lat/lon.
+     Each ``config/industry_to_retail.yaml`` row maps a B2C sub-industry
+     to the markets it serves globally. For US companies that list is used
+     verbatim. For non-US companies Phase D adds country-aware routing:
+     ``config/country_default_retail_markets.yaml`` maps country codes to
+     the primary markets that country's companies actually serve. The final
+     market list is the INTERSECTION of (industry base markets) with (country
+     primary markets UNION industry base markets), so:
+       - US companies are unchanged.
+       - Samsung Electronics (KR) loses Brazil, gains Korea.
+       - LVMH (FR) loses Brazil/India, keeps EU/US/China/Japan.
+     We emit: cik:Y --supplies--> region:M-consumer per (filer, market) pair.
 
 Outputs:
   data/commodity_nodes.jsonl         -- Commodity + Region nodes
@@ -125,6 +130,7 @@ def _provenance_for_retail(market_row: dict[str, Any]) -> Provenance:
     )
 
 
+
 def run_commodities(
     companies_path: Path,
     out_nodes: Path,
@@ -138,6 +144,21 @@ def run_commodities(
     retail_markets = _load_yaml(CONFIG_DIR / "retail_markets.yaml")
     ind_to_comm = _load_yaml(CONFIG_DIR / "industry_to_commodities.yaml")
     ind_to_retail = _load_yaml(CONFIG_DIR / "industry_to_retail.yaml")
+    # Phase D: country-default retail markets. Keys are ISO-2 country codes;
+    # values are dicts with a "primary" list of region IDs.
+    country_defaults_raw = _load_yaml(CONFIG_DIR / "country_default_retail_markets.yaml") or {}
+    # country_defaults: { "KR": ["region:korea-consumer", ...], ... }
+    country_defaults: dict[str, list[str]] = {
+        code: entry.get("primary", [])
+        for code, entry in country_defaults_raw.items()
+        if isinstance(entry, dict)
+    }
+    # Phase D: company-level sub-industry overrides for Wikidata companies that
+    # are misclassified as "Industrial Conglomerates" but have real B2C presence.
+    # Maps canonical-id -> GICS sub-industry for retail-market routing only.
+    sub_industry_overrides: dict[str, str] = (
+        _load_yaml(CONFIG_DIR / "company_sub_industry_overrides.yaml") or {}
+    )
 
     commodities_by_slug = {row["id"]: row for row in commodities}
     markets_by_slug = {row["id"]: row for row in retail_markets}
@@ -147,7 +168,7 @@ def run_commodities(
         row["region_code"].lower(): row["id"]
         for row in retail_markets
     }
-    # Also map common shortnames
+    # Also map common shortnames and Phase D region codes
     region_aliases.update({
         "us": "region:us-consumer",
         "eu": "region:eu-consumer",
@@ -157,6 +178,20 @@ def run_commodities(
         "brazil": "region:brazil-consumer",
         "southeast-asia": "region:southeast-asia-consumer",
         "sea": "region:southeast-asia-consumer",
+        "korea": "region:korea-consumer",
+        "kr": "region:korea-consumer",
+        "australia": "region:australia-consumer",
+        "au": "region:australia-consumer",
+        "canada": "region:canada-consumer",
+        "ca": "region:canada-consumer",
+        "mexico": "region:mexico-consumer",
+        "mx": "region:mexico-consumer",
+        "middle-east": "region:middle-east-consumer",
+        "me": "region:middle-east-consumer",
+        "africa": "region:africa-consumer",
+        "af": "region:africa-consumer",
+        "latam": "region:latam-consumer",
+        "latin-america": "region:latam-consumer",
     })
 
     # --- nodes ---
@@ -180,11 +215,19 @@ def run_commodities(
 
     companies = [json.loads(line) for line in companies_path.open(encoding="utf-8")]
     for company in companies:
-        cik = company.get("cik") or company.get("id")
-        if not cik:
+        # companies.jsonl "id" field is already the canonical prefixed form
+        # (cik:NNNN for SEC filers, wikidata:Qxxxx for Phase B non-filers).
+        canonical_source = company.get("id") or company.get("cik")
+        if not canonical_source:
             continue
-        canonical_source = cik if cik.startswith("cik:") else f"cik:{cik}"
-        sub_industry = company.get("sub_industry") or company.get("industry")
+        # Legacy fallback: bare CIK number without prefix
+        if not any(canonical_source.startswith(p) for p in ("cik:", "wikidata:", "slug:")):
+            canonical_source = f"cik:{canonical_source}"
+        sub_industry = (
+            sub_industry_overrides.get(canonical_source)
+            or company.get("sub_industry")
+            or company.get("industry")
+        )
         if not sub_industry:
             continue
 
@@ -215,10 +258,68 @@ def run_commodities(
                             commodity_id, canonical_source, e)
 
         # 2. Retail markets the filer serves  ->  filer --supplies--> region
-        for market_short in (ind_to_retail.get(sub_industry) or []):
-            region_id = region_aliases.get(market_short.lower().strip())
-            if not region_id or region_id not in markets_by_slug:
-                unknown_markets[market_short] += 1
+        #
+        # Phase D: country-aware routing.
+        # For US companies: use industry_to_retail list verbatim (no change).
+        # For non-US companies: compute the UNION of the industry base markets
+        # and the country's primary markets, then keep only those markets that
+        # appear in the industry base list OR are in the country's primary list.
+        # This means:
+        #   - Markets the industry never serves are never added (e.g. a Korean
+        #     semiconductor fab won't get a Brazil retail edge even if KR
+        #     defaults include Brazil in some other context — it doesn't).
+        #   - Markets the industry does serve but the country doesn't primary-
+        #     serve are dropped (e.g. Brazilian pharma companies won't get a
+        #     Japan edge just because Pharmaceuticals maps to Japan globally).
+        #   - Country-primary markets get added even if not in the industry
+        #     global list (e.g. Korea-consumer for Samsung Electronics).
+        company_country = company.get("country") or "US"
+        industry_markets_raw: list[str] = ind_to_retail.get(sub_industry) or []
+        # Resolve to canonical region IDs
+        industry_market_ids: list[str] = []
+        for m in industry_markets_raw:
+            rid = region_aliases.get(m.lower().strip())
+            if rid and rid in markets_by_slug:
+                industry_market_ids.append(rid)
+            elif rid is None:
+                unknown_markets[m] += 1
+        if not industry_market_ids:
+            # Industry is not B2C — no retail edges for this company.
+            continue
+
+        if company_country == "US":
+            # US companies: use industry list as-is (backward-compatible).
+            effective_markets = industry_market_ids
+        else:
+            # Non-US companies: intersect industry markets with country defaults,
+            # then append country-primary markets that aren't already in the list.
+            country_primary = country_defaults.get(company_country, [])
+            if not country_primary:
+                # Country not in our map → fall back to industry list unchanged.
+                effective_markets = industry_market_ids
+            else:
+                country_primary_set = set(country_primary)
+                industry_set = set(industry_market_ids)
+                # Keep industry markets that overlap with country primary list.
+                kept = [m for m in industry_market_ids if m in country_primary_set]
+                # Add country-primary markets that exist in the catalog but
+                # aren't in the industry global list (e.g. korea-consumer for
+                # Samsung Electronics, which the global Consumer Electronics
+                # list didn't enumerate because Korea wasn't in the original
+                # 7-market roster).
+                extra = [
+                    m for m in country_primary
+                    if m not in industry_set and m in markets_by_slug
+                ]
+                # Fallback: if intersection is empty, use country primary
+                # (better than leaving the company with no retail edges at all).
+                if not kept:
+                    effective_markets = country_primary
+                else:
+                    effective_markets = kept + extra
+
+        for region_id in effective_markets:
+            if region_id not in markets_by_slug:
                 continue
             market_row = markets_by_slug[region_id]
             try:

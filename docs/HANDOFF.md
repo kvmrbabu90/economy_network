@@ -151,25 +151,32 @@ Each stage reads the previous stage's JSONL files from `data/`. Re-runnable inde
 
 ---
 
-## 7. Phase D — What's Next (In Progress)
+## 7. Phase D — Country-Aware Retail Routing (complete 2026-05-25)
 
-**Goal**: country-aware retail routing. Today every B2C company routes to the same 7 global markets regardless of where it's headquartered. Phase D fixes this:
+**Goal**: country-aware retail routing. Previously every B2C company routed to the same 7 global markets regardless of where it's headquartered. Phase D fixes this.
 
-- A Korean electronics company (Samsung) should connect to Korea, China, Japan, SEA, US, EU — not Brazil.
-- An Indian pharma company should connect to India + US + EU — not Japan.
+**What was built**:
+1. **7 new region nodes** added to `config/retail_markets.yaml`: Korea, Australia, Canada, Mexico, Middle East, Sub-Saharan Africa, LatAm (14 total, up from 7)
+2. **`config/country_default_retail_markets.yaml`** — 40+ country codes → ordered primary market lists (JP, KR, CN, TW, GB, DE, FR, NL, CH, IN, SG, AU, SA, BR, MX, CA, ...)
+3. **Phase D routing in `pipeline/commodities.py`**:
+   - US companies: industry_to_retail list unchanged (backward-compatible)
+   - Non-US companies: INTERSECTION of industry base markets with country primary markets, plus country-primary additions not in the industry list
+   - Fallback to country_primary if intersection is empty (prevents zero retail edges)
+4. **`config/company_sub_industry_overrides.yaml`** — routing-only overrides for Wikidata companies misclassified as "Industrial Conglomerates": Samsung → Consumer Electronics, Inditex → Apparel Retail, ASUS → Technology Hardware, etc.
+5. **Frontend**: `web/src/ui/filters.ts` expanded AU and NZ into the Asia-Pacific group (SEA chip); chip label updated to "Asia-Pac"
 
-**Work plan**:
-1. **New region nodes**: Korea, Australia, Canada, Mexico, Middle East, Sub-Saharan Africa → `config/retail_markets.yaml`
-2. **Country default markets**: `config/country_default_retail_markets.yaml` mapping ISO-2 country → list of region IDs the companies from that country typically serve
-3. **Rewire `commodities.py`**: for each non-US company, replace the blanket `industry_to_retail` list with the intersection of:
-   - the industry's base markets (what this industry serves globally)
-   - the company's country's default primary markets
-4. **US companies unchanged**: still use pure industry_to_retail list
-5. **Rebuild**: run `pipeline/commodities.py` → `pipeline/resolve.py` → `pipeline/build_graph.py` → restart API
+**Acceptance tests (all PASS)**:
+- ✅ Samsung Electronics (KR) → Korea, US, EU, China, Japan, SEA (no Brazil, no India)
+- ✅ Sony Group (JP) → US, EU, China, Japan, SEA, Korea (no Brazil, no India)
+- ✅ Sanofi (FR) → US, EU, China, Japan (no Brazil, no India)
+- ✅ Coca-Cola (US) → unchanged: US, EU, China, India, Japan, Brazil, SEA
 
-**Acceptance test**: Samsung Electronics (KR) → Korea, China, Japan, SEA, US, EU (no Brazil, no India)
-**Acceptance test**: LVMH (FR) → EU, US, China, Japan (no Brazil, no India)
-**Acceptance test**: Coke (US) → unchanged: US, EU, China, India, Japan, Brazil, SEA
+**Graph stats after Phase D**:
+- Supply layer: 4,194 `supplies` edges (up from 3,745)
+- Retail edges: 1,356 filer→region (up from 832 at Phase C)
+- New region nodes: 14 total (7 new)
+
+**Known limitation**: LVMH (wikidata:Q161086) is not in the dataset (not an SEC filer and not ingested via Phase B Wikidata). The override for it exists in `company_sub_industry_overrides.yaml` so if it's added via Phase B in future, it will route correctly. See Phase E backlog.
 
 ---
 

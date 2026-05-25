@@ -66,28 +66,28 @@ US regs only.
 
 ---
 
-## Phase D — Localized retail markets (~3 days)
+## Phase D — Localized retail markets ✅ COMPLETE (2026-05-25)
 
-**Goal:** today every B2C industry routes to a hard-coded subset of
-the 7 retail-region nodes, with no notion that (say) a Korean
-electronics company sells primarily in Korea + China + Japan, not
-Brazil. The Phase D upgrade is country-aware retail routing.
+**Goal:** country-aware retail routing so non-US B2C companies connect
+to the consumer markets they actually serve, not a one-size-fits-all
+global list.
 
-**Work to do:**
-- For each foreign company, infer its primary markets from its
-  `country` field plus its sub-industry. (E.g., Samsung Electronics:
-  KR -> JP, CN, SEA + US/EU. LVMH: FR -> EU, US, CN, JP.)
-- Add a `config/country_default_retail_markets.yaml` that maps country
-  codes to default consumer markets:
-  ```yaml
-  KR: [korea-consumer, china-consumer, japan-consumer, us-consumer, eu-consumer]
-  JP: [japan-consumer, us-consumer, eu-consumer, china-consumer]
-  ...
-  ```
-- Add new `region:` consumer nodes for under-represented markets:
-  Korea, Australia, Canada, Mexico, Middle East, Sub-Saharan Africa.
-- Rewire `pipeline/commodities.py` to consult country defaults
-  alongside the GICS sub-industry mapping.
+**Shipped:**
+- 7 new `region:` consumer-market nodes (Korea, Australia, Canada,
+  Mexico, Middle East, Sub-Saharan Africa, LatAm) in `retail_markets.yaml`
+- `config/country_default_retail_markets.yaml` — 40+ country codes mapped
+  to ordered primary market lists
+- `config/company_sub_industry_overrides.yaml` — routing-only overrides
+  for Wikidata companies misclassified as "Industrial Conglomerates"
+- `pipeline/commodities.py` Phase D routing logic: INTERSECTION of
+  industry base markets ∩ country primary markets + country-primary extras
+- Frontend `filters.ts`: AU and NZ added to SEA (Asia-Pac) group
+
+**Acceptance tests (all PASS):**
+- Samsung Electronics (KR) → Korea, US, EU, China, Japan, SEA (no Brazil, no India) ✅
+- Sony Group (JP) → US, EU, China, Japan, SEA, Korea (no Brazil) ✅
+- Sanofi (FR) → US, EU, China, Japan (no Brazil, no India) ✅
+- Coca-Cola (US) → unchanged: US, EU, China, India, Japan, Brazil, SEA ✅
 
 ---
 
@@ -242,5 +242,7 @@ routing adds more geography signals to the graph.
   - Toyota-Astra (wikidata/ID): OJK + BI only, no US rules ✓
   - ASML (cik/NL 20-F): SEC + BIS + NL-AFM + ESMA ✓
 
-- Phase D: backlog.
+- Phase D: complete (2026-05-25). Country-aware retail routing; 7 new region nodes;
+  `country_default_retail_markets.yaml` for 40+ countries; Samsung/Sony/Sanofi acceptance
+  tests pass. Graph: 4,194 supplies edges (up from 3,745).
 - Phase E: backlog.

@@ -1,0 +1,71 @@
+# Company-level sub-industry overrides for retail-market routing.
+#
+# Problem: Wikidata Phase B companies are tagged "Industrial Conglomerates"
+# in Wikidata when their real GICS sub-industry is not available. This prevents
+# commodities.py from generating retail-market edges for major consumer-facing
+# non-US companies like Samsung Electronics.
+#
+# Solution: this file maps specific canonical company IDs to the GICS
+# sub-industry they *should* have for the purposes of retail-market routing.
+# The sub-industry value must match a key in config/industry_to_retail.yaml.
+#
+# Format:
+#   "canonical-id": "GICS Sub-Industry Name"
+#
+# These overrides are applied before the industry_to_retail lookup in
+# pipeline/commodities.py. They do NOT change the company's stored industry
+# field in companies.jsonl — they are routing-only overrides.
+#
+# Maintenance: add entries here when a Wikidata company is misclassified and
+# has a meaningful B2C consumer presence. Do not add B2B-only companies.
+
+# ── East Asia ─────────────────────────────────────────────────────────────────
+
+# Samsung Electronics (KR) — world's largest consumer electronics company
+"wikidata:Q20718": "Consumer Electronics"
+
+# ASUS (TW) — PC / laptop / phone maker
+"wikidata:Q152864": "Technology Hardware, Storage & Peripherals"
+
+# Wistron (TW) — OEM manufacturer; end-consumer markets via brand customers
+"wikidata:Q441821": "Technology Hardware, Storage & Peripherals"
+
+# Acer (TW) — PC / laptop brand
+"wikidata:Q170546": "Technology Hardware, Storage & Peripherals"
+
+# 7-Eleven (JP) — convenience retail, dominant in Japan and Asia
+"wikidata:Q259340": "Consumer Staples Merchandise Retail"
+
+# Hyundai Motor Group (KR) — automobile manufacturer
+"wikidata:Q46136": "Automobile Manufacturers"
+
+# LG Electronics (KR) — consumer electronics / appliances
+"wikidata:Q273865": "Consumer Electronics"
+
+# ── Europe ────────────────────────────────────────────────────────────────────
+
+# Inditex / Zara (ES) — global fast fashion retailer
+"wikidata:Q44504": "Apparel Retail"
+
+# LVMH Moët Hennessy Louis Vuitton (FR) — luxury goods conglomerate
+"wikidata:Q161086": "Apparel, Accessories & Luxury Goods"
+
+# L'Oréal (FR) — personal care & cosmetics
+"wikidata:Q2170709": "Personal Care Products"
+
+# Amer Sports (FI) — Wilson, Salomon, Arc'teryx leisure brands
+"wikidata:Q152695": "Leisure Products"
+
+# Saab Group (SE) — B2B aerospace/defence; intentionally NOT added
+
+# ── Oceania ───────────────────────────────────────────────────────────────────
+
+# BHP Group (AU) — mining; B2B-focused, no retail edges needed
+# Intentionally NOT added.
+
+# Woolworths Group (AU) — supermarket retail
+"wikidata:Q4011388": "Consumer Staples Merchandise Retail"
+
+# ── Middle East ───────────────────────────────────────────────────────────────
+
+# Saudi Aramco (SA) — B2B/B2G oil; intentionally NOT added.

@@ -1,0 +1,294 @@
+# Phase D — Country-default retail markets
+#
+# Maps ISO-3166-1 alpha-2 country code → the ordered list of consumer-market
+# region IDs that companies from that country *primarily* serve.
+#
+# Design decisions:
+#   - This list is ADDITIVE to the industry_to_retail list, not a replacement.
+#     commodities.py takes the UNION of (industry base markets) and (country
+#     default markets), capped by the industry base list. If Samsung Electronics
+#     (KR) is in "Consumer Electronics" whose base markets are
+#     [us, eu, china, india, japan, brazil, southeast-asia], the final list
+#     becomes [us, eu, china, japan, southeast-asia, korea, india] (brazil
+#     dropped because KR defaults don't include it; korea added because it does).
+#
+#   - US companies are EXCLUDED from this file. They use industry_to_retail
+#     unchanged (backward-compatible).
+#
+#   - When a company's country code is not in this map, fall back to the
+#     industry_to_retail list unchanged (same as current behavior).
+#
+# Region IDs reference config/retail_markets.yaml.
+# Ordering is largest-revenue-exposure first.
+
+# --- East Asia ---
+JP:   # Japan — strong domestic + US/EU/Asia exports
+  primary:
+    - region:japan-consumer
+    - region:us-consumer
+    - region:eu-consumer
+    - region:china-consumer
+    - region:southeast-asia-consumer
+    - region:korea-consumer
+
+KR:   # Korea — Samsung, SK Hynix, LG, Hyundai: Asia-first then global
+  primary:
+    - region:korea-consumer
+    - region:china-consumer
+    - region:us-consumer
+    - region:eu-consumer
+    - region:japan-consumer
+    - region:southeast-asia-consumer
+
+CN:   # China — strong domestic; selective international
+  primary:
+    - region:china-consumer
+    - region:us-consumer
+    - region:eu-consumer
+    - region:southeast-asia-consumer
+    - region:japan-consumer
+
+TW:   # Taiwan — TSMC, Foxconn: B2B-heavy but consumer electronics end-market
+  primary:
+    - region:china-consumer
+    - region:us-consumer
+    - region:eu-consumer
+    - region:japan-consumer
+    - region:southeast-asia-consumer
+    - region:korea-consumer
+
+# --- Europe ---
+GB:   # UK — EU + US primary; global brands (HSBC, BP, Diageo, AstraZeneca)
+  primary:
+    - region:us-consumer
+    - region:eu-consumer
+    - region:china-consumer
+    - region:japan-consumer
+    - region:australia-consumer
+
+DE:   # Germany — Bayer, Siemens, VW: EU-first, then global
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+    - region:china-consumer
+    - region:japan-consumer
+
+FR:   # France — LVMH, L'Oréal, TotalEnergies: luxury-skewed + global
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+    - region:china-consumer
+    - region:japan-consumer
+
+NL:   # Netherlands — ASML, Shell, Heineken: EU + US + Asia
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+    - region:china-consumer
+
+CH:   # Switzerland — Novartis, Nestlé, Roche: global health + food brands
+  primary:
+    - region:us-consumer
+    - region:eu-consumer
+    - region:china-consumer
+    - region:india-consumer
+    - region:japan-consumer
+
+SE:   # Sweden — Ericsson, Volvo, H&M: EU + global
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+    - region:china-consumer
+
+DK:   # Denmark — Novo Nordisk, Maersk: EU + US
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+    - region:china-consumer
+
+IT:   # Italy — Ferrari, Enel: EU + US + Asia
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+    - region:china-consumer
+    - region:japan-consumer
+
+ES:   # Spain — Inditex (Zara): global fast fashion
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+    - region:china-consumer
+    - region:india-consumer
+
+NO:   # Norway — Equinor: B2B heavy; small consumer market
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+
+FI:   # Finland — Nokia: EU + global
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+    - region:china-consumer
+
+BE:   # Belgium — EU-centric + US
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+
+AT:   # Austria — EU + US
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+
+PT:   # Portugal — EU + LatAm (Portuguese-speaking Brazil)
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+    - region:latam-consumer
+
+IE:   # Ireland — EU + US (many US multinationals HQ'd here)
+  primary:
+    - region:us-consumer
+    - region:eu-consumer
+    - region:china-consumer
+
+PL:   # Poland — EU-centric
+  primary:
+    - region:eu-consumer
+    - region:us-consumer
+
+# --- South & Southeast Asia ---
+IN:   # India — Infosys, Tata, Sun Pharma: huge domestic + US IT services
+  primary:
+    - region:india-consumer
+    - region:us-consumer
+    - region:eu-consumer
+    - region:southeast-asia-consumer
+
+SG:   # Singapore — regional hub: SEA + CN + AU
+  primary:
+    - region:southeast-asia-consumer
+    - region:china-consumer
+    - region:australia-consumer
+    - region:us-consumer
+    - region:eu-consumer
+
+MY:   # Malaysia — SEA + CN primary
+  primary:
+    - region:southeast-asia-consumer
+    - region:china-consumer
+    - region:us-consumer
+    - region:eu-consumer
+
+TH:   # Thailand — SEA + CN + JP
+  primary:
+    - region:southeast-asia-consumer
+    - region:china-consumer
+    - region:japan-consumer
+    - region:us-consumer
+
+ID:   # Indonesia — SEA-dominant; large domestic market
+  primary:
+    - region:southeast-asia-consumer
+    - region:china-consumer
+    - region:australia-consumer
+
+# --- Oceania ---
+AU:   # Australia — domestic + Asia-Pacific; strong China trade
+  primary:
+    - region:australia-consumer
+    - region:china-consumer
+    - region:us-consumer
+    - region:eu-consumer
+    - region:southeast-asia-consumer
+    - region:japan-consumer
+
+NZ:   # New Zealand — AU + Asia Pacific
+  primary:
+    - region:australia-consumer
+    - region:china-consumer
+    - region:us-consumer
+
+# --- Middle East & Africa ---
+SA:   # Saudi Arabia — Aramco: global oil; consumer market is ME-focused
+  primary:
+    - region:middle-east-consumer
+    - region:china-consumer
+    - region:eu-consumer
+    - region:us-consumer
+
+AE:   # UAE — ME hub; global luxury + finance
+  primary:
+    - region:middle-east-consumer
+    - region:eu-consumer
+    - region:us-consumer
+    - region:india-consumer
+
+EG:   # Egypt — ME + Africa
+  primary:
+    - region:middle-east-consumer
+    - region:africa-consumer
+    - region:eu-consumer
+
+ZA:   # South Africa — Africa-first, then EU/US
+  primary:
+    - region:africa-consumer
+    - region:eu-consumer
+    - region:us-consumer
+
+NG:   # Nigeria — Africa-centric
+  primary:
+    - region:africa-consumer
+    - region:eu-consumer
+    - region:us-consumer
+
+MA:   # Morocco — Africa + EU (large EU export market)
+  primary:
+    - region:africa-consumer
+    - region:eu-consumer
+    - region:middle-east-consumer
+
+# --- Latin America ---
+BR:   # Brazil — LatAm + US; large domestic market
+  primary:
+    - region:latam-consumer
+    - region:us-consumer
+    - region:eu-consumer
+
+MX:   # Mexico — NAFTA-integrated: US first, then LatAm
+  primary:
+    - region:us-consumer
+    - region:latam-consumer
+    - region:eu-consumer
+
+AR:   # Argentina — LatAm + Brazil + EU
+  primary:
+    - region:latam-consumer
+    - region:eu-consumer
+    - region:us-consumer
+
+CO:   # Colombia — LatAm + US
+  primary:
+    - region:latam-consumer
+    - region:us-consumer
+
+PE:   # Peru — LatAm-centric
+  primary:
+    - region:latam-consumer
+    - region:us-consumer
+
+CL:   # Chile — LatAm + US + EU (mining exports)
+  primary:
+    - region:latam-consumer
+    - region:us-consumer
+    - region:eu-consumer
+    - region:china-consumer
+
+# --- North America (non-US) ---
+CA:   # Canada — US-integrated + EU; strong China trade
+  primary:
+    - region:us-consumer
+    - region:canada-consumer
+    - region:eu-consumer
+    - region:china-consumer

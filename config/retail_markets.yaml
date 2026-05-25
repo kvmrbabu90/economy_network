@@ -57,3 +57,54 @@
   lat: -2.55
   lon: 118.0
   population_m: 680
+
+# Phase D additions — new markets for non-US country routing
+
+- id: region:korea-consumer
+  name: Korea Consumer Market
+  region_code: KR
+  lat: 35.91
+  lon: 127.77
+  population_m: 52
+
+- id: region:australia-consumer
+  name: Australia Consumer Market
+  region_code: AU
+  lat: -25.27
+  lon: 133.78
+  population_m: 26
+
+- id: region:canada-consumer
+  name: Canada Consumer Market
+  region_code: CA
+  lat: 56.13
+  lon: -106.35
+  population_m: 38
+
+- id: region:mexico-consumer
+  name: Mexico Consumer Market
+  region_code: MX
+  lat: 23.63
+  lon: -102.55
+  population_m: 128
+
+- id: region:middle-east-consumer
+  name: Middle East Consumer Market
+  region_code: ME
+  lat: 26.0
+  lon: 48.0
+  population_m: 260
+
+- id: region:africa-consumer
+  name: Sub-Saharan Africa Consumer Market
+  region_code: AF
+  lat: 5.0
+  lon: 20.0
+  population_m: 1100
+
+- id: region:latam-consumer
+  name: Latin America Consumer Market
+  region_code: LATAM
+  lat: -15.0
+  lon: -60.0
+  population_m: 430

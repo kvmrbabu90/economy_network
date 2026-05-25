@@ -15,7 +15,8 @@ export const MARKET_COUNTRIES: Record<string, string[]> = {
   IN:    ["IN"],
   KR:    ["KR"],
   TW:    ["TW"],
-  SEA:   ["SG", "MY", "TH", "ID"],
+  // Asia-Pacific: SE Asia + Australia / New Zealand (Pacific-rim grouping)
+  SEA:   ["SG", "MY", "TH", "ID", "AU", "NZ"],
   LATAM: ["BR", "MX", "CO", "PE", "CL", "AR", "VE", "EC", "BO", "PY", "UY"],
   MEA:   ["SA", "AE", "EG", "ZA", "NG", "MA"],
   OTHER: [], // catch-all — any country code not in the groups above
