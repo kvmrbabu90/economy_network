@@ -7,7 +7,7 @@ import forceAtlas2 from "graphology-layout-forceatlas2";
 
 import type { ApiEdge, ApiNode } from "./api";
 import { LABEL_TOP_N } from "./config";
-import { edgeAttributes, nodeColor, nodeSizeFromDegree } from "./style";
+import { edgeAttributes, nodeColor, nodeSizeByType } from "./style";
 
 // The full attribute payload we attach to each node/edge -- we store the
 // original ApiNode/ApiEdge object alongside the rendered attributes so the
@@ -89,13 +89,15 @@ export function mergeFromApi(
   return changed;
 }
 
-/** Re-size nodes by degree and pick persistent labels for the top hubs. */
+/** Assign uniform per-type sizes and pick persistent labels for the top hubs. */
 export function restyleAfterMerge(g: EconGraph): void {
   const degrees: Array<[string, number]> = [];
-  g.forEachNode((id) => {
+  g.forEachNode((id, attrs) => {
     const d = g.degree(id);
     degrees.push([id, d]);
-    g.setNodeAttribute(id, "size", nodeSizeFromDegree(d));
+    // Fixed radius per node type — all nodes of the same type are equal.
+    // The global nodeScale in main.ts scales these uniformly via the reducer.
+    g.setNodeAttribute(id, "size", nodeSizeByType(attrs.apiNode));
   });
   degrees.sort((a, b) => b[1] - a[1]);
   const showLabelFor = new Set(degrees.slice(0, LABEL_TOP_N).map(([id]) => id));

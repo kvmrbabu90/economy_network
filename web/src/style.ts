@@ -3,16 +3,15 @@
 
 import type { ApiEdge, ApiNode, EdgeType } from "./api";
 
-// Monochrome palette: all edges are a medium shade of grey regardless of
-// relationship type, and node greys step from black (Regulator) -> dark
-// (Region/consumer market) -> medium (Commodity) -> light (Company).
-// Provisional / unknown stay dark so they recede behind the core data.
+// Monochrome palette: all edges share the Commodity grey (#7a7e84) so
+// connectors read as medium-grey plumbing rather than compositing
+// toward white at high edge density.
 export const EDGE_COLOR: Record<EdgeType, string> = {
-  supplies: "#8a8e94",
-  customer_of: "#8a8e94",
-  competes_with: "#8a8e94",
-  regulated_by: "#8a8e94",
-  part_of: "#8a8e94",
+  supplies: "#7a7e84",
+  customer_of: "#7a7e84",
+  competes_with: "#7a7e84",
+  regulated_by: "#7a7e84",
+  part_of: "#7a7e84",
 };
 
 export const NODE_COLOR = {
@@ -34,8 +33,26 @@ export function nodeColor(n: ApiNode): string {
   return NODE_COLOR.Default;
 }
 
+// Fixed base radii per node type. All nodes of the same type render at
+// the same size so the visual hierarchy comes from color + position, not
+// from degree. The global nodeScale multiplier in main.ts scales these
+// uniformly ([ = shrink, ] = grow).
+export const NODE_BASE_SIZE: Record<string, number> = {
+  Regulator: 10,
+  Region:     8,  // consumer markets
+  Commodity:  6,
+  Company:    4,
+  Provisional: 3,
+  Default:    4,
+};
+
+export function nodeSizeByType(n: ApiNode): number {
+  if (n.attributes.provisional) return NODE_BASE_SIZE.Provisional;
+  return NODE_BASE_SIZE[n.attributes.type] ?? NODE_BASE_SIZE.Default;
+}
+
+/** @deprecated kept for call-sites that haven't been updated yet */
 export function nodeSizeFromDegree(degree: number): number {
-  // Logarithmic scaling so a degree-36 hub doesn't dwarf the rest.
   return Math.max(3, Math.min(18, 3 + Math.sqrt(degree) * 1.6));
 }
 
@@ -57,9 +74,9 @@ export function edgeAttributes(e: ApiEdge) {
   let color: string;
   let size: number;
   if (!dim) {
-    // Core edges render at 50% alpha so they read as plumbing rather than
-    // competing with the node layer for attention.
-    color = toRgba(base, 0.5);
+    // Core edges at 38% alpha — enough to see the network structure while
+    // preventing thousands of stacked lines from compositing into white.
+    color = toRgba(base, 0.38);
     size = Math.max(0.8, 0.8 + (e.attributes.confidence ?? 0.5) * 0.8);
   } else if (inferred) {
     color = toRgba(base, 0.55);

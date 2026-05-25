@@ -184,6 +184,13 @@ filters = wireFilters((next) => {
   refreshEdgeVisibility();
 });
 
+// Global node scale — adjusted with [ / ] keys. Applied in the nodeReducer
+// so the change is immediate without any graph data mutation.
+let nodeScale = 1.0;
+const NODE_SCALE_MIN = 0.3;
+const NODE_SCALE_MAX = 4.0;
+const NODE_SCALE_STEP = 0.15;
+
 // Impact-overlay state. When set, the node + edge reducers below
 // tint/dim everything accordingly. The 3D mesh tinting is applied
 // separately in applyImpactToScene().
@@ -217,7 +224,7 @@ function refreshEdgeVisibility(): void {
     renderer.setSetting("defaultEdgeColor", "#1a1d22");
     renderer.setSetting("defaultNodeColor", "#22262c");
   } else {
-    renderer.setSetting("defaultEdgeColor", "#8a8e94");
+    renderer.setSetting("defaultEdgeColor", "#7a7e84");
     renderer.setSetting("defaultNodeColor", "#c8ccd2");
   }
   renderer.setSetting("edgeReducer", (eid, eattrs) => {
@@ -273,28 +280,23 @@ function refreshEdgeVisibility(): void {
     }
     const hide = (isProv && !filters.includeProvisional) || hiddenByMarket;
     const label = isBubbleNode ? nattrs.label : (nattrs.displayLabel || "");
+    // Apply the global [ / ] scale factor so all types scale together.
+    const baseSize = (nattrs.size ?? 6) * nodeScale;
     if (impactState) {
       const verdict = impactState.byNode.get(id);
       const tint = tintColor(verdict);
       const isImpacted = tint !== null;
-      // Impacted nodes float to the top: larger, labelled, high zIndex.
-      // Non-impacted nodes shrink and lose their labels so the affected
-      // subgraph reads through the background clutter.
       return {
         ...nattrs,
         label: isImpacted ? label : "",
         hidden: hide,
         color: tint ?? "#1e2228",
-        // 1.8× is meaningfully larger than background without merging into blobs.
-        // 0.45× keeps non-impacted nodes as faint context dots, not invisible.
-        size: isImpacted ? (nattrs.size ?? 6) * 1.8 : (nattrs.size ?? 6) * 0.45,
+        size: isImpacted ? baseSize * 1.8 : baseSize * 0.45,
         zIndex: isImpacted ? 10 : 0,
-        // Only force-show labels on the seed node and high-confidence
-        // impacted nodes. 140+ simultaneous labels creates unreadable soup.
         forceLabel: isImpacted && (verdict!.hop === 0 || verdict!.magnitude >= 0.6),
       };
     }
-    return { ...nattrs, label, hidden: hide };
+    return { ...nattrs, label, hidden: hide, size: baseSize };
   });
   renderer.refresh();
 }
@@ -698,12 +700,24 @@ const ro3d = new ResizeObserver(() => {
 });
 ro3d.observe(container3d);
 document.addEventListener("keydown", (ev) => {
-  if (ev.key !== "Escape") return;
-  // Don't hijack Esc when the user is typing in the search box -- they're
-  // likely trying to close the dropdown / clear the input.
+  // Don't hijack keyboard shortcuts when the user is typing.
   const focused = document.activeElement as HTMLElement | null;
-  if (focused && (focused.tagName === "INPUT" || focused.tagName === "TEXTAREA")) return;
-  loadFullCore().catch(console.error);
+  const typing = focused && (focused.tagName === "INPUT" || focused.tagName === "TEXTAREA");
+
+  if (ev.key === "Escape") {
+    if (typing) return;
+    loadFullCore().catch(console.error);
+    return;
+  }
+
+  // [ / ] — shrink or grow all nodes uniformly (2D only; 3D uses its own scale).
+  if (ev.key === "[" || ev.key === "]") {
+    if (typing) return;
+    nodeScale = ev.key === "]"
+      ? Math.min(NODE_SCALE_MAX, nodeScale + NODE_SCALE_STEP)
+      : Math.max(NODE_SCALE_MIN, nodeScale - NODE_SCALE_STEP);
+    renderer.refresh();
+  }
 });
 
 // ---------------------------------------------------------------------------
