@@ -192,3 +192,49 @@ export function getEdge(id: string): Promise<ApiEdge> {
 export function search(q: string, limit = 10): Promise<SearchResponse> {
   return get<SearchResponse>("/search", { q, limit });
 }
+
+// ---------------------------------------------------------------------------
+// Impact propagation (LLM-driven)
+// ---------------------------------------------------------------------------
+
+export interface ImpactVerdict {
+  node_id: string;
+  name: string;
+  type: string;
+  direction: "positive" | "negative" | "no_effect";
+  magnitude: number;
+  hop: number;
+  reasoning: string;
+  via_parent: string | null;
+  edge_type: string | null;
+}
+
+export interface ImpactResponse {
+  seed: ImpactVerdict | null;
+  impacts: ImpactVerdict[];
+  model?: string;
+  max_hops?: number;
+  debug?: string[];
+  error?: string;
+}
+
+export async function runImpact(text: string): Promise<ImpactResponse> {
+  const url = new URL("/impact", API_BASE_URL);
+  inflight += 1;
+  notifyLoading();
+  try {
+    const resp = await fetch(url.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      throw new ApiError(resp.status, `${resp.statusText} - ${body.slice(0, 200)}`);
+    }
+    return (await resp.json()) as ImpactResponse;
+  } finally {
+    inflight -= 1;
+    notifyLoading();
+  }
+}

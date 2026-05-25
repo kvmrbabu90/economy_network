@@ -45,6 +45,14 @@ import { wireFilters, type FilterState } from "./ui/filters";
 import { showEdge, showEmpty, showNode } from "./ui/inspector";
 import { wireSearch } from "./ui/search";
 import { startStatusPolling } from "./ui/status";
+import { runImpact, type ImpactResponse } from "./api";
+import {
+  buildImpactState,
+  dimColor,
+  tintColor,
+  tintColorRGB,
+  type ImpactState,
+} from "./impact";
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -162,6 +170,11 @@ filters = wireFilters((next) => {
   refreshEdgeVisibility();
 });
 
+// Impact-overlay state. When set, the node + edge reducers below
+// tint/dim everything accordingly. The 3D mesh tinting is applied
+// separately in applyImpactToScene().
+let impactState: ImpactState | null = null;
+
 refreshEdgeVisibility(); // initial pass (everything visible)
 
 function refreshEdgeVisibility(): void {
@@ -176,15 +189,22 @@ function refreshEdgeVisibility(): void {
     }
     const ok = filters.types.includes(eattrs.edgeType);
     const isProv = eattrs.apiEdge.attributes.below_threshold;
-    return {
-      ...eattrs,
-      hidden: !ok || (isProv && !filters.includeProvisional),
-    };
+    const baseHidden = !ok || (isProv && !filters.includeProvisional);
+    // Impact overlay: edges in the impact chain pop, others dim
+    // heavily so the affected subgraph reads through the rest.
+    if (impactState) {
+      const inChain = impactState.chainEdges.has(eid);
+      return {
+        ...eattrs,
+        hidden: baseHidden,
+        color: inChain ? "#e8e3da" : "#2a2e34",
+        size: inChain ? (eattrs.size ?? 1) * 1.4 : (eattrs.size ?? 1) * 0.5,
+      };
+    }
+    return { ...eattrs, hidden: baseHidden };
   });
   renderer.setSetting("nodeReducer", (id, nattrs) => {
     const isBubbleNode = isBubble(id);
-    // Virtual bubble nodes only belong in Bubbles layout. Don't bleed
-    // into Force / By-sector views.
     if (isBubbleNode && layoutMode !== "bubble") {
       return { ...nattrs, hidden: true, label: "" };
     }
@@ -193,11 +213,18 @@ function refreshEdgeVisibility(): void {
     }
     const isProv = !!nattrs.apiNode.attributes.provisional;
     const hide = isProv && !filters.includeProvisional;
-    return {
-      ...nattrs,
-      label: isBubbleNode ? nattrs.label : (nattrs.displayLabel || ""),
-      hidden: hide,
-    };
+    const label = isBubbleNode ? nattrs.label : (nattrs.displayLabel || "");
+    if (impactState) {
+      const verdict = impactState.byNode.get(id);
+      const tint = tintColor(verdict);
+      return {
+        ...nattrs,
+        label,
+        hidden: hide,
+        color: tint ?? "#3a3e44",
+      };
+    }
+    return { ...nattrs, label, hidden: hide };
   });
   renderer.refresh();
 }
@@ -450,6 +477,112 @@ document.addEventListener("keydown", (ev) => {
   if (focused && (focused.tagName === "INPUT" || focused.tagName === "TEXTAREA")) return;
   loadFullCore().catch(console.error);
 });
+
+// ---------------------------------------------------------------------------
+// Impact propagation -- news/hypothetical -> tinted overlay
+// ---------------------------------------------------------------------------
+
+function applyImpactToScene(state: ImpactState | null): void {
+  // 3D / Globe mesh tinting. Walk the live force-graph instance's
+  // scene; for each node mesh, replace its material colour with the
+  // verdict tint (or a dim grey if outside the chain). Reset on null.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const inst = (window as any).__force3D;
+  if (!inst) return;
+  const scene = inst.scene();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  scene.traverse((obj: any) => {
+    if (obj.__graphObjType === "node" && obj.material && obj.material.color) {
+      const data = obj.__data;
+      if (state) {
+        const verdict = data ? state.byNode.get(data.id) : undefined;
+        const tint = tintColorRGB(verdict);
+        if (tint) {
+          obj.material.color.setRGB(tint.r, tint.g, tint.b);
+        } else {
+          const dim = dimColor();
+          obj.material.color.setRGB(dim.r, dim.g, dim.b);
+        }
+      } else if (data && data.color) {
+        // restore the data-driven base colour
+        obj.material.color.set(data.color);
+      }
+      obj.material.needsUpdate = true;
+    } else if (obj.__graphObjType === "link" && obj.material && obj.material.color) {
+      const data = obj.__data;
+      if (state) {
+        const src = data && data.source && data.source.id;
+        const tgt = data && data.target && data.target.id;
+        const inChain = src && tgt && state.byNode.has(src) && state.byNode.has(tgt);
+        if (inChain) {
+          obj.material.color.setRGB(0.91, 0.89, 0.85);
+          obj.material.opacity = 0.85;
+        } else {
+          obj.material.color.setRGB(0.15, 0.17, 0.20);
+          obj.material.opacity = 0.18;
+        }
+      } else if (data && data.color) {
+        obj.material.color.set(data.color);
+        obj.material.opacity = data.below ? 0.30 : 0.75;
+      }
+      obj.material.needsUpdate = true;
+    }
+  });
+}
+
+const impactInput = document.getElementById("impact-input") as HTMLInputElement | null;
+const impactRunBtn = document.getElementById("impact-run") as HTMLButtonElement | null;
+const impactClearBtn = document.getElementById("impact-clear") as HTMLButtonElement | null;
+const impactStatusEl = document.getElementById("impact-status") as HTMLDivElement | null;
+
+function setImpactStatus(msg: string | null): void {
+  if (!impactStatusEl) return;
+  if (!msg) { impactStatusEl.hidden = true; impactStatusEl.textContent = ""; return; }
+  impactStatusEl.hidden = false;
+  impactStatusEl.textContent = msg;
+}
+
+async function handleImpactRun(): Promise<void> {
+  if (!impactInput || !impactRunBtn) return;
+  const text = impactInput.value.trim();
+  if (!text) return;
+  impactRunBtn.disabled = true;
+  setImpactStatus("Asking Gemma... (60-120s for a 3-hop walk)");
+  try {
+    const resp: ImpactResponse = await runImpact(text);
+    if (resp.error || !resp.seed) {
+      setImpactStatus(`Failed: ${resp.error || "no seed identified"}`);
+      return;
+    }
+    impactState = buildImpactState(g, resp);
+    refreshEdgeVisibility();
+    applyImpactToScene(impactState);
+    if (impactClearBtn) impactClearBtn.hidden = false;
+    setImpactStatus(
+      `Seed: ${resp.seed.name} (${resp.seed.direction}) -> ${resp.impacts.length} nodes touched across ${resp.max_hops || 3} hops`,
+    );
+  } catch (err) {
+    console.error(err);
+    setImpactStatus(`Error: ${String((err as Error).message || err)}`);
+  } finally {
+    impactRunBtn.disabled = false;
+  }
+}
+
+function handleImpactClear(): void {
+  impactState = null;
+  refreshEdgeVisibility();
+  applyImpactToScene(null);
+  if (impactClearBtn) impactClearBtn.hidden = true;
+  if (impactInput) impactInput.value = "";
+  setImpactStatus(null);
+}
+
+if (impactRunBtn) impactRunBtn.addEventListener("click", () => { handleImpactRun().catch(console.error); });
+if (impactInput) impactInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") { ev.preventDefault(); handleImpactRun().catch(console.error); }
+});
+if (impactClearBtn) impactClearBtn.addEventListener("click", handleImpactClear);
 
 // ---------------------------------------------------------------------------
 // Initial load

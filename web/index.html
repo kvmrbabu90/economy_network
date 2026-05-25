@@ -130,6 +130,17 @@
         <div id="canvas"></div>
         <div id="canvas-3d" hidden></div>
         <div id="loading" class="loading" hidden>loading…</div>
+        <div id="impact-bar" class="impact-bar">
+          <input
+            id="impact-input"
+            type="text"
+            placeholder="Describe a news event or hypothetical -- e.g. 'A new pest infection is destroying sugarcane crops worldwide'"
+            autocomplete="off"
+          />
+          <button id="impact-run" class="impact-btn">Trace impact</button>
+          <button id="impact-clear" class="impact-btn impact-btn-secondary" hidden>Clear</button>
+          <div id="impact-status" class="impact-status" hidden></div>
+        </div>
         <div class="legend" aria-label="Legend">
           <div class="legend-group">
             <div class="legend-title">Edges</div>

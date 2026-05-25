@@ -358,6 +358,59 @@ html, body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+.impact-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  width: min(720px, 80%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  z-index: 30;
+}
+.impact-bar input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 8px;
+}
+.impact-bar input::placeholder { color: var(--text-mute); }
+.impact-btn {
+  background: #2a2e34;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  flex-shrink: 0;
+}
+.impact-btn:hover { background: #36393f; border-color: var(--text-mute); }
+.impact-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.impact-btn-secondary { background: transparent; }
+.impact-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 6px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-mute);
+  font-style: italic;
+}
+
 .legend {
   position: absolute;
   bottom: 16px;
