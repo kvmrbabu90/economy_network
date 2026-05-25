@@ -334,14 +334,36 @@ export function start3D(
           // visual noise.
           points = [s, e];
         } else {
-          const mid = s.clone().add(e).multiplyScalar(0.5);
-          const outwardLen = mid.length() || 1;
-          const outward = mid.clone().multiplyScalar(1 / outwardLen);
-          const t = angle / Math.PI;
-          const height = ARC_BASE_HEIGHT + (ARC_MAX_HEIGHT - ARC_BASE_HEIGHT) * t;
-          const apex = mid.clone().add(outward.multiplyScalar(height));
-          const curve = new THREE.QuadraticBezierCurve3(s, apex, e);
-          points = curve.getPoints(ARC_SEGMENTS);
+          // True spherical (great-circle) interpolation between s and e
+          // along their actual radii, with a radial bump that lifts the
+          // midpoint outward. A Quadratic Bezier with the apex along the
+          // chord-midpoint outward radial sags THROUGH the globe for
+          // antipodal links (chord midpoint = origin), so each curve
+          // segment has to be sampled along the great circle instead.
+          const rS = s.length();
+          const rE = e.length();
+          const sNorm = s.clone().multiplyScalar(1 / rS);
+          const eNorm = e.clone().multiplyScalar(1 / rE);
+          const sinA = Math.sin(angle);
+          const heightPct =
+            ARC_BASE_HEIGHT + (ARC_MAX_HEIGHT - ARC_BASE_HEIGHT) * (angle / Math.PI);
+          points = new Array(ARC_SEGMENTS + 1);
+          for (let i = 0; i <= ARC_SEGMENTS; i++) {
+            const t = i / ARC_SEGMENTS;
+            // slerp: spherical linear interpolation between the unit
+            // direction vectors. Stays on the unit sphere for all t.
+            const a = Math.sin((1 - t) * angle) / sinA;
+            const b = Math.sin(t * angle) / sinA;
+            const dir = sNorm.clone().multiplyScalar(a).add(
+              eNorm.clone().multiplyScalar(b),
+            );
+            // Radius along the path: lerp the endpoint radii (so both
+            // ends stay anchored to their nodes' positions) plus a
+            // sine-bump that peaks at t=0.5 and tapers to 0 at the ends.
+            const baseR = rS * (1 - t) + rE * t;
+            const bump = Math.sin(Math.PI * t) * heightPct;
+            points[i] = dir.multiplyScalar(baseR + bump);
+          }
         }
         obj.geometry.setFromPoints(points);
         obj.frustumCulled = false;  // bezier apex sits well outside the
