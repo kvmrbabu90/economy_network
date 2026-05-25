@@ -140,6 +140,36 @@ Brazil. The Phase D upgrade is country-aware retail routing.
     Yum China, BeiGene). All addressable via Phase B Wikidata path.
   - Add more European 20-F filers we missed (BNP Paribas, Allianz,
     Siemens — though most file 6-K + reverse merger paths not 20-F).
-- Phase B: backlog.
-- Phase C: backlog.
+
+- Phase B: **complete** (2026-05-25). 686 non-US companies ingested
+  via Wikidata SPARQL (top companies by country/sector spanning
+  Europe, Asia, Middle East, Africa, Latin America). Wikipedia
+  "Business" / "Operations" sections extracted + LLM-processed via
+  `pipeline/extract_wikipedia.py` (incremental flush, verify gate);
+  300 verified edges added. Wikidata P:1830 competitor enrichment
+  added 399 competes_with edges for the new wikidata: nodes via
+  `pipeline/wikidata_phase_b.py`. Final graph after B+C rebuild:
+  3,743 nodes (up from 3,634), 12,907 edges (up from 12,691 pre-B),
+  7,493 core + 5,414 audit edges. New files:
+  `pipeline/wikidata_phase_b.py`, `pipeline/extract_wikipedia.py`
+  (with incremental flush). Schema fix: `CandidateEdge.source_id`
+  validator extended to allow `wikidata:` prefix.
+
+- Phase C: **complete** (2026-05-25). Two-tier regulated_by routing
+  implemented in `pipeline/regulators.py`:
+  (a) `wikidata:` companies (non-SEC filers) → ONLY their country's
+      regulators from `config/country_regulators.yaml`.
+  (b) `cik:` foreign filers (20-F) → US sector/industry rules
+      PLUS country supplements.
+  New file `config/country_regulators.yaml` covers ~40 countries
+  (JP, CN, KR, TW, SG, MY, TH, IN, ID, AU, NZ, SA, AE, EG, ZA,
+  NG, MA, GB, DE, FR, NL, IT, ES, SE, DK, FI, AT, PT, IE, BE, NO,
+  CH, PL, CA, BR, MX, CO, PE, CL, AR + `_eu_supranational` ESMA
+  merged into all 27 EU member states). 60 new regulator nodes
+  appended to `data/regulator_nodes.jsonl` (93 total vs 33 pre-C).
+  Acceptance tests (via API ego endpoint):
+  - Toyota (cik/JP 20-F): SEC + FTC + NHTSA + EPA + JP-FSA + JP-METI ✓
+  - Toyota-Astra (wikidata/ID): OJK + BI only, no US rules ✓
+  - ASML (cik/NL 20-F): SEC + BIS + NL-AFM + ESMA ✓
+
 - Phase D: backlog.

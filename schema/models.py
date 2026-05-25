@@ -278,10 +278,11 @@ class CandidateEdge(BaseModel):
         # can flow through resolve. Anything outside this allow-list is
         # still rejected -- catches typos and other wiring mistakes.
         _validate_canonical_id(v, "CandidateEdge.source_id")
-        if not v.startswith(("cik:", "commodity:", "region:", "regulator:")):
+        # Phase B adds wikidata: companies; extend allow-list to include them.
+        if not v.startswith(("cik:", "commodity:", "region:", "regulator:", "wikidata:")):
             raise ValueError(
                 "CandidateEdge.source_id must start with 'cik:', 'commodity:', "
-                f"'region:', or 'regulator:' (got {v!r})"
+                f"'region:', 'regulator:', or 'wikidata:' (got {v!r})"
             )
         return v
 

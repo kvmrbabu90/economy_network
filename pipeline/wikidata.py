@@ -393,10 +393,114 @@ def run_wikidata_enrichment(
     }
 
 
+def run_phase_b_enrichment(
+    *,
+    companies_path: Path,
+    out_candidates: Path,
+) -> dict[str, Any]:
+    """Phase B Step B3: Enrich wikidata: nodes with P:1830 competitor relations.
+
+    Unlike run_wikidata_enrichment (which works on CIK-based nodes), this
+    function directly processes wikidata:Q... nodes from Phase B. It fetches
+    P:1830 (competitors), P:127 (owned by, for subsidiary inference), and
+    P:355 (subsidiaries) and emits CandidateEdge records.
+    """
+    nodes = [json.loads(l) for l in companies_path.open(encoding="utf-8")]
+    # Collect Q-ids from wikidata: nodes only (Phase B additions)
+    phase_b_nodes = [n for n in nodes if n.get("id", "").startswith("wikidata:")]
+    log.info("Phase B enrichment: %d wikidata: nodes to process", len(phase_b_nodes))
+
+    qid_to_node: dict[str, dict] = {}
+    for n in phase_b_nodes:
+        qid = n["id"][len("wikidata:"):]
+        qid_to_node[qid] = n
+
+    # Also build qid lookup for ALL nodes (CIK-based too, for target resolution)
+    all_qid_to_id: dict[str, str] = {}
+    for n in nodes:
+        nid = n.get("id", "")
+        if nid.startswith("wikidata:"):
+            qid = nid[len("wikidata:"):]
+            all_qid_to_id[qid] = nid
+        # CIK nodes may have wikidata id in identifiers
+        wikidata_id = (n.get("identifiers") or {}).get("wikidata")
+        if wikidata_id and nid:
+            all_qid_to_id.setdefault(wikidata_id, nid)
+
+    qids = list(qid_to_node.keys())
+    if not qids:
+        log.info("No Phase B nodes found — skipping enrichment")
+        return {"phase_b_nodes": 0, "candidate_edges": 0}
+
+    # Fetch P:1830 (competitor) relations
+    log.info("Fetching P:1830 competitor relations for %d Phase B companies ...", len(qids))
+    competitors = fetch_relations(qids, "P1830")
+    log.info("  %d competitor relations found", len(competitors))
+
+    # Fetch P:127 (owned by) — surfaces parent-child relationships
+    log.info("Fetching P:127 (owned by) relations ...")
+    owned_by = fetch_relations(qids, "P127")
+    log.info("  %d owned-by relations found", len(owned_by))
+
+    # Fetch P:355 (subsidiaries) — source company has subsidiaries
+    log.info("Fetching P:355 (subsidiary) relations ...")
+    subsidiaries = fetch_relations(qids, "P355")
+    log.info("  %d subsidiary relations found", len(subsidiaries))
+
+    candidates: list[CandidateEdge] = []
+
+    # Process competitor relations
+    for row in competitors:
+        src_qid = row["source_qid"]
+        tgt_qid = row["target_qid"]
+        if src_qid == tgt_qid:
+            continue
+        if src_qid not in qid_to_node:
+            continue
+        src_id = f"wikidata:{src_qid}"
+        target_label = row.get("target_label") or f"wikidata:{tgt_qid}"
+        # If target has a known node, use its label; else use raw label
+        target_raw = target_label
+        src_name = qid_to_node[src_qid].get("name", src_id)
+        snippet = (
+            f"Wikidata P1830 (competitor): "
+            f"{src_name} competes with {target_label} ({tgt_qid})"
+        )
+        try:
+            ce = make_candidate(src_id, target_raw, "competes_with", src_qid, snippet)
+            candidates.append(ce)
+        except Exception as exc:
+            log.debug("Phase B candidate failed (competitor): %s", exc)
+
+    # Process subsidiary relations — parent --supplies--> subsidiary is not
+    # correct; skip these for now as they don't map cleanly to our edge types.
+    # We log the count but don't emit edges.
+    log.info("  (P:355 subsidiary relations logged but not emitted as edges)")
+
+    out_candidates.parent.mkdir(parents=True, exist_ok=True)
+    # Append to existing wikidata_candidates.jsonl
+    n_written = 0
+    with out_candidates.open("a", encoding="utf-8") as fh:
+        for ce in candidates:
+            fh.write(ce.model_dump_json())
+            fh.write("\n")
+            n_written += 1
+
+    log.info("Phase B enrichment: appended %d candidate edges -> %s", n_written, out_candidates)
+
+    return {
+        "phase_b_nodes": len(qids),
+        "competitor_relations": len(competitors),
+        "candidate_edges": n_written,
+    }
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(description="Tier-3 Wikidata enrichment")
     parser.add_argument("--data-root", default="data")
+    parser.add_argument("--phase-b", action="store_true",
+                        help="Run Phase B enrichment (wikidata: node relations) instead of CIK enrichment")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -404,12 +508,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     data_root = Path(args.data_root)
-    summary = run_wikidata_enrichment(
-        companies_path=data_root / "companies.jsonl",
-        out_companies=data_root / "wikidata_companies.json",
-        out_candidates=data_root / "_extract" / "wikidata_candidates.jsonl",
-        out_aliases=data_root / "wikidata_aliases.jsonl",
-    )
+    if args.phase_b:
+        summary = run_phase_b_enrichment(
+            companies_path=data_root / "companies.jsonl",
+            out_candidates=data_root / "_extract" / "wikidata_candidates.jsonl",
+        )
+    else:
+        summary = run_wikidata_enrichment(
+            companies_path=data_root / "companies.jsonl",
+            out_companies=data_root / "wikidata_companies.json",
+            out_candidates=data_root / "_extract" / "wikidata_candidates.jsonl",
+            out_aliases=data_root / "wikidata_aliases.jsonl",
+        )
     log.info("Wikidata enrichment summary:\n%s", json.dumps(summary, indent=2))
     return 0
 

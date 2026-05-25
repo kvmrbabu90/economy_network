@@ -1,0 +1,438 @@
+# country_regulators.yaml — per-country regulatory body assignments
+#
+# Used by pipeline/regulators.py for country-aware regulated_by routing:
+#   * wikidata: (non-SEC-filer) companies: country regulators replace the
+#     US _default (SEC) from regulators.yaml. Sector/industry US rules still
+#     apply only if explicitly overridden here.
+#   * cik: companies with non-US country code: country regulators are ADDED
+#     on top of whatever regulators.yaml already assigns.
+#
+# Verification targets (Phase C acceptance):
+#   Toyota  (JP, Automobile Manufacturers) → jp-fsa, jp-meti
+#   Shell   (GB, Integrated Oil & Gas)     → gb-fca
+#   ASML    (NL, Semiconductors)           → nl-afm, esma
+#
+# ID format: regulator:<slug>
+# Prefer well-known abbreviations where unambiguous globally.
+# Include national prefix only where disambiguation is needed.
+#
+# Each country entry is a list of regulator specs that apply to ALL companies
+# headquartered there regardless of sub-industry. Industry-specific additions
+# use the optional `industry` sub-key within a country block.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Asia-Pacific
+# ─────────────────────────────────────────────────────────────────────────────
+JP:  # Japan
+  _all:
+    - id: regulator:jp-fsa
+      name: Financial Services Agency (FSA), Japan
+      scope: Banks, securities firms, and insurance supervision
+    - id: regulator:jp-meti
+      name: Ministry of Economy, Trade and Industry (METI), Japan
+      scope: Industrial policy, trade, energy, and export controls
+
+CN:  # China
+  _all:
+    - id: regulator:cn-csrc
+      name: China Securities Regulatory Commission (CSRC)
+      scope: Securities and futures markets in China
+    - id: regulator:cn-pboc
+      name: People's Bank of China (PBoC)
+      scope: Monetary policy and banking supervision
+    - id: regulator:cn-samr
+      name: State Administration for Market Regulation (SAMR)
+      scope: Antitrust, market competition, and consumer protection
+
+KR:  # South Korea
+  _all:
+    - id: regulator:kr-fsc
+      name: Financial Services Commission (FSC), South Korea
+      scope: Financial policy and supervision
+    - id: regulator:kr-fss
+      name: Financial Supervisory Service (FSS), South Korea
+      scope: Prudential supervision of financial institutions
+
+TW:  # Taiwan
+  _all:
+    - id: regulator:tw-fsc
+      name: Financial Supervisory Commission (FSC), Taiwan
+      scope: Securities, banking, and insurance regulation
+
+SG:  # Singapore
+  _all:
+    - id: regulator:sg-mas
+      name: Monetary Authority of Singapore (MAS)
+      scope: Central bank, financial regulation, and capital markets
+
+MY:  # Malaysia
+  _all:
+    - id: regulator:my-sc
+      name: Securities Commission Malaysia (SC)
+      scope: Capital markets regulation in Malaysia
+    - id: regulator:my-bnm
+      name: Bank Negara Malaysia (BNM)
+      scope: Central bank and financial institutions supervision
+
+TH:  # Thailand
+  _all:
+    - id: regulator:th-sec
+      name: Securities and Exchange Commission, Thailand (SEC)
+      scope: Capital markets and securities regulation
+    - id: regulator:th-bot
+      name: Bank of Thailand (BOT)
+      scope: Central bank and banking supervision
+
+IN:  # India
+  _all:
+    - id: regulator:in-sebi
+      name: Securities and Exchange Board of India (SEBI)
+      scope: Securities markets regulation
+    - id: regulator:in-rbi
+      name: Reserve Bank of India (RBI)
+      scope: Central bank, banking, and monetary policy
+
+ID:  # Indonesia
+  _all:
+    - id: regulator:id-ojk
+      name: Otoritas Jasa Keuangan (OJK)
+      scope: Financial services supervision in Indonesia
+    - id: regulator:id-bi
+      name: Bank Indonesia (BI)
+      scope: Central bank and monetary policy
+
+AU:  # Australia
+  _all:
+    - id: regulator:au-asic
+      name: Australian Securities and Investments Commission (ASIC)
+      scope: Financial markets, corporations, and consumer credit
+    - id: regulator:au-accc
+      name: Australian Competition and Consumer Commission (ACCC)
+      scope: Competition and consumer protection
+
+NZ:  # New Zealand
+  _all:
+    - id: regulator:nz-fma
+      name: Financial Markets Authority (FMA), New Zealand
+      scope: Financial markets and securities regulation
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Middle East & Africa
+# ─────────────────────────────────────────────────────────────────────────────
+SA:  # Saudi Arabia
+  _all:
+    - id: regulator:sa-cma
+      name: Capital Market Authority (CMA), Saudi Arabia
+      scope: Capital markets regulation and securities supervision
+    - id: regulator:sa-sama
+      name: Saudi Central Bank (SAMA)
+      scope: Banking and monetary supervision
+
+AE:  # UAE
+  _all:
+    - id: regulator:ae-sca
+      name: Securities and Commodities Authority (SCA), UAE
+      scope: Capital markets and securities regulation
+    - id: regulator:ae-cbuae
+      name: Central Bank of the UAE
+      scope: Banking and monetary policy
+
+EG:  # Egypt
+  _all:
+    - id: regulator:eg-fra
+      name: Financial Regulatory Authority (FRA), Egypt
+      scope: Non-banking financial markets and activities
+
+ZA:  # South Africa
+  _all:
+    - id: regulator:za-fsca
+      name: Financial Sector Conduct Authority (FSCA), South Africa
+      scope: Non-banking financial sector regulation
+    - id: regulator:za-sarb
+      name: South African Reserve Bank (SARB)
+      scope: Central bank and monetary policy
+
+NG:  # Nigeria
+  _all:
+    - id: regulator:ng-sec
+      name: Securities and Exchange Commission, Nigeria (SEC)
+      scope: Capital markets regulation in Nigeria
+    - id: regulator:ng-cbn
+      name: Central Bank of Nigeria (CBN)
+      scope: Banking and monetary policy
+
+MA:  # Morocco
+  _all:
+    - id: regulator:ma-ammc
+      name: Autorité Marocaine du Marché des Capitaux (AMMC)
+      scope: Capital markets supervision in Morocco
+
+KE:  # Kenya
+  _all:
+    - id: regulator:ke-cma
+      name: Capital Markets Authority, Kenya (CMA)
+      scope: Capital markets regulation in Kenya
+
+GH:  # Ghana
+  _all:
+    - id: regulator:gh-sec
+      name: Securities and Exchange Commission, Ghana (SEC)
+      scope: Capital markets regulation in Ghana
+
+ET:  # Ethiopia
+  _all:
+    - id: regulator:et-nbe
+      name: National Bank of Ethiopia (NBE)
+      scope: Banking and monetary regulation
+
+TZ:  # Tanzania
+  _all:
+    - id: regulator:tz-cmsa
+      name: Capital Markets and Securities Authority (CMSA), Tanzania
+      scope: Capital markets supervision in Tanzania
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Europe
+# ─────────────────────────────────────────────────────────────────────────────
+# EU-wide regulator (applies on top of national in EU member states)
+_eu_supranational:
+  - id: regulator:esma
+    name: European Securities and Markets Authority (ESMA)
+    scope: EU-wide securities markets oversight and regulatory coordination
+
+GB:  # United Kingdom
+  _all:
+    - id: regulator:gb-fca
+      name: Financial Conduct Authority (FCA), UK
+      scope: Financial markets conduct and consumer protection
+    - id: regulator:gb-pra
+      name: Prudential Regulation Authority (PRA), UK
+      scope: Prudential supervision of banks and insurers
+    - id: regulator:gb-cma
+      name: Competition and Markets Authority (CMA), UK
+      scope: Competition law enforcement and mergers
+
+DE:  # Germany
+  _all:
+    - id: regulator:de-bafin
+      name: Federal Financial Supervisory Authority (BaFin), Germany
+      scope: Financial services supervision — banking, securities, insurance
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+FR:  # France
+  _all:
+    - id: regulator:fr-amf
+      name: Autorité des marchés financiers (AMF), France
+      scope: Securities markets regulation and investor protection
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+NL:  # Netherlands
+  _all:
+    - id: regulator:nl-afm
+      name: Authority for the Financial Markets (AFM), Netherlands
+      scope: Financial markets and securities supervision
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+IT:  # Italy
+  _all:
+    - id: regulator:it-consob
+      name: Commissione Nazionale per le Società e la Borsa (CONSOB), Italy
+      scope: Securities markets, listed companies, and investment services
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+ES:  # Spain
+  _all:
+    - id: regulator:es-cnmv
+      name: Comisión Nacional del Mercado de Valores (CNMV), Spain
+      scope: Securities markets and listed companies supervision
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+SE:  # Sweden
+  _all:
+    - id: regulator:se-fi
+      name: Finansinspektionen (FI), Sweden
+      scope: Banks, insurance, and securities supervision
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+DK:  # Denmark
+  _all:
+    - id: regulator:dk-dfsa
+      name: Danish Financial Supervisory Authority (Finanstilsynet)
+      scope: Financial supervision in Denmark
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+FI:  # Finland
+  _all:
+    - id: regulator:fi-fsa
+      name: Financial Supervisory Authority (FIN-FSA), Finland
+      scope: Financial markets supervision in Finland
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+AT:  # Austria
+  _all:
+    - id: regulator:at-fma
+      name: Financial Market Authority (FMA), Austria
+      scope: Banks, insurance, and securities supervision
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+PT:  # Portugal
+  _all:
+    - id: regulator:pt-cmvm
+      name: Comissão do Mercado de Valores Mobiliários (CMVM), Portugal
+      scope: Securities markets supervision
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+IE:  # Ireland
+  _all:
+    - id: regulator:ie-cbi
+      name: Central Bank of Ireland
+      scope: Financial regulation and monetary policy supervision
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+BE:  # Belgium
+  _all:
+    - id: regulator:be-fsma
+      name: Financial Services and Markets Authority (FSMA), Belgium
+      scope: Financial markets and investor protection
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+"NO":  # Norway (EEA, not EU, but ESMA-aligned) — quoted to prevent YAML bool parse
+  _all:
+    - id: regulator:no-finanstilsynet
+      name: Finanstilsynet (Financial Supervisory Authority), Norway
+      scope: Financial supervision in Norway
+
+CH:  # Switzerland
+  _all:
+    - id: regulator:ch-finma
+      name: Swiss Financial Market Supervisory Authority (FINMA)
+      scope: Financial markets, banks, and insurance supervision
+
+PL:  # Poland
+  _all:
+    - id: regulator:pl-knf
+      name: Komisja Nadzoru Finansowego (KNF), Poland
+      scope: Financial market supervision in Poland
+    - id: regulator:esma
+      name: European Securities and Markets Authority (ESMA)
+      scope: EU-wide securities markets oversight and regulatory coordination
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Americas
+# ─────────────────────────────────────────────────────────────────────────────
+CA:  # Canada
+  _all:
+    - id: regulator:ca-osfi
+      name: Office of the Superintendent of Financial Institutions (OSFI), Canada
+      scope: Federal banking and insurance supervision
+    - id: regulator:ca-csa
+      name: Canadian Securities Administrators (CSA)
+      scope: Provincial/territorial securities regulation coordination
+
+BR:  # Brazil
+  _all:
+    - id: regulator:br-cvm
+      name: Comissão de Valores Mobiliários (CVM), Brazil
+      scope: Capital markets and securities regulation
+    - id: regulator:br-bcb
+      name: Banco Central do Brasil (BCB)
+      scope: Central bank and monetary policy
+    - id: regulator:br-cade
+      name: Conselho Administrativo de Defesa Econômica (CADE)
+      scope: Antitrust and competition enforcement
+
+MX:  # Mexico
+  _all:
+    - id: regulator:mx-cnbv
+      name: Comisión Nacional Bancaria y de Valores (CNBV), Mexico
+      scope: Banking and securities supervision
+    - id: regulator:mx-cofece
+      name: Comisión Federal de Competencia Económica (COFECE)
+      scope: Competition law enforcement
+
+CO:  # Colombia
+  _all:
+    - id: regulator:co-sfc
+      name: Superintendencia Financiera de Colombia (SFC)
+      scope: Financial sector supervision
+    - id: regulator:co-sic
+      name: Superintendencia de Industria y Comercio (SIC)
+      scope: Competition, consumer protection, and industrial supervision
+
+PE:  # Peru
+  _all:
+    - id: regulator:pe-smv
+      name: Superintendencia del Mercado de Valores (SMV), Peru
+      scope: Securities market supervision
+    - id: regulator:pe-sbs
+      name: Superintendencia de Banca, Seguros y AFP (SBS), Peru
+      scope: Banking, insurance, and pension fund supervision
+
+CL:  # Chile
+  _all:
+    - id: regulator:cl-cmf
+      name: Comisión para el Mercado Financiero (CMF), Chile
+      scope: Financial markets, banking, and insurance regulation
+
+AR:  # Argentina
+  _all:
+    - id: regulator:ar-cnv
+      name: Comisión Nacional de Valores (CNV), Argentina
+      scope: Securities markets regulation
+    - id: regulator:ar-bcra
+      name: Banco Central de la República Argentina (BCRA)
+      scope: Central bank and banking supervision
+
+VE:  # Venezuela
+  _all:
+    - id: regulator:ve-sunaval
+      name: Superintendencia Nacional de Valores (SUNAVAL), Venezuela
+      scope: Securities market supervision
+
+EC:  # Ecuador
+  _all:
+    - id: regulator:ec-supercias
+      name: Superintendencia de Compañías, Valores y Seguros, Ecuador
+      scope: Companies, securities, and insurance supervision
+
+BO:  # Bolivia
+  _all:
+    - id: regulator:bo-asfi
+      name: Autoridad de Supervisión del Sistema Financiero (ASFI), Bolivia
+      scope: Financial system supervision
+
+PY:  # Paraguay
+  _all:
+    - id: regulator:py-bcp
+      name: Banco Central del Paraguay (BCP)
+      scope: Central bank and banking supervision
+
+UY:  # Uruguay
+  _all:
+    - id: regulator:uy-bcu
+      name: Banco Central del Uruguay (BCU)
+      scope: Central bank and financial regulation

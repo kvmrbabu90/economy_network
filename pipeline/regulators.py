@@ -92,6 +92,68 @@ def load_subindustry_map(path: Path) -> dict[str, str]:
     return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
 
 
+# ---------------------------------------------------------------------------
+# Country-aware regulators (Phase C)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CountryRegulatorsConfig:
+    """In-memory view of config/country_regulators.yaml.
+
+    Maps ISO 3166-1 alpha-2 country code → list[RegulatorSpec].
+    Built by merging `_eu_supranational` into every EU country's entry.
+    """
+
+    by_country: dict[str, list[RegulatorSpec]]
+    source_path: Path
+
+
+# EU member states that get ESMA in addition to their national regulator.
+_EU_MEMBERS = frozenset({
+    "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FI",
+    "FR", "GR", "HR", "HU", "IE", "IT", "LT", "LU", "LV", "MT",
+    "NL", "PL", "PT", "RO", "SE", "SI", "SK",
+})
+
+
+def load_country_regulators_config(path: Path) -> CountryRegulatorsConfig:
+    """Load config/country_regulators.yaml.  Returns empty config if missing."""
+    path = Path(path)
+    if not path.exists():
+        log.warning("country_regulators.yaml not found at %s — skipping country routing", path)
+        return CountryRegulatorsConfig(by_country={}, source_path=path)
+
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    eu_extra = _to_specs(data.get("_eu_supranational") or [])
+
+    by_country: dict[str, list[RegulatorSpec]] = {}
+    for raw_key, value in data.items():
+        key = str(raw_key)  # YAML 1.1 parses "NO" as bool False — coerce to str
+        if key.startswith("_") or not isinstance(value, dict):
+            continue  # skip _eu_supranational and other meta keys
+        country_code = key.upper()  # e.g. "JP", "GB", "DE"
+        raw_all = value.get("_all") or []
+        specs = _to_specs(raw_all)
+        # EU members automatically receive the EU supranational entries unless
+        # the country YAML already includes them (de-dupe by id below).
+        if country_code in _EU_MEMBERS:
+            existing_ids = {s.id for s in specs}
+            specs.extend(s for s in eu_extra if s.id not in existing_ids)
+        by_country[country_code] = specs
+
+    return CountryRegulatorsConfig(by_country=by_country, source_path=path)
+
+
+def regulators_for_country(
+    country: Optional[str],
+    country_cfg: CountryRegulatorsConfig,
+) -> list[RegulatorSpec]:
+    """Return country-level regulators for a given ISO country code."""
+    if not country:
+        return []
+    return list(country_cfg.by_country.get(country.upper(), []))
+
+
 def resolve_gics_industry(
     sub_industry: Optional[str],
     sub_to_industry: dict[str, str],
@@ -121,14 +183,34 @@ def regulators_for_company(
     gics_sector: Optional[str],
     gics_industry: str,
     cfg: RegulatorsConfig,
+    country: Optional[str] = None,
+    country_cfg: Optional[CountryRegulatorsConfig] = None,
+    is_wikidata: bool = False,
 ) -> list[RegulatorSpec]:
-    """Apply the default+sector+industry stack, de-duped by regulator id."""
+    """Apply the default+sector+industry+country stack, de-duped by regulator id.
+
+    is_wikidata=True skips the _default SEC entry because Wikidata-id companies
+    are not SEC registrants — they get country-level regulators instead.
+    """
     pool: list[RegulatorSpec] = []
-    pool.extend(cfg.default)
-    if gics_sector and gics_sector in cfg.by_sector:
-        pool.extend(cfg.by_sector[gics_sector])
-    if gics_industry in cfg.by_industry:
-        pool.extend(cfg.by_industry[gics_industry])
+
+    if is_wikidata:
+        # Non-SEC-filer companies (Wikidata IDs): US regulators don't apply.
+        # Use only country-level regulators from country_regulators.yaml.
+        if country_cfg is not None:
+            pool.extend(regulators_for_country(country, country_cfg))
+    else:
+        # SEC-registered filers (cik:): US rules apply fully.
+        pool.extend(cfg.default)
+        if gics_sector and gics_sector in cfg.by_sector:
+            pool.extend(cfg.by_sector[gics_sector])
+        if gics_industry in cfg.by_industry:
+            pool.extend(cfg.by_industry[gics_industry])
+        # Supplement with country-specific regulators for foreign filers
+        # (e.g. Toyota files with SEC AND JFSA/METI).
+        if country and country.upper() != "US" and country_cfg is not None:
+            pool.extend(regulators_for_country(country, country_cfg))
+
     seen: set[str] = set()
     deduped: list[RegulatorSpec] = []
     for spec in pool:
@@ -195,6 +277,7 @@ def extract_rule_edges(
     companies: list[dict[str, Any]],
     cfg: RegulatorsConfig,
     sub_to_industry: dict[str, str],
+    country_cfg: Optional[CountryRegulatorsConfig] = None,
 ) -> RuleExtractResult:
     candidates: list[CandidateEdge] = []
     nodes_by_id: dict[str, Node] = {}
@@ -206,12 +289,19 @@ def extract_rule_edges(
         name = node.get("name", "<unnamed>")
         sector = node.get("sector")
         sub_industry = node.get("industry")
+        country = node.get("country")
+        is_wikidata = cid.startswith("wikidata:")
         resolved = resolve_gics_industry(
             sub_industry, sub_to_industry, company_name=name
         )
         resolved_industries[cid] = resolved
         regs = regulators_for_company(
-            gics_sector=sector, gics_industry=resolved, cfg=cfg
+            gics_sector=sector,
+            gics_industry=resolved,
+            cfg=cfg,
+            country=country,
+            country_cfg=country_cfg,
+            is_wikidata=is_wikidata,
         )
         per_company[cid] = [r.id for r in regs]
         for spec in regs:

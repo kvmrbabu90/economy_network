@@ -35,8 +35,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from pipeline.regulators import (
+    CountryRegulatorsConfig,
     RuleExtractResult,
     extract_rule_edges,
+    load_country_regulators_config,
     load_regulators_config,
     load_subindustry_map,
     write_regulator_nodes_jsonl,
@@ -117,7 +119,8 @@ def _rule_pass(
         config_root / "gics_subindustry_to_industry.yaml"
     )
     cfg = load_regulators_config(config_root / "regulators.yaml")
-    rule = extract_rule_edges(companies, cfg, sub_to_industry)
+    country_cfg = load_country_regulators_config(config_root / "country_regulators.yaml")
+    rule = extract_rule_edges(companies, cfg, sub_to_industry, country_cfg=country_cfg)
     log.info(
         "Rule extraction: %d regulator nodes, %d regulated_by candidates over %d companies",
         len(rule.regulator_nodes), len(rule.candidates), len(rule.per_company),
