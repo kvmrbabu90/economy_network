@@ -90,7 +90,7 @@ def main() -> int:
     print(f"Total Company nodes: {total_companies}")
     print("Top countries:")
     for c, n in by_country[:12]:
-        print(f"  {c:<6} {n}")
+        print(f"  {(c or '(none)'):<8} {n}")
     return 0 if fail == 0 else 1
 
 
