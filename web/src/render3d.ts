@@ -289,15 +289,8 @@ export function start3D(
     // surface -- previous max of 0.65*R made arcs visually larger than
     // the globe itself when zoomed out. 0.06 + 0.18 by angular sep
     // keeps every arc inside a thin shell hugging the wireframe.
-    // Arc heights -- moderate bowl. Earlier 0.15/0.70 swung so high that
-    // far-side arc midpoints sat behind the globe relative to the camera,
-    // so users saw only the near-endpoint stub climbing up like a radial
-    // antenna. 0.08/0.30 keeps the apex hugging the surface (peak radius
-    // 220-260 against a 200-unit globe) so arcs read as ribbons over
-    // the planet rather than spikes. Paired with depthTest=false on the
-    // arc material so the back half stays visible.
-    const ARC_BASE_HEIGHT = GLOBE_RADIUS * 0.08;
-    const ARC_MAX_HEIGHT = GLOBE_RADIUS * 0.30;
+    const ARC_BASE_HEIGHT = GLOBE_RADIUS * 0.03;
+    const ARC_MAX_HEIGHT = GLOBE_RADIUS * 0.22;
     const ARC_SEGMENTS = 24;
     // Below this angular separation (in radians) two endpoints are
     // effectively co-located -- typically because they both fell back
@@ -309,29 +302,14 @@ export function start3D(
       .linkThreeObjectExtend(false)
       .linkThreeObject((link: ForceLink) => {
         // Real 3D tubes (not 1px THREE.Line) so they stay visible at any
-        // zoom. Geometry is built lazily in buildArcs() once node
-        // positions resolve.
-        //
-        // depthTest=false so the back half of each great-circle arc still
-        // renders through the globe sphere -- otherwise far-side arcs
-        // look like radial spikes climbing up from near-side endpoints
-        // before disappearing behind the horizon. depthWrite=false keeps
-        // overlapping arcs from punching holes in each other's alpha.
-        // Lower opacity (0.45 / 0.18) because depthTest off means arcs
-        // pile on top of nodes + each other; thinner alpha prevents the
-        // network from washing out the surface beneath.
+        // zoom and depth-test properly against node spheres. Geometry is
+        // built lazily in buildArcs() once node positions resolve.
         const mat = new THREE.MeshBasicMaterial({
           color: link.color,
           transparent: true,
-          opacity: link.below ? 0.18 : 0.45,
-          depthTest: false,
-          depthWrite: false,
+          opacity: link.below ? 0.30 : 0.75,
         });
-        const mesh = new THREE.Mesh(new THREE.BufferGeometry(), mat);
-        // Render arcs AFTER the globe sphere (renderOrder default 0) so
-        // alpha-blending stacks them correctly against the dark surface.
-        mesh.renderOrder = 5;
-        return mesh;
+        return new THREE.Mesh(new THREE.BufferGeometry(), mat);
       });
 
     const TUBE_RADIUS_CORE = 0.6;
@@ -339,29 +317,17 @@ export function start3D(
     const TUBE_RADIAL_SEGMENTS = 6;
     const buildArcs = () => {
       if (!instance) return;
-      // three-forcegraph binds the rendered THREE object onto each link as
-      // `__lineObj` (see node_modules/three-forcegraph/dist/.../objBindAttr).
-      // Scene-walking via __graphObjType missed everything (built=0,
-      // skipped=0 in console), so iterate the link list directly.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const data = (instance as any).graphData ? (instance as any).graphData() : null;
-      const links: ForceLink[] = (data && data.links) || [];
+      const scene = instance.scene();
       let built = 0, skipped = 0;
-      for (const link of links) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const obj: any = (link as any).__lineObj || (link as any).__threeObj;
-        if (!obj) { skipped++; continue; }
-        // If three-forcegraph wrapped our custom mesh in a Group (extend
-        // mode) or attached the mesh as a child, find the mesh inside.
-        const mesh: any = obj.isMesh
-          ? obj
-          : (obj.children && obj.children.find((c: any) => c.isMesh));
-        if (!mesh) { skipped++; continue; }
-        const src = (link as any).source;
-        const tgt = (link as any).target;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      scene.traverse((obj: any) => {
+        if (obj.__graphObjType !== "link" || !obj.isMesh) return;
+        const link = obj.__data;
+        const src = link && link.source;
+        const tgt = link && link.target;
         if (!src || !tgt || typeof src.x !== "number" || typeof tgt.x !== "number") {
           skipped++;
-          continue;
+          return;
         }
         const s = new THREE.Vector3(src.x, src.y, src.z);
         const e = new THREE.Vector3(tgt.x, tgt.y, tgt.z);
@@ -405,15 +371,15 @@ export function start3D(
         const tubeGeom = new THREE.TubeGeometry(
           curve,
           ARC_SEGMENTS,
-          (link as any).below ? TUBE_RADIUS_AUDIT : TUBE_RADIUS_CORE,
+          link.below ? TUBE_RADIUS_AUDIT : TUBE_RADIUS_CORE,
           TUBE_RADIAL_SEGMENTS,
           false,
         );
-        if (mesh.geometry) mesh.geometry.dispose();
-        mesh.geometry = tubeGeom;
-        mesh.frustumCulled = false;
+        if (obj.geometry) obj.geometry.dispose();
+        obj.geometry = tubeGeom;
+        obj.frustumCulled = false;
         built++;
-      }
+      });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).__arcBuilt = { built, skipped };
     };
