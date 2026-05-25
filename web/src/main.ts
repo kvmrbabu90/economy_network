@@ -272,21 +272,99 @@ function refreshEdgeVisibility(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Futuristic loading overlays
+// ---------------------------------------------------------------------------
+
+let _graphOverlayTimer: ReturnType<typeof setInterval> | null = null;
+
+function showGraphOverlay(): void {
+  const overlay = document.getElementById("graph-overlay");
+  const stageEl = document.getElementById("graph-overlay-stage");
+  if (!overlay || !stageEl) return;
+  overlay.hidden = false;
+  const stages = [
+    "Connecting to graph database…",
+    "Fetching nodes from economy network…",
+    "Streaming economic relationships…",
+    "Building supply chain links…",
+    "Resolving competitor networks…",
+    "Constructing regulated-by graph…",
+  ];
+  let i = 0;
+  stageEl.textContent = stages[0];
+  _graphOverlayTimer = setInterval(() => {
+    i = (i + 1) % stages.length;
+    stageEl.textContent = stages[i];
+  }, 2800);
+}
+
+function setGraphOverlayStage(msg: string): void {
+  const stageEl = document.getElementById("graph-overlay-stage");
+  if (stageEl) stageEl.textContent = msg;
+}
+
+function hideGraphOverlay(): void {
+  if (_graphOverlayTimer) { clearInterval(_graphOverlayTimer); _graphOverlayTimer = null; }
+  const overlay = document.getElementById("graph-overlay");
+  if (overlay) overlay.hidden = true;
+}
+
+let _impactOverlayTimer: ReturnType<typeof setInterval> | null = null;
+
+function showImpactOverlay(provider: string): void {
+  const overlay = document.getElementById("impact-overlay");
+  const stageEl = document.getElementById("impact-overlay-stage");
+  const etaEl  = document.getElementById("impact-overlay-eta");
+  if (!overlay || !stageEl) return;
+  overlay.hidden = false;
+  if (etaEl) etaEl.textContent = provider === "claude" ? "est. 1–3 min" : "est. 3–8 min";
+  const stages = [
+    "Parsing event description…",
+    "Identifying seed entity in graph…",
+    "Propagating through supply chain (hop 1)…",
+    "Expanding competitor network (hop 2)…",
+    "Calculating cascade effects (hop 3)…",
+    "Scoring impact magnitude…",
+    "Aggregating affected nodes…",
+  ];
+  let i = 0;
+  stageEl.textContent = stages[0];
+  _impactOverlayTimer = setInterval(() => {
+    i = (i + 1) % stages.length;
+    stageEl.textContent = stages[i];
+  }, 3200);
+}
+
+function hideImpactOverlay(): void {
+  if (_impactOverlayTimer) { clearInterval(_impactOverlayTimer); _impactOverlayTimer = null; }
+  const overlay = document.getElementById("impact-overlay");
+  if (overlay) overlay.hidden = true;
+}
+
+// ---------------------------------------------------------------------------
 // Loaders
 // ---------------------------------------------------------------------------
 
 async function loadFullCore(): Promise<void> {
-  // /subgraph seeded at SEC at hops=3 covers every filer + their high-confidence
-  // neighbors. Provisional layer respects the user's current toggle (default off).
-  const resp = await getSubgraph(FULL_VIEW_SEED, {
-    hops: FULL_VIEW_HOPS,
-    includeProvisional: filters.includeProvisional,
-    includeInferred: filters.includeInferred,
-  });
-  replaceGraph(g, resp.nodes, resp.edges);
-  restyleAfterMerge(g);
-  applyLayout();
-  cameraReset();
+  showGraphOverlay();
+  try {
+    // /subgraph seeded at SEC at hops=3 covers every filer + their high-confidence
+    // neighbors. Provisional layer respects the user's current toggle (default off).
+    const resp = await getSubgraph(FULL_VIEW_SEED, {
+      hops: FULL_VIEW_HOPS,
+      includeProvisional: filters.includeProvisional,
+      includeInferred: filters.includeInferred,
+    });
+    setGraphOverlayStage(
+      `Rendering ${resp.nodes.length.toLocaleString()} nodes, ${resp.edges.length.toLocaleString()} edges…`
+    );
+    replaceGraph(g, resp.nodes, resp.edges);
+    restyleAfterMerge(g);
+    applyLayout();
+    cameraReset();
+  } finally {
+    hideGraphOverlay();
+  }
 }
 
 async function recenterOn(id: string): Promise<void> {
@@ -614,13 +692,10 @@ async function handleImpactRun(): Promise<void> {
   const text = impactInput.value.trim();
   if (!text) return;
   const provider = (impactProviderEl?.value as "claude" | "ollama" | undefined) ?? "claude";
-  impactRunBtn.disabled = true;
   const niceProvider = provider === "claude" ? "Claude" : "Gemma";
-  // Honest estimate: hop 3 fans out widely on broad-scope news
-  // (war, sanctions, recession) and a 3-hop walk runs 10-20 parallel
-  // LLM calls. Wall time scales with the worst hop's chunk count.
-  const eta = provider === "claude" ? "~1-3 min" : "~3-8 min";
-  setImpactStatus(`Asking ${niceProvider}... (${eta} for a 3-hop walk; longer for global-scope news)`);
+  impactRunBtn.disabled = true;
+  setImpactStatus(null);
+  showImpactOverlay(provider);
   try {
     const resp: ImpactResponse = await runImpact(text, { provider });
     if (resp.error || !resp.seed) {
@@ -632,12 +707,13 @@ async function handleImpactRun(): Promise<void> {
     applyImpactToScene(impactState);
     if (impactClearBtn) impactClearBtn.hidden = false;
     setImpactStatus(
-      `[${niceProvider}] Seed: ${resp.seed.name} (${resp.seed.direction}) -> ${resp.impacts.length} nodes touched across ${resp.max_hops || 3} hops`,
+      `[${niceProvider}] Seed: ${resp.seed.name} (${resp.seed.direction}) → ${resp.impacts.length} nodes touched across ${resp.max_hops || 3} hops`,
     );
   } catch (err) {
     console.error(err);
     setImpactStatus(`Error: ${String((err as Error).message || err)}`);
   } finally {
+    hideImpactOverlay();
     impactRunBtn.disabled = false;
   }
 }

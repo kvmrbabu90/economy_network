@@ -358,6 +358,164 @@ html, body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* =========================================================
+   Futuristic loading overlays (graph-overlay + impact-overlay)
+   ========================================================= */
+.graph-overlay,
+.impact-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 40px;
+  background: rgba(14, 17, 20, 0.90);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* Shared text */
+.go-text, .io-text { text-align: center; }
+.go-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  color: #1ee8d8;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.go-stage {
+  font-size: 13px;
+  color: var(--text-mute);
+  font-style: italic;
+  min-height: 20px;
+  animation: overlay-fadein 0.5s ease;
+}
+.go-ticker {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+  letter-spacing: 0.08em;
+}
+@keyframes overlay-fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ---- Orbital rings (full-graph) ---- */
+.go-rings {
+  position: relative;
+  width: 200px;
+  height: 200px;
+}
+.go-ring {
+  position: absolute;
+  border-radius: 50%;
+  top: 50%; left: 50%;
+  border-style: solid;
+}
+/* Orbiting satellite dot on each ring */
+.go-ring::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+/* Outer ring — teal satellite */
+.go-ring-1 {
+  width: 180px; height: 180px;
+  border-width: 1px;
+  border-color: rgba(30, 232, 216, 0.15);
+  transform: translate(-50%, -50%);
+  animation: orbit-cw 7s linear infinite;
+}
+.go-ring-1::after {
+  width: 7px; height: 7px;
+  background: #1ee8d8;
+  box-shadow: 0 0 10px #1ee8d8, 0 0 20px rgba(30, 232, 216, 0.5);
+}
+/* Mid ring — blue satellite */
+.go-ring-2 {
+  width: 120px; height: 120px;
+  border-width: 1px;
+  border-color: rgba(30, 232, 216, 0.25);
+  transform: translate(-50%, -50%);
+  animation: orbit-ccw 4.5s linear infinite;
+}
+.go-ring-2::after {
+  width: 5px; height: 5px;
+  background: #7ab4e8;
+  box-shadow: 0 0 7px #7ab4e8;
+}
+/* Inner ring — magenta satellite */
+.go-ring-3 {
+  width: 60px; height: 60px;
+  border-width: 1px;
+  border-color: rgba(30, 232, 216, 0.40);
+  transform: translate(-50%, -50%);
+  animation: orbit-cw 2.5s linear infinite;
+}
+.go-ring-3::after {
+  width: 4px; height: 4px;
+  background: #d87ae8;
+  box-shadow: 0 0 5px #d87ae8;
+}
+/* Centre core dot */
+.go-core {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px; height: 10px;
+  background: #1ee8d8;
+  border-radius: 50%;
+  box-shadow: 0 0 12px #1ee8d8, 0 0 28px rgba(30, 232, 216, 0.45);
+  animation: core-glow 2.2s ease-in-out infinite;
+}
+@keyframes orbit-cw  { to { transform: translate(-50%, -50%) rotate(360deg);  } }
+@keyframes orbit-ccw { to { transform: translate(-50%, -50%) rotate(-360deg); } }
+@keyframes core-glow {
+  0%, 100% { box-shadow: 0 0 10px #1ee8d8, 0 0 22px rgba(30, 232, 216, 0.35); }
+  50%       { box-shadow: 0 0 18px #1ee8d8, 0 0 40px rgba(30, 232, 216, 0.60); }
+}
+
+/* ---- Radar pulse (impact) ---- */
+.io-radar {
+  position: relative;
+  width: 200px; height: 200px;
+}
+.io-pulse {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 54px; height: 54px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(30, 232, 216, 0.75);
+  transform: translate(-50%, -50%);
+  animation: radar-expand 2.8s ease-out infinite;
+}
+.io-p1 { animation-delay: 0s; }
+.io-p2 { animation-delay: 0.7s; }
+.io-p3 { animation-delay: 1.4s; }
+.io-p4 { animation-delay: 2.1s; }
+.io-core {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 48px; height: 48px;
+  background: rgba(30, 232, 216, 0.08);
+  border: 1px solid rgba(30, 232, 216, 0.5);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  animation: core-glow 1.6s ease-in-out infinite;
+}
+@keyframes radar-expand {
+  0%   { transform: translate(-50%, -50%) scale(1); opacity: 0.75; }
+  100% { transform: translate(-50%, -50%) scale(5.5); opacity: 0; }
+}
+
 .impact-bar {
   position: absolute;
   left: 50%;
