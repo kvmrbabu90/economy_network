@@ -91,6 +91,76 @@ Brazil. The Phase D upgrade is country-aware retail routing.
 
 ---
 
+## Phase E — Geography-aware impact reasoning (~1 week)
+
+**Goal:** eliminate false-positive impact verdicts caused by the LLM
+treating domestic supply relationships as globally applicable. Observed
+failure case: Chic-fil-A enters India → LLM scores Tyson Foods
+*positive* (hop 1) because the graph has `Tyson → Chicken (Poultry)`
+extracted from US 10-K filings. Tyson has no India supply presence;
+the inference is wrong.
+
+**Root causes (two independent gaps):**
+
+1. **Supply edges carry no geographic scope.** Every `supplies` edge
+   extracted from a 10-K is implicitly US-scoped, but the schema has no
+   `supply_geography` field. The LLM cannot distinguish "Tyson supplies
+   Chic-fil-A in the US" from "Tyson supplies Chic-fil-A globally."
+
+2. **Impact prompt has no geography filter.** `api/impact.py` asks the
+   model to traverse the graph and score nodes but does not instruct it
+   to check whether a supplier actually operates in the event's
+   geography before assigning a positive verdict.
+
+**Two-track implementation:**
+
+**Track A — Prompt fix (quick, ~1 day, deploy independently):**
+- Extend the system prompt in `api/impact.py` with an explicit
+  geography-reasoning step:
+  *"Before scoring any supply-chain node, reason about whether that
+  supplier has documented operations in the geography of the event.
+  If the event is country-specific (e.g. 'enters India') and the node's
+  `country` field or known market presence does not include that country,
+  assign `direction: no_effect` with reasoning citing the geographic
+  mismatch. Do not infer benefit from a supply relationship that is
+  geographically incompatible with the event."*
+- Add `company_country` to the node context passed to the LLM for each
+  hop so it can make the comparison without hallucinating.
+- **Acceptance test:** "Chic-fil-A enters India" → Tyson Foods verdict
+  must be `no_effect`; Indian poultry / Consumer Market India must be
+  `positive`.
+
+**Track B — Edge metadata enrichment (thorough, ~3–4 days):**
+- Add `supply_geography: str | None` field to the `Edge` Pydantic model
+  and the SQLite schema (nullable, default `null` = unknown/global).
+- During extraction (`pipeline/extract.py`), prompt the LLM to infer
+  geographic scope from the filing snippet context. 10-K filings are
+  inherently US-scoped; set `supply_geography = "US"` by default unless
+  the snippet explicitly names a non-US geography.
+- For Wikidata/Wikipedia-sourced edges, infer scope from the company's
+  `country` field.
+- Expose `supply_geography` in the `/edge/:id` API response and in the
+  impact propagation node context so the LLM (Track A) can reference it
+  directly instead of reasoning from `country` alone.
+- **Acceptance test:** `Tyson → Chicken (Poultry)` edge carries
+  `supply_geography: "US"`; impact run on India event filters it out at
+  the edge-context stage, not just the LLM reasoning stage.
+
+**Recommended sequencing:** ship Track A first (prompt-only, no data
+migration, immediate improvement). Track B during a subsequent sprint
+for deeper correctness, particularly once Phase D's localized retail
+routing adds more geography signals to the graph.
+
+**Open questions:**
+- Should `supply_geography` be a single country code, a list, or a
+  region key (e.g. `"LATAM"`)? Suggest free-text with a controlled
+  vocabulary: `"US"`, `"EU"`, `"global"`, ISO-2 for single countries.
+- How to handle edges where geographic scope is genuinely ambiguous
+  (e.g. a commodity supplier that ships internationally)? Default to
+  `null` = "do not filter"; only assign scope when evidence is strong.
+
+---
+
 ## Cross-phase concerns (decide before starting B/C/D)
 
 1. **Identifier upgrade.** Today canonical ids are `cik:`,
@@ -173,3 +243,4 @@ Brazil. The Phase D upgrade is country-aware retail routing.
   - ASML (cik/NL 20-F): SEC + BIS + NL-AFM + ESMA ✓
 
 - Phase D: backlog.
+- Phase E: backlog.
