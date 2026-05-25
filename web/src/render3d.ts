@@ -161,6 +161,13 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
   const layout = opts.layout ?? "ball";
   const nodes: ForceNode[] = [];
   const links: ForceLink[] = [];
+  // For globe mode: track each node's intended (lat, lon) separately so we
+  // can detect coincident pins (e.g. every US federal regulator landing on
+  // the same DC coordinate) and spread them into a small ring before
+  // projecting to xyz. Without this pass the spheres stack on a single
+  // pixel and become un-pickable.
+  const globePos: Array<{ idx: number; lat: number; lon: number }> = [];
+
   g.forEachNode((id, attrs) => {
     const apiNode = attrs.apiNode;
     const node: ForceNode = {
@@ -179,27 +186,27 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
       const wd = (apiNode.attributes.metadata?.wikidata as
         | { lat?: number; lon?: number }
         | undefined);
-      let p: { x: number; y: number; z: number } | null = null;
+      let lat: number;
+      let lon: number;
       if (wd && typeof wd.lat === "number" && typeof wd.lon === "number") {
         // Defensive: a small number of Wikidata records come back with
         // lat/lon swapped (the field stores longitude where it should
         // store latitude). Detect the swap by checking that lat is in
         // valid range; if not but lon is, flip them.
-        let { lat, lon } = wd as { lat: number; lon: number };
-        const latOK = lat >= -90 && lat <= 90;
-        const lonOK = lon >= -180 && lon <= 180;
+        let { lat: la, lon: lo } = wd as { lat: number; lon: number };
+        const latOK = la >= -90 && la <= 90;
+        const lonOK = lo >= -180 && lo <= 180;
         if (!latOK && lonOK) {
-          const tmp = lat; lat = lon; lon = tmp;
+          const tmp = la; la = lo; lo = tmp;
         }
-        p = latLonToXYZ(lat, lon);
+        lat = la; lon = lo;
       } else if (apiNode.attributes.type === "Regulator") {
         // All but one of our regulators are US federal -- pin at
         // Washington DC. NAIC is the only multistate body; nudge it to
         // Kansas City where the NAIC central office actually sits.
         const isNAIC = apiNode.key === "regulator:naic";
-        p = isNAIC
-          ? latLonToXYZ(39.0997, -94.5786)   // Kansas City, MO
-          : latLonToXYZ(38.8951, -77.0364);  // Washington, DC
+        if (isNAIC) { lat = 39.0997; lon = -94.5786; }
+        else        { lat = 38.8951; lon = -77.0364; }
       } else {
         // No HQ coords. Deterministic-by-id so the placement doesn't
         // reshuffle every paint.
@@ -215,19 +222,61 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
           // all stack on one pixel.
           const jLat = (((hash >> 4) & 0xff) / 255 - 0.5) * 4;
           const jLon = (((hash >> 12) & 0xff) / 255 - 0.5) * 4;
-          p = latLonToXYZ(centroid.lat + jLat, centroid.lon + jLon);
+          lat = centroid.lat + jLat;
+          lon = centroid.lon + jLon;
         } else {
           // Truly unknown -- stash south of Antarctica so the node
           // doesn't pretend to sit on a real continent.
-          const lon = (hash % 360) - 180;
-          const lat = -82 - ((hash >> 8) & 7);  // -82..-89
-          p = latLonToXYZ(lat, lon);
+          lon = (hash % 360) - 180;
+          lat = -82 - ((hash >> 8) & 7);  // -82..-89
         }
       }
-      node.fx = p.x; node.fy = p.y; node.fz = p.z;
+      globePos.push({ idx: nodes.length, lat, lon });
     }
     nodes.push(node);
   });
+
+  if (layout === "globe") {
+    // Detect coincident pins -- bucket by 0.01° (~1 km). Any bucket with
+    // 2+ members gets spread into an evenly-spaced ring centered on the
+    // original point. Ring radius scales with group size so large
+    // clusters (e.g. ~10 US regulators in DC) get more breathing room.
+    const buckets = new Map<string, number[]>();
+    for (let i = 0; i < globePos.length; i++) {
+      const gp = globePos[i];
+      const key =
+        Math.round(gp.lat * 100).toString() +
+        "_" +
+        Math.round(gp.lon * 100).toString();
+      const arr = buckets.get(key) ?? [];
+      arr.push(i);
+      buckets.set(key, arr);
+    }
+    for (const idxs of buckets.values()) {
+      if (idxs.length < 2) continue;
+      // ~0.6° per ring step (~65 km) -- enough to read as separate pins
+      // at typical zoom without flinging regulators out of their actual
+      // metropolitan area.
+      const ringDeg = Math.min(2.0, 0.4 + 0.15 * idxs.length);
+      for (let k = 0; k < idxs.length; k++) {
+        const theta = (2 * Math.PI * k) / idxs.length;
+        const gp = globePos[idxs[k]];
+        // Compensate longitude for latitude convergence so the ring stays
+        // visually circular instead of becoming an east-west oval near
+        // the poles. Clamp cosLat away from 0 so polar nodes don't blow
+        // up.
+        const cosLat = Math.max(0.15, Math.cos((gp.lat * Math.PI) / 180));
+        gp.lat += ringDeg * Math.cos(theta);
+        gp.lon += (ringDeg * Math.sin(theta)) / cosLat;
+      }
+    }
+    // Project every (lat, lon) to xyz and pin via fx/fy/fz.
+    for (const gp of globePos) {
+      const p = latLonToXYZ(gp.lat, gp.lon);
+      const n = nodes[gp.idx];
+      n.fx = p.x; n.fy = p.y; n.fz = p.z;
+    }
+  }
   g.forEachEdge((id, attrs, src, tgt) => {
     links.push({
       source: src,
@@ -265,7 +314,7 @@ export function start3D(
     .nodeOpacity(0.95)
     .linkColor((l: ForceLink) => l.color)
     .linkWidth((l: ForceLink) => (l.below ? 0.4 : 1.2))
-    .linkOpacity((l: ForceLink) => (l.below ? 0.18 : 0.6))
+    .linkOpacity((l: ForceLink) => (l.below ? 0.18 : 0.5))
     // Arrows disabled (monochrome theme, per user request).
     .linkDirectionalArrowLength(0)
     .showNavInfo(false);

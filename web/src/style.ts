@@ -57,7 +57,9 @@ export function edgeAttributes(e: ApiEdge) {
   let color: string;
   let size: number;
   if (!dim) {
-    color = base;
+    // Core edges render at 50% alpha so they read as plumbing rather than
+    // competing with the node layer for attention.
+    color = toRgba(base, 0.5);
     size = Math.max(0.8, 0.8 + (e.attributes.confidence ?? 0.5) * 0.8);
   } else if (inferred) {
     color = toRgba(base, 0.55);
