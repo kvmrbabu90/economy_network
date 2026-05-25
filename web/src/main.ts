@@ -730,31 +730,60 @@ function applyImpactToScene(state: ImpactState | null): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const inst = (window as any).__force3D;
   if (!inst) return;
+
+  // Fix hover tooltips: update nodeLabel so non-impacted nodes return ""
+  // even if their invisible geometry is still hit by 3d-force-graph's
+  // raycaster. Must be reset to the default label fn when clearing.
+  if (state) {
+    inst.nodeLabel((n: { id: string; label: string }) => {
+      const tint = tintColorRGB(state.byNode.get(n.id));
+      return tint ? `<span style="color:#e8e3da">${n.label}</span>` : "";
+    });
+  } else {
+    inst.nodeLabel((n: { label: string }) => `<span style="color:#e8e3da">${n.label}</span>`);
+  }
+
   const scene = inst.scene();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   scene.traverse((obj: any) => {
-    if (obj.__graphObjType === "node" && obj.material && obj.material.color) {
+    if (obj.__graphObjType === "node") {
+      // 3d-force-graph node objects are THREE.Groups (no material on the
+      // group itself). NEVER gate visibility on obj.material — it will
+      // always be falsy for groups, leaving every node permanently visible.
+      // Instead: set obj.visible on the group (children inherit it) and
+      // walk children to apply tint color to the actual sphere Mesh.
       const data = obj.__data;
       if (state) {
         const verdict = data ? state.byNode.get(data.id) : undefined;
         const tint = tintColorRGB(verdict);
+        obj.visible = tint !== null;
         if (tint) {
-          obj.visible = true;
-          obj.material.color.setRGB(tint.r, tint.g, tint.b);
-          obj.material.opacity = 1.0;
-          obj.material.transparent = true;
-        } else {
-          // Hide non-firing nodes entirely rather than darkening — at 5k+
-          // spheres, dark tinting composites into a distracting glow.
-          obj.visible = false;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const applyRGB = (o: any) => {
+            if (o.material && o.material.color) {
+              o.material.color.setRGB(tint.r, tint.g, tint.b);
+              o.material.opacity = 1.0;
+              o.material.transparent = true;
+              o.material.needsUpdate = true;
+            }
+          };
+          applyRGB(obj);
+          obj.children?.forEach(applyRGB);
         }
-      } else if (data && data.color) {
+      } else if (data?.color) {
         obj.visible = true;
-        obj.material.color.set(data.color);
-        obj.material.opacity = 0.95;
-        obj.material.transparent = true;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const applyColor = (o: any) => {
+          if (o.material && o.material.color) {
+            o.material.color.set(data.color);
+            o.material.opacity = 0.95;
+            o.material.transparent = true;
+            o.material.needsUpdate = true;
+          }
+        };
+        applyColor(obj);
+        obj.children?.forEach(applyColor);
       }
-      obj.material.needsUpdate = true;
     } else if (obj.__graphObjType === "link" && obj.material && obj.material.color) {
       const data = obj.__data;
       if (state) {
