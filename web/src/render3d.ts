@@ -184,6 +184,24 @@ function buildContinentLines(): THREE.BufferGeometry {
 let instance: any = null;
 let mountedContainer: HTMLElement | null = null;
 
+/**
+ * Reverse the premultiplication applied by style.ts/toRgba so the 3D renderer
+ * (three.js, standard blending) gets the actual base color rather than the
+ * already-scaled-down premultiplied RGB. Without this, an edge stored as
+ * rgba(67,69,73,0.55) — premultiplied from #7a7e84 — renders in THREE as
+ * rgb(67,69,73) which is dark consumer-market grey, not commodity grey.
+ */
+function unpremultiply(color: string): string {
+  const m = color.match(/rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)/);
+  if (!m) return color;
+  const a = parseFloat(m[4]);
+  if (a <= 0) return color;
+  const r = Math.min(255, Math.round(parseInt(m[1]) / a));
+  const g = Math.min(255, Math.round(parseInt(m[2]) / a));
+  const b = Math.min(255, Math.round(parseInt(m[3]) / a));
+  return `rgb(${r},${g},${b})`;
+}
+
 // Convert the shared graphology graph into the {nodes, links} shape
 // 3d-force-graph wants. We strip the heavy provenance payload off the
 // edges (the inspector still reads it from the underlying graphology).
@@ -221,6 +239,9 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
   const globePos: Array<{ idx: number; lat: number; lon: number }> = [];
 
   g.forEachNode((id, attrs) => {
+    // Skip bubble-layout sector hubs — they only exist for the 2D "Bubbles"
+    // mode and have no meaningful position or edges in 3D space.
+    if (id.startsWith("bubble:")) return;
     const apiNode = attrs.apiNode;
     const node: ForceNode = {
       id,
@@ -329,12 +350,17 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
     }
   }
   g.forEachEdge((id, attrs, src, tgt) => {
+    // Skip any edge that touches a bubble hub node.
+    if (src.startsWith("bubble:") || tgt.startsWith("bubble:") || id.startsWith("bubble-edge:")) return;
     links.push({
       source: src,
       target: tgt,
       edgeId: id,
       edgeType: attrs.edgeType,
-      color: attrs.color,
+      // Un-premultiply: style.ts stores premultiplied rgba for Sigma's
+      // gl.ONE blending. three.js uses standard blending and needs the
+      // original base color so linkOpacity() handles transparency itself.
+      color: unpremultiply(attrs.color),
       below: attrs.apiEdge.attributes.below_threshold,
     });
   });

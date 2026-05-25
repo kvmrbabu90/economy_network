@@ -74,16 +74,17 @@ export function edgeAttributes(e: ApiEdge) {
   let color: string;
   let size: number;
   if (!dim) {
-    // Core edges at 38% alpha — enough to see the network structure while
-    // preventing thousands of stacked lines from compositing into white.
-    color = toRgba(base, 0.38);
-    size = Math.max(0.8, 0.8 + (e.attributes.confidence ?? 0.5) * 0.8);
-  } else if (inferred) {
+    // Core edges. Alpha=0.55 with premultiplied encoding (see toRgba below)
+    // so individual edges appear at commodity-grey brightness and dense hub
+    // areas converge toward the base color (#7a7e84) without blowing out.
     color = toRgba(base, 0.55);
-    size = 0.7;
+    size = Math.max(0.8, 0.8 + (e.attributes.confidence ?? 0.5) * 0.5);
+  } else if (inferred) {
+    color = toRgba(base, 0.25);
+    size = 0.6;
   } else {
-    color = toRgba(base, 0.22);
-    size = 0.5;
+    color = toRgba(base, 0.08);
+    size = 0.4;
   }
   // `directed` is intentionally ignored -- monochrome theme has no
   // arrowheads (per user request). All edges render as plain lines.
@@ -99,5 +100,11 @@ function toRgba(hex: string, alpha: number): string {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  // Sigma uses gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA) — premultiplied
+  // alpha blending. With gl.ONE as source factor the shader outputs the FULL
+  // rgb value regardless of alpha, causing any non-zero alpha to render at
+  // full brightness. Fix: premultiply the RGB channels so the per-edge
+  // contribution is (r·a, g·a, b·a). Sparse edges appear dark; dense hub
+  // areas accumulate toward the base color (medium grey) instead of white.
+  return `rgba(${Math.round(r * alpha)}, ${Math.round(g * alpha)}, ${Math.round(b * alpha)}, ${alpha})`;
 }
