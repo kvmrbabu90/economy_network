@@ -31,6 +31,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
 
@@ -52,6 +53,11 @@ MAX_HOPS = int(os.environ.get("IMPACT_MAX_HOPS", "3"))
 # tops out around 20, Claude can go higher but we keep it consistent.
 MAX_RING_CANDIDATES = int(os.environ.get("IMPACT_MAX_RING", "16"))
 LLM_TIMEOUT_SECONDS = int(os.environ.get("IMPACT_LLM_TIMEOUT", "600"))
+# How many ring chunks to score in parallel. Each is an independent
+# Claude CLI subprocess; 4-6 keeps a typical laptop happy without
+# starving the CLI. Going wider helps wall time but spawns more
+# concurrent claude-cli processes (each ~200-400 MB RSS).
+RING_PARALLELISM = int(os.environ.get("IMPACT_RING_PARALLELISM", "6"))
 
 
 # ---------------------------------------------------------------------------
@@ -452,10 +458,19 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
             full_ring[i:i + MAX_RING_CANDIDATES]
             for i in range(0, len(full_ring), MAX_RING_CANDIDATES)
         ]
-        debug_log.append(f"hop {hop}: scoring in {len(chunks)} chunk(s) of <= {MAX_RING_CANDIDATES}")
-        new_frontier: list[str] = []
-        chunk_failed = False
-        for chunk_idx, ring in enumerate(chunks):
+        debug_log.append(
+            f"hop {hop}: scoring in {len(chunks)} chunk(s) of <= "
+            f"{MAX_RING_CANDIDATES} (parallelism={min(RING_PARALLELISM, len(chunks))})"
+        )
+
+        # Build all chunk prompts up front, then run them through a
+        # bounded ThreadPoolExecutor. Each _llm_call is an independent
+        # subprocess; parallelizing cuts wall time roughly linearly with
+        # parallelism. On a typical war-shock scenario the worst ring
+        # (hop 3, ~200 candidates / 13 chunks) drops from ~6 minutes
+        # serial to ~1 minute at parallelism=6.
+        chunk_prompts: list[str] = []
+        for ring in chunks:
             cand_lines = []
             for nb in ring:
                 parent_v = impacts.get(nb["via_parent"], {})
@@ -464,7 +479,7 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
                     f"{nb.get('sector') or '-'} | parent={nb['via_parent']} | "
                     f"edge={nb['edge_type']} | parent_dir={parent_v.get('direction', '?')}"
                 )
-            ring_prompt = _RING_PROMPT_TEMPLATE.format(
+            chunk_prompts.append(_RING_PROMPT_TEMPLATE.format(
                 news=text,
                 seed_id=seed_id,
                 seed_name=seed_summary["name"],
@@ -473,10 +488,19 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
                 seed_reasoning=seed_reasoning,
                 hop_num=hop,
                 candidates="\n".join(cand_lines),
-            )
-            log.info("scoring hop %d chunk %d/%d (%d cands)",
-                     hop, chunk_idx + 1, len(chunks), len(ring))
-            ring_raw = _llm_call(ring_prompt)
+            ))
+
+        t_hop = time.time()
+        workers = min(RING_PARALLELISM, len(chunks))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            chunk_raws = list(pool.map(_llm_call, chunk_prompts))
+        debug_log.append(
+            f"hop {hop}: {len(chunks)} chunks done in {time.time() - t_hop:.1f}s"
+        )
+
+        new_frontier: list[str] = []
+        chunk_failed = False
+        for chunk_idx, (ring, ring_raw) in enumerate(zip(chunks, chunk_raws)):
             debug_log.append(
                 f"hop {hop} chunk {chunk_idx + 1}/{len(chunks)}: "
                 f"LLM raw_len={len(ring_raw)}"

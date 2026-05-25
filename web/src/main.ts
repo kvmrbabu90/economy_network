@@ -567,8 +567,11 @@ async function handleImpactRun(): Promise<void> {
   const provider = (impactProviderEl?.value as "claude" | "ollama" | undefined) ?? "claude";
   impactRunBtn.disabled = true;
   const niceProvider = provider === "claude" ? "Claude" : "Gemma";
-  const eta = provider === "claude" ? "~30-90s" : "~60-180s";
-  setImpactStatus(`Asking ${niceProvider}... (${eta} for a 3-hop walk)`);
+  // Honest estimate: hop 3 fans out widely on broad-scope news
+  // (war, sanctions, recession) and a 3-hop walk runs 10-20 parallel
+  // LLM calls. Wall time scales with the worst hop's chunk count.
+  const eta = provider === "claude" ? "~1-3 min" : "~3-8 min";
+  setImpactStatus(`Asking ${niceProvider}... (${eta} for a 3-hop walk; longer for global-scope news)`);
   try {
     const resp: ImpactResponse = await runImpact(text, { provider });
     if (resp.error || !resp.seed) {
