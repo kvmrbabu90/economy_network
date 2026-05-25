@@ -526,10 +526,16 @@ html, body {
   color: var(--text-mute);
   margin-right: 4px;
 }
-.inspector .pill.t-supplies { background: rgba(46, 197, 180, 0.14); color: var(--c-supplies); }
-.inspector .pill.t-customer_of { background: rgba(176, 126, 224, 0.14); color: var(--c-customer_of); }
-.inspector .pill.t-competes_with { background: rgba(255, 138, 107, 0.14); color: var(--c-competes_with); }
-.inspector .pill.t-regulated_by { background: rgba(110, 168, 240, 0.14); color: var(--c-regulated_by); }
+/* Connection-type pills inherit the neutral pill background (monochrome
+   theme -- no relationship colours anywhere in the UI). */
+.inspector .pill.t-supplies,
+.inspector .pill.t-customer_of,
+.inspector .pill.t-competes_with,
+.inspector .pill.t-regulated_by,
+.inspector .pill.t-part_of {
+  background: var(--bg-recess);
+  color: var(--text-mute);
+}
 .inspector .pill.provisional { background: rgba(255, 255, 255, 0.04); color: var(--text-mute); border: 1px dashed var(--n-provisional-stroke); }
 .inspector .pill.derived { background: rgba(176, 126, 224, 0.12); color: var(--c-customer_of); }
 .inspector .pill.below-threshold { background: rgba(255, 255, 255, 0.04); color: var(--text-faint); }
