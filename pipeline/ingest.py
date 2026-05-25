@@ -55,8 +55,8 @@ class CompanyRecord:
     cik: str  # 10-digit zero-padded
     name: str
     tickers: list[str]
-    sector: str
-    industry: str
+    sector: Optional[str] = None
+    industry: Optional[str] = None
     aliases: list[str] = field(default_factory=list)
     accession: Optional[str] = None
     filing_url: Optional[str] = None
@@ -64,6 +64,11 @@ class CompanyRecord:
     primary_document: Optional[str] = None
     filing_local_path: Optional[str] = None
     filing_status: str = "pending"  # pending | cached | fetched | missing
+    # Phase A additions: sub_industry surfaced explicitly (was previously
+    # collapsed into industry by the S&P 500 Wikipedia scraper), and
+    # country_code so the foreign-filer roster can carry non-US origins.
+    sub_industry: Optional[str] = None
+    country_code: str = "US"
 
 
 # ---------------------------------------------------------------------------
@@ -203,10 +208,18 @@ def dedupe_by_cik(rows: Iterable[RawRow]) -> list[CompanyRecord]:
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 
 
-def latest_10k_for_cik(cik: str, years: int = 1) -> list[dict[str, str]]:
-    """Return up to `years` most-recent 10-K filings for a CIK (default 1).
+def latest_filings_for_cik(
+    cik: str,
+    *,
+    form_filter: tuple[str, ...] = ("10-K",),
+    years: int = 1,
+) -> list[dict[str, str]]:
+    """Return up to `years` most-recent filings of any form in form_filter.
 
-    Each item: {accession, filing_date, primary_document, filing_url}.
+    Default behaviour matches the original S&P 500 pipeline (latest 10-K).
+    Pass form_filter=("20-F",) for foreign-private-issuer annual reports.
+
+    Each item: {accession, filing_date, primary_document, filing_url, form}.
     Empty list if none found. Goes through the global rate limiter.
     """
     url = SUBMISSIONS_URL.format(cik=cik)
@@ -225,7 +238,7 @@ def latest_10k_for_cik(cik: str, years: int = 1) -> list[dict[str, str]]:
 
     results: list[dict[str, str]] = []
     for accession, form, date, primary in zip(accs, forms, dates, primary_docs):
-        if form != "10-K":
+        if form not in form_filter:
             continue
         cik_int = str(int(cik))
         accession_nodash = accession.replace("-", "")
@@ -239,11 +252,17 @@ def latest_10k_for_cik(cik: str, years: int = 1) -> list[dict[str, str]]:
                 "filing_date": date,
                 "primary_document": primary,
                 "filing_url": filing_url,
+                "form": form,
             }
         )
         if len(results) >= years:
             break
     return results
+
+
+def latest_10k_for_cik(cik: str, years: int = 1) -> list[dict[str, str]]:
+    """Backwards-compatible alias: latest 10-K filing(s) for a CIK."""
+    return latest_filings_for_cik(cik, form_filter=("10-K",), years=years)
 
 
 def download_filing(

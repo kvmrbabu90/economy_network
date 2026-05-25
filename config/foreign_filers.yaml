@@ -1,0 +1,570 @@
+# Phase A roster -- top global companies that file Form 20-F with the
+# SEC (i.e. have a US ADR listing). Each entry mirrors the columns the
+# S&P 500 pipeline uses so the downstream code can treat them uniformly.
+#
+# Required fields per entry:
+#   cik          -- 10-digit zero-padded SEC CIK
+#   name         -- canonical company name (matches Wikidata / Wikipedia)
+#   ticker       -- primary US ADR ticker
+#   country_code -- ISO 3166-1 alpha-2 of the company's home jurisdiction
+#   gics_sector
+#   gics_sub_industry  -- must exist in config/gics_subindustry_to_industry.yaml
+#
+# Curated 2026-05 from EDGAR's known foreign-private-issuer roster +
+# personal knowledge of major ADR programmes. CIKs cross-checked against
+# https://www.sec.gov/cgi-bin/browse-edgar lookups where unfamiliar.
+
+# ======================================================================
+# EUROPE
+# ======================================================================
+
+- cik: "0000937966"
+  name: "ASML Holding"
+  ticker: ASML
+  country_code: NL
+  gics_sector: "Information Technology"
+  gics_sub_industry: "Semiconductor Materials & Equipment"
+
+- cik: "0000217596"
+  name: "Unilever"
+  ticker: UL
+  country_code: GB
+  gics_sector: "Consumer Staples"
+  gics_sub_industry: "Personal Care Products"
+
+- cik: "0001114448"
+  name: "Novartis"
+  ticker: NVS
+  country_code: CH
+  gics_sector: "Health Care"
+  gics_sub_industry: "Pharmaceuticals"
+
+- cik: "0000901832"
+  name: "AstraZeneca"
+  ticker: AZN
+  country_code: GB
+  gics_sector: "Health Care"
+  gics_sub_industry: "Pharmaceuticals"
+
+- cik: "0001131399"
+  name: "GSK"
+  ticker: GSK
+  country_code: GB
+  gics_sector: "Health Care"
+  gics_sub_industry: "Pharmaceuticals"
+
+- cik: "0000835403"
+  name: "Diageo"
+  ticker: DEO
+  country_code: GB
+  gics_sector: "Consumer Staples"
+  gics_sub_industry: "Distillers & Vintners"
+
+- cik: "0000313807"
+  name: "BP"
+  ticker: BP
+  country_code: GB
+  gics_sector: "Energy"
+  gics_sub_industry: "Integrated Oil & Gas"
+
+- cik: "0001306965"
+  name: "Shell"
+  ticker: SHEL
+  country_code: GB
+  gics_sector: "Energy"
+  gics_sub_industry: "Integrated Oil & Gas"
+
+- cik: "0000879764"
+  name: "TotalEnergies"
+  ticker: TTE
+  country_code: FR
+  gics_sector: "Energy"
+  gics_sub_industry: "Integrated Oil & Gas"
+
+- cik: "0001089113"
+  name: "HSBC Holdings"
+  ticker: HSBC
+  country_code: GB
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+- cik: "0000312069"
+  name: "Barclays"
+  ticker: BCS
+  country_code: GB
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+- cik: "0001121404"
+  name: "Sanofi"
+  ticker: SNY
+  country_code: FR
+  gics_sector: "Health Care"
+  gics_sub_industry: "Pharmaceuticals"
+
+- cik: "0000811809"
+  name: "BHP Group"
+  ticker: BHP
+  country_code: AU
+  gics_sector: "Materials"
+  gics_sub_industry: "Steel"
+
+- cik: "0000863064"
+  name: "Rio Tinto"
+  ticker: RIO
+  country_code: GB
+  gics_sector: "Materials"
+  gics_sub_industry: "Steel"
+
+- cik: "0001243429"
+  name: "ArcelorMittal"
+  ticker: MT
+  country_code: LU
+  gics_sector: "Materials"
+  gics_sub_industry: "Steel"
+
+- cik: "0000839923"
+  name: "Vodafone Group"
+  ticker: VOD
+  country_code: GB
+  gics_sector: "Communication Services"
+  gics_sub_industry: "Wireless Telecommunication Services"
+
+- cik: "0001120295"
+  name: "Ericsson"
+  ticker: ERIC
+  country_code: SE
+  gics_sector: "Information Technology"
+  gics_sub_industry: "Communications Equipment"
+
+- cik: "0000924613"
+  name: "Nokia"
+  ticker: NOK
+  country_code: FI
+  gics_sector: "Information Technology"
+  gics_sub_industry: "Communications Equipment"
+
+- cik: "0001000184"
+  name: "SAP"
+  ticker: SAP
+  country_code: DE
+  gics_sector: "Information Technology"
+  gics_sub_industry: "Application Software"
+
+- cik: "0001159508"
+  name: "Deutsche Bank"
+  ticker: DB
+  country_code: DE
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+- cik: "0000891478"
+  name: "Banco Santander"
+  ticker: SAN
+  country_code: ES
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+- cik: "0000814052"
+  name: "Telefonica"
+  ticker: TEF
+  country_code: ES
+  gics_sector: "Communication Services"
+  gics_sub_industry: "Integrated Telecommunication Services"
+
+- cik: "0001039765"
+  name: "ING Groep"
+  ticker: ING
+  country_code: NL
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+# ======================================================================
+# JAPAN
+# ======================================================================
+
+- cik: "0001094517"
+  name: "Toyota Motor"
+  ticker: TM
+  country_code: JP
+  gics_sector: "Consumer Discretionary"
+  gics_sub_industry: "Automobile Manufacturers"
+
+- cik: "0000313838"
+  name: "Sony Group"
+  ticker: SONY
+  country_code: JP
+  gics_sector: "Consumer Discretionary"
+  gics_sub_industry: "Consumer Electronics"
+
+- cik: "0000715153"
+  name: "Honda Motor"
+  ticker: HMC
+  country_code: JP
+  gics_sector: "Consumer Discretionary"
+  gics_sub_industry: "Automobile Manufacturers"
+
+- cik: "0001067294"
+  name: "Mitsubishi UFJ Financial Group"
+  ticker: MUFG
+  country_code: JP
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+- cik: "0001297996"
+  name: "Sumitomo Mitsui Financial Group"
+  ticker: SMFG
+  country_code: JP
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+- cik: "0001335730"
+  name: "Mizuho Financial Group"
+  ticker: MFG
+  country_code: JP
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+- cik: "0001163653"
+  name: "Nomura Holdings"
+  ticker: NMR
+  country_code: JP
+  gics_sector: "Financials"
+  gics_sub_industry: "Investment Banking & Brokerage"
+
+- cik: "0000016988"
+  name: "Canon"
+  ticker: CAJ
+  country_code: JP
+  gics_sector: "Information Technology"
+  gics_sub_industry: "Technology Hardware, Storage & Peripherals"
+
+- cik: "0001070985"
+  name: "Orix"
+  ticker: IX
+  country_code: JP
+  gics_sector: "Financials"
+  gics_sub_industry: "Multi-Sector Holdings"
+
+# ======================================================================
+# KOREA
+# ======================================================================
+
+- cik: "0000887225"
+  name: "Korea Electric Power"
+  ticker: KEP
+  country_code: KR
+  gics_sector: "Utilities"
+  gics_sub_industry: "Electric Utilities"
+
+- cik: "0000892450"
+  name: "KT Corporation"
+  ticker: KT
+  country_code: KR
+  gics_sector: "Communication Services"
+  gics_sub_industry: "Integrated Telecommunication Services"
+
+- cik: "0001003523"
+  name: "SK Telecom"
+  ticker: SKM
+  country_code: KR
+  gics_sector: "Communication Services"
+  gics_sub_industry: "Wireless Telecommunication Services"
+
+- cik: "0000889132"
+  name: "POSCO Holdings"
+  ticker: PKX
+  country_code: KR
+  gics_sector: "Materials"
+  gics_sub_industry: "Steel"
+
+- cik: "0001288343"
+  name: "LG Display"
+  ticker: LPL
+  country_code: KR
+  gics_sector: "Information Technology"
+  gics_sub_industry: "Electronic Components"
+
+# ======================================================================
+# TAIWAN
+# ======================================================================
+
+- cik: "0001046179"
+  name: "Taiwan Semiconductor Manufacturing"
+  ticker: TSM
+  country_code: TW
+  gics_sector: "Information Technology"
+  gics_sub_industry: "Semiconductors"
+
+- cik: "0001780532"
+  name: "ASE Technology Holding"
+  ticker: ASX
+  country_code: TW
+  gics_sector: "Information Technology"
+  gics_sub_industry: "Semiconductor Materials & Equipment"
+
+- cik: "0001146249"
+  name: "Chunghwa Telecom"
+  ticker: CHT
+  country_code: TW
+  gics_sector: "Communication Services"
+  gics_sub_industry: "Integrated Telecommunication Services"
+
+# ======================================================================
+# CHINA / HONG KONG (US-listed via ADR)
+# ======================================================================
+
+- cik: "0001577552"
+  name: "Alibaba Group Holding"
+  ticker: BABA
+  country_code: CN
+  gics_sector: "Consumer Discretionary"
+  gics_sub_industry: "Broadline Retail"
+
+- cik: "0001549802"
+  name: "JD.com"
+  ticker: JD
+  country_code: CN
+  gics_sector: "Consumer Discretionary"
+  gics_sub_industry: "Broadline Retail"
+
+- cik: "0001329099"
+  name: "Baidu"
+  ticker: BIDU
+  country_code: CN
+  gics_sector: "Communication Services"
+  gics_sub_industry: "Interactive Media & Services"
+
+- cik: "0001269238"
+  name: "Trip.com Group"
+  ticker: TCOM
+  country_code: CN
+  gics_sector: "Consumer Discretionary"
+  gics_sub_industry: "Hotels, Resorts & Cruise Lines"
+
+- cik: "0001110646"
+  name: "NetEase"
+  ticker: NTES
+  country_code: CN
+  gics_sector: "Communication Services"
+  gics_sub_industry: "Interactive Home Entertainment"
+
+- cik: "0001737806"
+  name: "PDD Holdings"
+  ticker: PDD
+  country_code: CN
+  gics_sector: "Consumer Discretionary"
+  gics_sub_industry: "Broadline Retail"
+
+- cik: "0001651308"
+  name: "BeiGene"
+  ticker: BGNE
+  country_code: CN
+  gics_sector: "Health Care"
+  gics_sub_industry: "Biotechnology"
+
+- cik: "0001673358"
+  name: "Yum China Holdings"
+  ticker: YUMC
+  country_code: CN
+  gics_sector: "Consumer Discretionary"
+  gics_sub_industry: "Restaurants"
+
+# ======================================================================
+# INDIA
+# ======================================================================
+
+- cik: "0001067491"
+  name: "Infosys"
+  ticker: INFY
+  country_code: IN
+  gics_sector: "Information Technology"
+  gics_sub_industry: "IT Consulting & Other Services"
+
+- cik: "0001123799"
+  name: "Wipro"
+  ticker: WIT
+  country_code: IN
+  gics_sector: "Information Technology"
+  gics_sub_industry: "IT Consulting & Other Services"
+
+- cik: "0001103838"
+  name: "ICICI Bank"
+  ticker: IBN
+  country_code: IN
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+- cik: "0001144967"
+  name: "HDFC Bank"
+  ticker: HDB
+  country_code: IN
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+- cik: "0001057662"
+  name: "Tata Motors"
+  ticker: TTM
+  country_code: IN
+  gics_sector: "Consumer Discretionary"
+  gics_sub_industry: "Automobile Manufacturers"
+
+- cik: "0001253283"
+  name: "Dr. Reddy's Laboratories"
+  ticker: RDY
+  country_code: IN
+  gics_sector: "Health Care"
+  gics_sub_industry: "Pharmaceuticals"
+
+# ======================================================================
+# BRAZIL
+# ======================================================================
+
+- cik: "0001119639"
+  name: "Petrobras"
+  ticker: PBR
+  country_code: BR
+  gics_sector: "Energy"
+  gics_sub_industry: "Integrated Oil & Gas"
+
+- cik: "0001084325"
+  name: "Vale"
+  ticker: VALE
+  country_code: BR
+  gics_sector: "Materials"
+  gics_sub_industry: "Steel"
+
+- cik: "0001551501"
+  name: "Itau Unibanco Holding"
+  ticker: ITUB
+  country_code: BR
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+- cik: "0001160330"
+  name: "Banco Bradesco"
+  ticker: BBD
+  country_code: BR
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+- cik: "0001114995"
+  name: "Companhia Brasileira de Distribuicao"
+  ticker: CBD
+  country_code: BR
+  gics_sector: "Consumer Staples"
+  gics_sub_industry: "Food Retail"
+
+- cik: "0001565025"
+  name: "Ambev"
+  ticker: ABEV
+  country_code: BR
+  gics_sector: "Consumer Staples"
+  gics_sub_industry: "Brewers"
+
+- cik: "0001355444"
+  name: "Embraer"
+  ticker: ERJ
+  country_code: BR
+  gics_sector: "Industrials"
+  gics_sub_industry: "Aerospace & Defense"
+
+- cik: "0001073404"
+  name: "Gerdau"
+  ticker: GGB
+  country_code: BR
+  gics_sector: "Materials"
+  gics_sub_industry: "Steel"
+
+# ======================================================================
+# MEXICO
+# ======================================================================
+
+- cik: "0001129137"
+  name: "America Movil"
+  ticker: AMX
+  country_code: MX
+  gics_sector: "Communication Services"
+  gics_sub_industry: "Wireless Telecommunication Services"
+
+- cik: "0001076661"
+  name: "Cemex"
+  ticker: CX
+  country_code: MX
+  gics_sector: "Materials"
+  gics_sub_industry: "Construction Materials"
+
+- cik: "0000912892"
+  name: "Grupo Televisa"
+  ticker: TV
+  country_code: MX
+  gics_sector: "Communication Services"
+  gics_sub_industry: "Broadcasting"
+
+- cik: "0000910631"
+  name: "Coca-Cola FEMSA"
+  ticker: KOF
+  country_code: MX
+  gics_sector: "Consumer Staples"
+  gics_sub_industry: "Soft Drinks & Non-alcoholic Beverages"
+
+- cik: "0000932782"
+  name: "Fomento Economico Mexicano (FEMSA)"
+  ticker: FMX
+  country_code: MX
+  gics_sector: "Consumer Staples"
+  gics_sub_industry: "Soft Drinks & Non-alcoholic Beverages"
+
+# ======================================================================
+# ARGENTINA
+# ======================================================================
+
+- cik: "0000904851"
+  name: "YPF"
+  ticker: YPF
+  country_code: AR
+  gics_sector: "Energy"
+  gics_sub_industry: "Integrated Oil & Gas"
+
+- cik: "0001099590"
+  name: "MercadoLibre"
+  ticker: MELI
+  country_code: AR
+  gics_sector: "Consumer Discretionary"
+  gics_sub_industry: "Broadline Retail"
+
+# ======================================================================
+# AUSTRALIA
+# ======================================================================
+
+- cik: "0001159152"
+  name: "James Hardie Industries"
+  ticker: JHX
+  country_code: AU
+  gics_sector: "Materials"
+  gics_sub_industry: "Construction Materials"
+
+- cik: "0000875525"
+  name: "Westpac Banking Corporation"
+  ticker: WBK
+  country_code: AU
+  gics_sector: "Financials"
+  gics_sub_industry: "Diversified Banks"
+
+# ======================================================================
+# AFRICA
+# ======================================================================
+
+- cik: "0001029900"
+  name: "AngloGold Ashanti"
+  ticker: AU
+  country_code: ZA
+  gics_sector: "Materials"
+  gics_sub_industry: "Gold"
+
+- cik: "0001008797"
+  name: "Sasol"
+  ticker: SSL
+  country_code: ZA
+  gics_sector: "Energy"
+  gics_sub_industry: "Integrated Oil & Gas"
