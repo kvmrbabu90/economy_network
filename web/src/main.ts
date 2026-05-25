@@ -78,7 +78,7 @@ const renderer = new Sigma(g, container, {
   // the reducer's per-edge colour isn't applied (e.g. some render
   // paths). Pin it to the monochrome grey we use elsewhere so dim
   // fallbacks don't look bright white.
-  defaultEdgeColor: "#c4c8ce",
+  defaultEdgeColor: "#8a8e94",
   defaultNodeColor: "#c8ccd2",
   labelDensity: 1,
   labelGridCellSize: 80,
@@ -210,7 +210,7 @@ function refreshEdgeVisibility(): void {
     renderer.setSetting("defaultEdgeColor", "#1a1d22");
     renderer.setSetting("defaultNodeColor", "#22262c");
   } else {
-    renderer.setSetting("defaultEdgeColor", "#c4c8ce");
+    renderer.setSetting("defaultEdgeColor", "#8a8e94");
     renderer.setSetting("defaultNodeColor", "#c8ccd2");
   }
   renderer.setSetting("edgeReducer", (eid, eattrs) => {

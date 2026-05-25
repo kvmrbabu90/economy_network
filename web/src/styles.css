@@ -17,12 +17,12 @@
   --text-faint: #6e6a62;
   --accent: #f0ebe2;         /* "do something" actions stay near-white */
 
-  /* Monochrome relationship palette -- all edge types share one light
+  /* Monochrome relationship palette -- all edge types share one medium
      grey. Differentiation moved to node shading; edges are just plumbing. */
-  --c-supplies: #c4c8ce;
-  --c-customer_of: #c4c8ce;
-  --c-competes_with: #c4c8ce;
-  --c-regulated_by: #c4c8ce;
+  --c-supplies: #8a8e94;
+  --c-customer_of: #8a8e94;
+  --c-competes_with: #8a8e94;
+  --c-regulated_by: #8a8e94;
 
   /* Node type greys, dark to light: regulators are the bullseye anchors,
      consumer markets sit above them, then commodities, then companies as

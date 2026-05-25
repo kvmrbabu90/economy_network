@@ -3,16 +3,16 @@
 
 import type { ApiEdge, ApiNode, EdgeType } from "./api";
 
-// Monochrome palette: all edges are a light shade of grey regardless of
+// Monochrome palette: all edges are a medium shade of grey regardless of
 // relationship type, and node greys step from black (Regulator) -> dark
 // (Region/consumer market) -> medium (Commodity) -> light (Company).
 // Provisional / unknown stay dark so they recede behind the core data.
 export const EDGE_COLOR: Record<EdgeType, string> = {
-  supplies: "#c4c8ce",
-  customer_of: "#c4c8ce",
-  competes_with: "#c4c8ce",
-  regulated_by: "#c4c8ce",
-  part_of: "#c4c8ce",
+  supplies: "#8a8e94",
+  customer_of: "#8a8e94",
+  competes_with: "#8a8e94",
+  regulated_by: "#8a8e94",
+  part_of: "#8a8e94",
 };
 
 export const NODE_COLOR = {

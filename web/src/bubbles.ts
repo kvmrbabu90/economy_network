@@ -126,7 +126,7 @@ export function refreshBubbleEdges(g: EconGraph): void {
     if (!g.hasNode(sourceBubble) || !g.hasNode(targetBubble)) return;
     const eid = `${BUBBLE_EDGE_PREFIX}${v.type}:${v.sA}:${v.sB}`;
     if (g.hasEdge(eid)) return;
-    const color = EDGE_COLOR[v.type] ?? "#c4c8ce";
+    const color = EDGE_COLOR[v.type] ?? "#8a8e94";
     const apiEdge: ApiEdge = {
       key: eid,
       source: sourceBubble,
