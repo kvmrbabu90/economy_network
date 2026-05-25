@@ -241,22 +241,19 @@ function refreshEdgeVisibility(): void {
     const ok = filters.types.includes(eattrs.edgeType);
     const isProv = eattrs.apiEdge.attributes.below_threshold;
     const baseHidden = !ok || (isProv && !filters.includeProvisional);
-    // Impact overlay: edges in the impact chain pop, others dim
-    // heavily so the affected subgraph reads through the rest.
+    // Impact overlay: only show edges where BOTH endpoints fired (non-null
+    // tint). Everything else is hidden so the impact subgraph renders clean.
     if (impactState) {
-      const inChain = impactState.chainEdges.has(eid);
+      const src = g.source(eid);
+      const tgt = g.target(eid);
+      const srcFired = tintColor(impactState.byNode.get(src)) !== null;
+      const tgtFired = tintColor(impactState.byNode.get(tgt)) !== null;
+      const inChain = srcFired && tgtFired;
       return {
         ...eattrs,
-        hidden: baseHidden,
-        // Translucent rgba doesn't work at this edge density -- thousands
-        // of overlapping 20%-alpha lines composite up to bright white.
-        // Use a dark opaque grey only ~3 levels above the page background
-        // so non-chain edges visually recede instead of stacking.
-        // Chain edges: a muted steel-blue accent — visible as "connected"
-        // without compositing into a blinding white sheet at high density.
-        // Width barely changes; color does the differentiation work.
-        color: inChain ? "#4a7a94" : "#1c2228",
-        size: inChain ? (eattrs.size ?? 1) * 1.2 : (eattrs.size ?? 1) * 0.3,
+        hidden: baseHidden || !inChain,
+        color: "#ffffff",
+        size: (eattrs.size ?? 1) * 1.5,
       };
     }
     return { ...eattrs, hidden: baseHidden };
@@ -291,7 +288,7 @@ function refreshEdgeVisibility(): void {
       return {
         ...nattrs,
         label: isImpacted ? label : "",
-        hidden: hide,
+        hidden: hide || !isImpacted,   // hide non-firing nodes (incl. no_effect)
         color: tint ?? "#1e2228",
         size: isImpacted ? baseSize * 1.8 : baseSize * 0.45,
         zIndex: isImpacted ? 10 : 0,
@@ -742,18 +739,17 @@ function applyImpactToScene(state: ImpactState | null): void {
         const verdict = data ? state.byNode.get(data.id) : undefined;
         const tint = tintColorRGB(verdict);
         if (tint) {
+          obj.visible = true;
           obj.material.color.setRGB(tint.r, tint.g, tint.b);
           obj.material.opacity = 1.0;
           obj.material.transparent = true;
         } else {
-          // Dark opaque grey -- alpha-stacking thousands of translucent
-          // node spheres produces a bright glow in WebGL; opaque dark
-          // recedes cleanly against the dark background.
-          obj.material.color.setRGB(0.13, 0.15, 0.17);
-          obj.material.opacity = 1.0;
-          obj.material.transparent = false;
+          // Hide non-firing nodes entirely rather than darkening — at 5k+
+          // spheres, dark tinting composites into a distracting glow.
+          obj.visible = false;
         }
       } else if (data && data.color) {
+        obj.visible = true;
         obj.material.color.set(data.color);
         obj.material.opacity = 0.95;
         obj.material.transparent = true;
@@ -764,18 +760,19 @@ function applyImpactToScene(state: ImpactState | null): void {
       if (state) {
         const src = data && data.source && data.source.id;
         const tgt = data && data.target && data.target.id;
-        const inChain = src && tgt && state.byNode.has(src) && state.byNode.has(tgt);
+        const srcFired = src ? tintColorRGB(state.byNode.get(src)) !== null : false;
+        const tgtFired = tgt ? tintColorRGB(state.byNode.get(tgt)) !== null : false;
+        const inChain = srcFired && tgtFired;
         if (inChain) {
-          obj.material.color.setRGB(0.91, 0.89, 0.85);
-          obj.material.opacity = 0.95;
+          obj.visible = true;
+          obj.material.color.setRGB(1.0, 1.0, 1.0);  // pure white
+          obj.material.opacity = 0.9;
           obj.material.transparent = true;
         } else {
-          // Same reasoning: dark opaque, not translucent.
-          obj.material.color.setRGB(0.11, 0.12, 0.14);
-          obj.material.opacity = 1.0;
-          obj.material.transparent = false;
+          obj.visible = false;
         }
       } else if (data && data.color) {
+        obj.visible = true;
         obj.material.color.set(data.color);
         obj.material.opacity = data.below ? 0.30 : 0.75;
         obj.material.transparent = true;
