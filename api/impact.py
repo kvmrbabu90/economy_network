@@ -437,75 +437,94 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
     # -- Step 2-N: BFS ring by ring --------------------------------------
     debug_log: list[str] = []
     for hop in range(1, MAX_HOPS + 1):
-        ring = _neighbors(conn, frontier, visited)
-        log.info("hop %d: frontier=%d, ring=%d", hop, len(frontier), len(ring))
-        debug_log.append(f"hop {hop}: frontier={len(frontier)}, raw_neighbors={len(ring)}")
-        if not ring:
+        full_ring = _neighbors(conn, frontier, visited)
+        log.info("hop %d: frontier=%d, ring=%d", hop, len(frontier), len(full_ring))
+        debug_log.append(f"hop {hop}: frontier={len(frontier)}, raw_neighbors={len(full_ring)}")
+        if not full_ring:
             debug_log.append(f"hop {hop}: no new neighbors -> stop")
             break
-        # Cap per-ring candidates so prompts stay tractable.
-        if len(ring) > MAX_RING_CANDIDATES:
-            ring = ring[:MAX_RING_CANDIDATES]
-        cand_lines = []
-        for nb in ring:
-            parent_v = impacts.get(nb["via_parent"], {})
-            cand_lines.append(
-                f"  {nb['id']} | {nb['type']} | {nb['name']} | "
-                f"{nb.get('sector') or '-'} | parent={nb['via_parent']} | "
-                f"edge={nb['edge_type']} | parent_dir={parent_v.get('direction', '?')}"
-            )
-        ring_prompt = _RING_PROMPT_TEMPLATE.format(
-            news=text,
-            seed_id=seed_id,
-            seed_name=seed_summary["name"],
-            seed_type=seed_summary["type"],
-            seed_direction=seed_direction,
-            seed_reasoning=seed_reasoning,
-            hop_num=hop,
-            candidates="\n".join(cand_lines),
-        )
-        log.info("scoring hop %d ring of %d candidates", hop, len(ring))
-        ring_raw = _llm_call(ring_prompt)
-        debug_log.append(f"hop {hop}: LLM raw_len={len(ring_raw)} head={(ring_raw or '')[:120]!r}")
-        ring_parsed = _parse_llm_json(ring_raw)
-        # tolerate either {"results": [...]} or [...] directly
-        if isinstance(ring_parsed, dict) and "results" in ring_parsed:
-            ring_parsed = ring_parsed.get("results")
-        if not isinstance(ring_parsed, list):
-            log.warning("ring %d: LLM returned non-list, skipping", hop)
-            debug_log.append(f"hop {hop}: parse FAIL type={type(ring_parsed).__name__}, tail={(ring_raw or '')[-300:]!r}")
-            break
-        debug_log.append(f"hop {hop}: LLM scored {len(ring_parsed)} verdicts")
+        # Chunk the ring into MAX_RING_CANDIDATES-sized batches so every
+        # neighbour gets scored. Each chunk is one LLM call; a 28-node
+        # hop-1 takes two calls with MAX_RING_CANDIDATES=16. Previous
+        # behaviour silently dropped neighbours past the cap (that's why
+        # Starbucks didn't appear in some runs).
+        chunks = [
+            full_ring[i:i + MAX_RING_CANDIDATES]
+            for i in range(0, len(full_ring), MAX_RING_CANDIDATES)
+        ]
+        debug_log.append(f"hop {hop}: scoring in {len(chunks)} chunk(s) of <= {MAX_RING_CANDIDATES}")
         new_frontier: list[str] = []
-        for verdict in ring_parsed:
-            if not isinstance(verdict, dict):
+        chunk_failed = False
+        for chunk_idx, ring in enumerate(chunks):
+            cand_lines = []
+            for nb in ring:
+                parent_v = impacts.get(nb["via_parent"], {})
+                cand_lines.append(
+                    f"  {nb['id']} | {nb['type']} | {nb['name']} | "
+                    f"{nb.get('sector') or '-'} | parent={nb['via_parent']} | "
+                    f"edge={nb['edge_type']} | parent_dir={parent_v.get('direction', '?')}"
+                )
+            ring_prompt = _RING_PROMPT_TEMPLATE.format(
+                news=text,
+                seed_id=seed_id,
+                seed_name=seed_summary["name"],
+                seed_type=seed_summary["type"],
+                seed_direction=seed_direction,
+                seed_reasoning=seed_reasoning,
+                hop_num=hop,
+                candidates="\n".join(cand_lines),
+            )
+            log.info("scoring hop %d chunk %d/%d (%d cands)",
+                     hop, chunk_idx + 1, len(chunks), len(ring))
+            ring_raw = _llm_call(ring_prompt)
+            debug_log.append(
+                f"hop {hop} chunk {chunk_idx + 1}/{len(chunks)}: "
+                f"LLM raw_len={len(ring_raw)}"
+            )
+            ring_parsed = _parse_llm_json(ring_raw)
+            if isinstance(ring_parsed, dict) and "results" in ring_parsed:
+                ring_parsed = ring_parsed.get("results")
+            if not isinstance(ring_parsed, list):
+                log.warning("hop %d chunk %d: parse FAIL", hop, chunk_idx + 1)
+                debug_log.append(
+                    f"hop {hop} chunk {chunk_idx + 1}: parse FAIL "
+                    f"type={type(ring_parsed).__name__}, tail={(ring_raw or '')[-200:]!r}"
+                )
+                chunk_failed = True
                 continue
-            nid = verdict.get("node_id")
-            if not nid or nid in impacts:
-                continue
-            # Find the matching ring entry to capture parent / edge
-            matching = next((nb for nb in ring if nb["id"] == nid), None)
-            if not matching:
-                continue
-            direction = verdict.get("direction") or "no_effect"
-            magnitude = float(verdict.get("magnitude") or 0.0)
-            reasoning = verdict.get("reasoning") or ""
-            impacts[nid] = {
-                "node_id": nid,
-                "name": matching["name"],
-                "type": matching["type"],
-                "direction": direction,
-                "magnitude": magnitude,
-                "hop": hop,
-                "reasoning": reasoning,
-                "via_parent": matching["via_parent"],
-                "edge_type": matching["edge_type"],
-            }
-            visited.add(nid)
-            # Only propagate through nodes the LLM considers meaningfully
-            # affected -- "no_effect" nodes stop the chain there.
-            if direction in ("positive", "negative") and magnitude >= 0.15:
-                new_frontier.append(nid)
+            debug_log.append(
+                f"hop {hop} chunk {chunk_idx + 1}: scored {len(ring_parsed)} verdicts"
+            )
+            for verdict in ring_parsed:
+                if not isinstance(verdict, dict):
+                    continue
+                nid = verdict.get("node_id")
+                if not nid or nid in impacts:
+                    continue
+                matching = next((nb for nb in ring if nb["id"] == nid), None)
+                if not matching:
+                    continue
+                direction = verdict.get("direction") or "no_effect"
+                magnitude = float(verdict.get("magnitude") or 0.0)
+                reasoning = verdict.get("reasoning") or ""
+                impacts[nid] = {
+                    "node_id": nid,
+                    "name": matching["name"],
+                    "type": matching["type"],
+                    "direction": direction,
+                    "magnitude": magnitude,
+                    "hop": hop,
+                    "reasoning": reasoning,
+                    "via_parent": matching["via_parent"],
+                    "edge_type": matching["edge_type"],
+                }
+                visited.add(nid)
+                if direction in ("positive", "negative") and magnitude >= 0.15:
+                    new_frontier.append(nid)
+        if chunk_failed and not new_frontier:
+            # If every chunk failed we bail out of the BFS to avoid an
+            # infinite-looking wait on empty rings.
+            break
         if not new_frontier:
             break
         frontier = new_frontier
