@@ -322,17 +322,29 @@ export function start3D(
     const TUBE_RADIAL_SEGMENTS = 6;
     const buildArcs = () => {
       if (!instance) return;
-      const scene = instance.scene();
-      let built = 0, skipped = 0;
+      // three-forcegraph binds the rendered THREE object onto each link as
+      // `__lineObj` (see node_modules/three-forcegraph/dist/.../objBindAttr).
+      // Scene-walking via __graphObjType missed everything (built=0,
+      // skipped=0 in console), so iterate the link list directly.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      scene.traverse((obj: any) => {
-        if (obj.__graphObjType !== "link" || !obj.isMesh) return;
-        const link = obj.__data;
-        const src = link && link.source;
-        const tgt = link && link.target;
+      const data = (instance as any).graphData ? (instance as any).graphData() : null;
+      const links: ForceLink[] = (data && data.links) || [];
+      let built = 0, skipped = 0;
+      for (const link of links) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const obj: any = (link as any).__lineObj || (link as any).__threeObj;
+        if (!obj) { skipped++; continue; }
+        // If three-forcegraph wrapped our custom mesh in a Group (extend
+        // mode) or attached the mesh as a child, find the mesh inside.
+        const mesh: any = obj.isMesh
+          ? obj
+          : (obj.children && obj.children.find((c: any) => c.isMesh));
+        if (!mesh) { skipped++; continue; }
+        const src = (link as any).source;
+        const tgt = (link as any).target;
         if (!src || !tgt || typeof src.x !== "number" || typeof tgt.x !== "number") {
           skipped++;
-          return;
+          continue;
         }
         const s = new THREE.Vector3(src.x, src.y, src.z);
         const e = new THREE.Vector3(tgt.x, tgt.y, tgt.z);
@@ -376,15 +388,15 @@ export function start3D(
         const tubeGeom = new THREE.TubeGeometry(
           curve,
           ARC_SEGMENTS,
-          link.below ? TUBE_RADIUS_AUDIT : TUBE_RADIUS_CORE,
+          (link as any).below ? TUBE_RADIUS_AUDIT : TUBE_RADIUS_CORE,
           TUBE_RADIAL_SEGMENTS,
           false,
         );
-        if (obj.geometry) obj.geometry.dispose();
-        obj.geometry = tubeGeom;
-        obj.frustumCulled = false;
+        if (mesh.geometry) mesh.geometry.dispose();
+        mesh.geometry = tubeGeom;
+        mesh.frustumCulled = false;
         built++;
-      });
+      }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).__arcBuilt = { built, skipped };
     };
