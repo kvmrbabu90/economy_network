@@ -150,9 +150,12 @@ export function layoutBySector(g: EconGraph): void {
   const N = SECTOR_ORDER.length;
   // The anchor circle is large enough that 11 clusters don't overlap at
   // full S&P 500 scale; the scatter radius keeps each cluster legible.
-  const ANCHOR_RADIUS = 100;
+  // ANCHOR_RADIUS bumped from 100 so the new central rings for
+  // commodities (r=38) and retail regions (r=60) have breathing space
+  // before the sector clusters begin.
+  const ANCHOR_RADIUS = 115;
   const CLUSTER_RADIUS = 22;
-  const SLUG_OUTER_RADIUS = 160;
+  const SLUG_OUTER_RADIUS = 175;
 
   // For deterministic-looking layout, seed each cluster's intra-arrangement
   // with index-based positions rather than Math.random() so reloads land
@@ -161,24 +164,48 @@ export function layoutBySector(g: EconGraph): void {
   const sectorIndex = new Map<string, number>();
   let slugIndex = 0;
   let slugCount = 0;
+  // Count central-hub nodes (regulators + commodities + retail regions)
+  // separately so we can lay them out in their own concentric rings at
+  // the center of the diagram instead of letting them collide with one
+  // of the sector arcs.
+  let regulatorCount = 0;
+  let commodityCount = 0;
+  let regionCount = 0;
   g.forEachNode((_id, attrs) => {
     const apiNode = attrs.apiNode;
-    if (apiNode.attributes.type === "Regulator") return;
+    const t = apiNode.attributes.type;
+    if (t === "Regulator") { regulatorCount += 1; return; }
+    if (t === "Commodity") { commodityCount += 1; return; }
+    if (t === "Region")    { regionCount    += 1; return; }
     if (apiNode.attributes.provisional) { slugCount += 1; return; }
     const s = apiNode.attributes.sector || "_unknown";
     sectorCounts.set(s, (sectorCounts.get(s) ?? 0) + 1);
   });
 
+  let regulatorIdx = 0, commodityIdx = 0, regionIdx = 0;
+
   g.forEachNode((id, attrs) => {
     const apiNode = attrs.apiNode;
+    const t = apiNode.attributes.type;
     let x = 0, y = 0;
-    if (apiNode.attributes.type === "Regulator") {
-      // Regulators clustered at origin in a small tight ring -- they're hubs.
-      const order = Array.from(sectorCounts.keys()).length;
-      const idx = order ? (id.charCodeAt(id.length - 1) % 7) : 0;
-      const angle = (idx / 7) * 2 * Math.PI;
-      x = Math.cos(angle) * 10;
-      y = Math.sin(angle) * 10;
+    if (t === "Regulator") {
+      // Regulators in the innermost ring -- they're hubs touching every
+      // sector via regulated_by edges.
+      const angle = (regulatorIdx++ / Math.max(1, regulatorCount)) * 2 * Math.PI;
+      x = Math.cos(angle) * 14;
+      y = Math.sin(angle) * 14;
+    } else if (t === "Commodity") {
+      // Commodities in a middle ring just outside regulators -- they
+      // feed into many sectors via supplies edges.
+      const angle = (commodityIdx++ / Math.max(1, commodityCount)) * 2 * Math.PI;
+      x = Math.cos(angle) * 38;
+      y = Math.sin(angle) * 38;
+    } else if (t === "Region") {
+      // Retail-consumer regions in the next ring -- every B2C-facing
+      // sector points at them.
+      const angle = (regionIdx++ / Math.max(1, regionCount)) * 2 * Math.PI;
+      x = Math.cos(angle) * 60;
+      y = Math.sin(angle) * 60;
     } else if (apiNode.attributes.provisional) {
       // Provisional slugs orbit at the outer rim, ordered around the
       // perimeter so click-expand fans out predictably.
