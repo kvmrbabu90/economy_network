@@ -237,7 +237,7 @@ function refreshEdgeVisibility(): void {
         // Use a dark opaque grey only ~3 levels above the page background
         // so non-chain edges visually recede instead of stacking.
         color: inChain ? "#e8e3da" : "#1a1d22",
-        size: inChain ? (eattrs.size ?? 1) * 1.4 : (eattrs.size ?? 1) * 0.4,
+        size: inChain ? (eattrs.size ?? 1) * 2.8 : (eattrs.size ?? 1) * 0.25,
       };
     }
     return { ...eattrs, hidden: baseHidden };
@@ -266,14 +266,18 @@ function refreshEdgeVisibility(): void {
     if (impactState) {
       const verdict = impactState.byNode.get(id);
       const tint = tintColor(verdict);
-      // Dark opaque grey for off-chain -- close to the page background
-      // so non-impacted nodes recede without alpha-stacking into bright
-      // smudges. Tinted nodes pop.
+      const isImpacted = tint !== null;
+      // Impacted nodes float to the top: larger, labelled, high zIndex.
+      // Non-impacted nodes shrink and lose their labels so the affected
+      // subgraph reads through the background clutter.
       return {
         ...nattrs,
-        label,
+        label: isImpacted ? label : "",
         hidden: hide,
         color: tint ?? "#22262c",
+        size: isImpacted ? (nattrs.size ?? 6) * 2.5 : (nattrs.size ?? 6) * 0.3,
+        zIndex: isImpacted ? 10 : 0,
+        forceLabel: isImpacted,
       };
     }
     return { ...nattrs, label, hidden: hide };
