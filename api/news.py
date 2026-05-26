@@ -94,25 +94,34 @@ def _claude_call(prompt: str, timeout: int = 120) -> str:
 # ---------------------------------------------------------------------------
 
 _FILTER_PROMPT = """\
-You are a financial news editor for a supply-chain and equity-markets intelligence tool.
+You are a wire-service copy editor for a supply-chain and equity-markets tool. \
+Select and rewrite headlines as pure, neutral facts — no drama, no spin.
 
-From the raw headlines below, select the 5 most actionable for analysts tracking named companies, commodity prices, trade flows, and regulatory actions. Prioritize:
-- Named company events: earnings, layoffs, deals, M&A, product launches, executive changes
-- Commodity / input-cost shocks: oil, gas, semiconductors, metals, food crops, freight
-- Trade policy: tariffs, sanctions, export controls, port disruptions
-- Central bank / regulatory actions with named-company impact
+SELECTION — always include if present:
+- Named company events: earnings, deals, layoffs, M&A, product launches, regulatory approvals
+- Commodity / input-cost moves: oil price change, gas supply, semiconductors, metals, crops, freight rates
+- Trade policy with named market impact: tariffs, sanctions, export controls, port disruptions
+- Central bank decisions, rate changes
+- Geopolitical events only when they have a direct, stated commodity or market impact (e.g. oil supply disruption, shipping lane closure, trade route affected)
 
-Exclude:
-- Political horse-race coverage (polls, campaigns) with no direct market angle
+SELECTION — exclude:
+- Pure political coverage (polling, campaigns, elections) with no stated market effect
 - Celebrity, entertainment, sports
-- "Markets mixed / markets up/down" with no named driver
-- Purely local stories with no public-company angle
+- "Markets up/down/mixed" with no named driver
+- Opinion, analysis, or editorial pieces
 
-Trim each headline to ≤15 words while keeping the core fact.
-Return ONLY a JSON array — no markdown fences, no other text:
-[{{"text": "<≤15-word headline>", "source": "<outlet>", "url": "<url>"}}]
+REWRITE RULES — no exceptions:
+- ≤15 words
+- State only verifiable facts: who, what. Use neutral verbs: announces, reports, rises, falls, cuts, acquires, approves, launches, signs, halts, closes, opens, raises.
+- Remove all dramatic or loaded words. Do not use: rattles, heats up, warns, fears, surges, soars, plummets, looms, threatens, roils, jolts, shocks, crisis, turmoil, chaos, escalates, sparks.
+- No judgment adjectives: massive, alarming, stunning, historic, surprising, unprecedented.
+- Preserve specific numbers (prices, percentages, quantities) — they are facts, not opinions.
+- Do NOT invent facts. Stay within what the original headline states.
 
-If fewer than 5 headlines qualify, return only the ones that do.
+Return ONLY a valid JSON array — absolutely no markdown, no other text:
+[{{"text": "<rewritten headline ≤15 words>", "source": "<outlet name>", "url": "<url>"}}]
+
+Select the top 5 by relevance. Return fewer only if fewer than 5 qualify.
 
 Raw headlines:
 {headlines}
@@ -191,7 +200,7 @@ def _filter_with_claude(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "source": str(h.get("source", "")).strip(),
                 "url": str(h.get("url", "")).strip(),
             })
-    return result
+    return result[:5]  # hard cap — always show exactly 5 or fewer
 
 
 # ---------------------------------------------------------------------------
@@ -217,16 +226,23 @@ def get_daily_headlines(*, force: bool = False) -> list[dict[str, Any]]:
         log.warning("news: all RSS feeds returned 0 items")
         return []
 
-    try:
-        filtered = _filter_with_claude(raw)
-    except Exception as exc:
-        log.warning("news: Claude filter failed (%s); falling back to raw top-5", exc)
-        # Graceful degradation: return raw headlines truncated to 15 words
-        filtered = []
-        for item in raw[:5]:
+    def _raw_fallback(items: list[dict]) -> list[dict]:
+        """Return raw headlines trimmed to 15 words — used when Claude fails or returns nothing."""
+        result = []
+        for item in items[:5]:
             words = item["title"].split()
             text = " ".join(words[:15]) + ("…" if len(words) > 15 else "")
-            filtered.append({"text": text, "source": item["source"], "url": item["url"]})
+            result.append({"text": text, "source": item["source"], "url": item["url"]})
+        return result
+
+    try:
+        filtered = _filter_with_claude(raw)
+        if not filtered:
+            log.warning("news: Claude returned 0 headlines; using raw fallback")
+            filtered = _raw_fallback(raw)
+    except Exception as exc:
+        log.warning("news: Claude filter failed (%s); using raw fallback", exc)
+        filtered = _raw_fallback(raw)
 
     _cache[today] = filtered
     return filtered
