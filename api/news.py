@@ -107,6 +107,7 @@ SELECTION — always include if present:
 SELECTION — exclude:
 - Pure political coverage (polling, campaigns, elections) with no stated market effect
 - Celebrity, entertainment, sports
+- Stock / index price moves: "X shares rise/fall", "S&P 500 up/down", "Nikkei hits high", etc. — unless the move is caused by a concrete named event (earnings, M&A, regulatory ruling) stated in the same headline
 - "Markets up/down/mixed" with no named driver
 - Opinion, analysis, or editorial pieces
 
