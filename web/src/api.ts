@@ -210,7 +210,11 @@ export interface ImpactVerdict {
 }
 
 export interface ImpactResponse {
+  /** Primary seed (first named entity, or commodity/region if none resolved).
+   *  Kept for backward-compat — use `seeds` for the full list. */
   seed: ImpactVerdict | null;
+  /** All hop-0 seeds: named entities from the news + commodity/region seed. */
+  seeds?: ImpactVerdict[];
   impacts: ImpactVerdict[];
   provider?: string;
   model?: string;

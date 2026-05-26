@@ -852,8 +852,11 @@ async function handleImpactRun(): Promise<void> {
     refreshEdgeVisibility();
     applyImpactToScene(impactState);
     if (impactClearBtn) impactClearBtn.hidden = false;
+    const seedNames = resp.seeds && resp.seeds.length > 0
+      ? resp.seeds.map(s => `${s.name} (${s.direction})`).join(", ")
+      : resp.seed ? `${resp.seed.name} (${resp.seed.direction})` : "unknown";
     setImpactStatus(
-      `[${niceProvider}] Seed: ${resp.seed.name} (${resp.seed.direction}) → ${resp.impacts.length} nodes touched across ${resp.max_hops || 3} hops`,
+      `[${niceProvider}] Seeds: ${seedNames} → ${resp.impacts.length} nodes touched across ${resp.max_hops || 3} hops`,
     );
     // Persist to the 24-h archive so the user can replay without re-running.
     saveToArchive(text, provider, resp);

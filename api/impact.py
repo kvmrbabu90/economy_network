@@ -232,6 +232,139 @@ def _parse_llm_json(text: str) -> Any:
 # Graph helpers (read against the live SQLite)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Multi-seed: named-entity extraction + graph resolution
+# ---------------------------------------------------------------------------
+
+_ENTITY_EXTRACT_PROMPT_TEMPLATE = """You are an economist analysing a news event.
+Extract ONLY the companies or organizations that are DIRECTLY AND SPECIFICALLY NAMED
+in the news text. Do not infer or guess companies; only include ones explicitly mentioned.
+
+For each named company/organization, determine whether this event is economically
+POSITIVE or NEGATIVE for that specific entity.
+
+NEWS:
+\"\"\"{news}\"\"\"
+
+DIRECTION SEMANTICS:
+  "positive" = the event DIRECTLY HELPS this entity (new market entry, major contract,
+               regulatory approval, strong earnings, demand surge for its products)
+  "negative" = the event DIRECTLY HURTS this entity (lawsuit, recall, market exit,
+               competitor win, supply disruption affecting it specifically)
+
+Return STRICT JSON only — an array. If no specific companies/organizations are named, return [].
+
+[
+  {{
+    "company_name": "<exact name as stated in news>",
+    "direction": "positive" | "negative",
+    "magnitude": 0.0 to 1.0,
+    "reasoning": "<under 15 words — why positive/negative for THIS company>"
+  }}
+]
+"""
+
+
+def _extract_named_entities(text: str) -> list[dict[str, Any]]:
+    """Ask LLM to identify named companies in the news + their impact direction.
+    Returns a list of dicts: company_name, direction, magnitude, reasoning.
+    Returns [] if no companies found or LLM fails."""
+    prompt = _ENTITY_EXTRACT_PROMPT_TEMPLATE.format(news=text)
+    raw = _llm_call(prompt)
+    parsed = _parse_llm_json(raw)
+    if not isinstance(parsed, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        name = (item.get("company_name") or "").strip()
+        direction = item.get("direction", "")
+        if name and direction in ("positive", "negative"):
+            result.append({
+                "company_name": name,
+                "direction": direction,
+                "magnitude": max(0.0, min(1.0, float(item.get("magnitude") or 0.7))),
+                "reasoning": (item.get("reasoning") or "")[:200],
+            })
+    return result
+
+
+def _resolve_entity(
+    conn: sqlite3.Connection, company_name: str
+) -> Optional[dict[str, Any]]:
+    """Find a Company node whose name or alias best matches company_name.
+
+    Search order (short-circuits on first hit):
+    1. Exact name match on nodes table (case-insensitive)
+    2. Exact alias_normalized match in aliases table
+    3. name LIKE 'name%' (starts-with)
+    4. alias_normalized LIKE 'name%'
+    5. name LIKE '%name%' (contains, fallback)
+
+    Returns a dict with id, type, name, sector, industry, country — or None.
+    """
+    q = company_name.lower().strip()
+    if not q:
+        return None
+
+    # 1. Exact node name
+    row = conn.execute(
+        "SELECT id, type, name, sector, industry, country FROM nodes "
+        "WHERE LOWER(name) = ? AND type = 'Company' LIMIT 1",
+        (q,),
+    ).fetchone()
+    if row:
+        return dict(row)
+
+    # 2. Exact alias
+    row = conn.execute(
+        """
+        SELECT n.id, n.type, n.name, n.sector, n.industry, n.country
+        FROM aliases a JOIN nodes n ON n.id = a.node_id
+        WHERE a.alias_normalized = ? AND n.type = 'Company'
+        LIMIT 1
+        """,
+        (q,),
+    ).fetchone()
+    if row:
+        return dict(row)
+
+    # 3. Name starts-with ("Tata" → "Tata Consultancy Services")
+    row = conn.execute(
+        "SELECT id, type, name, sector, industry, country FROM nodes "
+        "WHERE LOWER(name) LIKE ? AND type = 'Company' LIMIT 1",
+        (q + "%",),
+    ).fetchone()
+    if row:
+        return dict(row)
+
+    # 4. Alias starts-with
+    row = conn.execute(
+        """
+        SELECT n.id, n.type, n.name, n.sector, n.industry, n.country
+        FROM aliases a JOIN nodes n ON n.id = a.node_id
+        WHERE a.alias_normalized LIKE ? AND n.type = 'Company'
+        LIMIT 1
+        """,
+        (q + "%",),
+    ).fetchone()
+    if row:
+        return dict(row)
+
+    # 5. Contains fallback (only for reasonably long names to avoid false positives)
+    if len(q) >= 5:
+        row = conn.execute(
+            "SELECT id, type, name, sector, industry, country FROM nodes "
+            "WHERE LOWER(name) LIKE ? AND type = 'Company' LIMIT 1",
+            (f"%{q}%",),
+        ).fetchone()
+        if row:
+            return dict(row)
+
+    return None
+
+
 def _list_seed_candidates(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Commodity + Region nodes are the typical seed targets for a
     news event. We include their type, name, and a one-liner category
@@ -363,8 +496,8 @@ NEWS:
 {news}
 \"\"\"
 
-SEED (already classified): {seed_id} ({seed_name}, {seed_type})
-SEED DIRECTION: {seed_direction}  -- {seed_reasoning}
+SEEDS (hop 0 — directly affected by this event):
+{seeds_block}
 
 You are now at hop {hop_num}. Each candidate is connected to a parent
 already classified. Score each candidate's likely impact GIVEN the news.
@@ -424,12 +557,25 @@ Cover every candidate id exactly once.
 # Top-level propagation
 # ---------------------------------------------------------------------------
 
+def _build_seeds_block(all_seeds: list[dict[str, Any]]) -> str:
+    """Format all hop-0 seeds into a single readable block for ring/refinement prompts."""
+    lines = []
+    for s in all_seeds:
+        lines.append(
+            f"  {s['node_id']} | {s['type']} | {s['name']} | "
+            f"{s['direction']} ({s['magnitude']:.2f}) — {s['reasoning']}"
+        )
+    return "\n".join(lines) if lines else "  (none)"
+
+
 def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
     text = (text or "").strip()
     if not text:
         return {"error": "empty news text", "seed": None, "impacts": []}
 
-    # -- Step 1: identify seed -------------------------------------------
+    debug_log: list[str] = []
+
+    # == Step 1: Build commodity/region seed prompt (no LLM yet) ==========
     candidates = _list_seed_candidates(conn)
     candidate_lines = []
     for c in candidates:
@@ -439,47 +585,129 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
         news=text,
         candidates="\n".join(candidate_lines),
     )
-    log.info("identifying seed (candidates: %d)", len(candidate_lines))
-    seed_raw = _llm_call(seed_prompt)
-    seed_obj = _parse_llm_json(seed_raw) or {}
-    seed_id = seed_obj.get("node_id")
-    if not seed_id:
-        return {
-            "error": "LLM did not pick a seed node",
-            "seed": None,
-            "impacts": [],
-            "llm_raw": seed_raw[:500],
-        }
-    seed_summary = _node_summary(conn, seed_id)
-    if not seed_summary:
-        return {
-            "error": f"LLM picked unknown node id: {seed_id}",
-            "seed": None,
-            "impacts": [],
-        }
-    seed_direction = seed_obj.get("direction") or "negative"
-    seed_magnitude = float(seed_obj.get("magnitude") or 0.9)
-    seed_reasoning = seed_obj.get("reasoning") or ""
 
-    # impacts maps node_id -> verdict dict
-    impacts: dict[str, dict[str, Any]] = {
-        seed_id: {
-            "node_id": seed_id,
-            "name": seed_summary["name"],
-            "type": seed_summary["type"],
-            "direction": seed_direction,
-            "magnitude": seed_magnitude,
+    # == Step 2: Run entity extraction + commodity seed selection in parallel ==
+    # Both are independent LLM calls; run them concurrently to cut latency.
+    log.info("multi-seed: entity extraction + commodity seed in parallel")
+    debug_log.append(f"seed_parallel: start (commodity candidates={len(candidate_lines)})")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_entities = pool.submit(_extract_named_entities, text)
+        f_seed_raw = pool.submit(_llm_call, seed_prompt)
+        named_entities = f_entities.result()
+        seed_raw = f_seed_raw.result()
+    debug_log.append(
+        f"seed_parallel: done — entity_extract returned {len(named_entities)} entities: "
+        f"{[e['company_name'] for e in named_entities]}"
+    )
+
+    # == Step 3: Resolve named entities to graph nodes (DB lookups, fast) ==
+    resolved_seeds: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for entity in named_entities:
+        node = _resolve_entity(conn, entity["company_name"])
+        if node:
+            nid = node["id"]
+            if nid not in seen_ids:
+                seen_ids.add(nid)
+                resolved_seeds.append({
+                    "node_id": nid,
+                    "name": node["name"],
+                    "type": node["type"],
+                    "direction": entity["direction"],
+                    "magnitude": entity["magnitude"],
+                    "reasoning": entity["reasoning"],
+                    "sector": node.get("sector"),
+                    "country": node.get("country"),
+                    "is_named_entity": True,
+                })
+                debug_log.append(
+                    f"entity_resolve: '{entity['company_name']}' → {nid} ({node['name']})"
+                )
+        else:
+            debug_log.append(
+                f"entity_resolve: '{entity['company_name']}' → not found in graph"
+            )
+
+    # == Step 4: Parse commodity/region seed ==============================
+    seed_obj = _parse_llm_json(seed_raw) or {}
+    commodity_seed_id = seed_obj.get("node_id")
+    commodity_seed: Optional[dict[str, Any]] = None
+    if commodity_seed_id and commodity_seed_id not in seen_ids:
+        commodity_summary = _node_summary(conn, commodity_seed_id)
+        if commodity_summary:
+            commodity_seed = {
+                "node_id": commodity_seed_id,
+                "name": commodity_summary["name"],
+                "type": commodity_summary["type"],
+                "direction": seed_obj.get("direction") or "negative",
+                "magnitude": float(seed_obj.get("magnitude") or 0.9),
+                "reasoning": seed_obj.get("reasoning") or "",
+                "sector": commodity_summary.get("sector"),
+                "country": commodity_summary.get("country"),
+                "is_named_entity": False,
+            }
+            seen_ids.add(commodity_seed_id)
+            debug_log.append(
+                f"commodity_seed: {commodity_seed_id} ({commodity_summary['name']}) "
+                f"{commodity_seed['direction']} ({commodity_seed['magnitude']:.2f})"
+            )
+        else:
+            debug_log.append(f"commodity_seed: LLM picked unknown id {commodity_seed_id}")
+    elif commodity_seed_id and commodity_seed_id in seen_ids:
+        debug_log.append(
+            f"commodity_seed: {commodity_seed_id} already in named seeds — skipping duplicate"
+        )
+    else:
+        debug_log.append("commodity_seed: LLM returned no seed node")
+
+    # == Step 5: Combine all seeds ========================================
+    # Named entity seeds first (more specific); commodity/region seed appended.
+    all_seeds: list[dict[str, Any]] = list(resolved_seeds)
+    if commodity_seed:
+        all_seeds.append(commodity_seed)
+
+    if not all_seeds:
+        return {
+            "error": "Could not identify any seed nodes from the news text",
+            "seed": None,
+            "impacts": [],
+            "debug": debug_log,
+        }
+
+    debug_log.append(
+        f"seeds: {len(all_seeds)} total — "
+        + ", ".join(f"{s['node_id']} ({s['name']}, {s['direction']})" for s in all_seeds)
+    )
+
+    # Build the seeds_block string used in all subsequent prompts.
+    seeds_block = _build_seeds_block(all_seeds)
+
+    # == Step 6: Initialize BFS from all seeds at hop 0 ===================
+    impacts: dict[str, dict[str, Any]] = {}
+    visited: set[str] = set()
+    frontier: list[str] = []
+    for s in all_seeds:
+        nid = s["node_id"]
+        impacts[nid] = {
+            "node_id": nid,
+            "name": s["name"],
+            "type": s["type"],
+            "direction": s["direction"],
+            "magnitude": s["magnitude"],
             "hop": 0,
-            "reasoning": seed_reasoning,
+            "reasoning": s["reasoning"],
             "via_parent": None,
             "edge_type": None,
+            "is_seed": True,
         }
-    }
-    visited = {seed_id}
-    frontier = [seed_id]
+        visited.add(nid)
+        frontier.append(nid)
 
-    # -- Step 2-N: BFS ring by ring --------------------------------------
-    debug_log: list[str] = []
+    # Primary seed: first named entity (if any); else commodity/region seed.
+    # Used in the API response's `seed` field for backward compatibility.
+    primary_seed_id = all_seeds[0]["node_id"]
+
+    # -- Step 7: BFS ring by ring ----------------------------------------
     for hop in range(1, MAX_HOPS + 1):
         full_ring = _neighbors(conn, frontier, visited)
         log.info("hop %d: frontier=%d, ring=%d", hop, len(frontier), len(full_ring))
@@ -522,11 +750,7 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
                 )
             chunk_prompts.append(_RING_PROMPT_TEMPLATE.format(
                 news=text,
-                seed_id=seed_id,
-                seed_name=seed_summary["name"],
-                seed_type=seed_summary["type"],
-                seed_direction=seed_direction,
-                seed_reasoning=seed_reasoning,
+                seeds_block=seeds_block,
                 hop_num=hop,
                 candidates="\n".join(cand_lines),
             ))
@@ -613,16 +837,17 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
     refinement_summary = _refinement_pass(
         text=text,
         impacts=impacts,
-        seed_id=seed_id,
-        seed_summary=seed_summary,
-        seed_direction=seed_direction,
-        seed_reasoning=seed_reasoning,
+        seeds_block=seeds_block,
         conn=conn,
         debug_log=debug_log,
     )
 
+    # `seed` field: first named-entity seed, or commodity/region if no
+    # named entities resolved. Kept for backward-compat with older frontends.
+    seeds_response = [impacts[s["node_id"]] for s in all_seeds if s["node_id"] in impacts]
     return {
-        "seed": impacts[seed_id],
+        "seed": impacts.get(primary_seed_id),
+        "seeds": seeds_response,
         "impacts": list(impacts.values()),
         "provider": LLM_PROVIDER,
         "model": "claude-code-cli" if LLM_PROVIDER == "claude" else OLLAMA_MODEL,
@@ -654,8 +879,8 @@ NEWS:
 {news}
 \"\"\"
 
-SEED (the original shock): {seed_id} ({seed_name}, {seed_type})
-SEED DIRECTION: {seed_direction}  -- {seed_reasoning}
+SEEDS (the original shocks, hop 0):
+{seeds_block}
 
 Each node below was initially scored against ONE parent only. It actually
 has MULTIPLE impacted neighbours that may collectively affect it. Re-score
@@ -710,10 +935,7 @@ def _refinement_pass(
     *,
     text: str,
     impacts: dict[str, dict[str, Any]],
-    seed_id: str,
-    seed_summary: dict[str, Any],
-    seed_direction: str,
-    seed_reasoning: str,
+    seeds_block: str,
     conn: sqlite3.Connection,
     debug_log: list[str],
 ) -> dict[str, Any]:
@@ -745,10 +967,11 @@ def _refinement_pass(
         neighbours.setdefault(src, []).append((tgt, etype))
         neighbours.setdefault(tgt, []).append((src, etype))
 
-    # Eligible: nodes with WEAK initial verdict + 2+ impacted neighbours
+    # Eligible: nodes with WEAK initial verdict + 2+ impacted neighbours.
+    # Skip hop-0 seeds — they already have their verdicts from the seed step.
     eligible: list[tuple[str, int]] = []
     for nid, v in impacts.items():
-        if nid == seed_id:
+        if v.get("is_seed"):
             continue
         direction = v.get("direction", "no_effect")
         magnitude = float(v.get("magnitude", 0.0))
@@ -824,11 +1047,7 @@ def _refinement_pass(
         node_blocks_text = "\n\n".join(block for _, block, _ in batch)
         prompts.append(_REFINE_BATCH_PROMPT_TEMPLATE.format(
             news=text,
-            seed_id=seed_id,
-            seed_name=seed_summary.get("name", ""),
-            seed_type=seed_summary.get("type", ""),
-            seed_direction=seed_direction,
-            seed_reasoning=seed_reasoning[:160],
+            seeds_block=seeds_block,
             node_blocks=node_blocks_text,
         ))
 
