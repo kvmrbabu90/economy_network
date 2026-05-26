@@ -47,6 +47,7 @@ import { showEdge, showEmpty, showNode, type NodeExtras } from "./ui/inspector";
 import { wireSearch } from "./ui/search";
 import { startStatusPolling } from "./ui/status";
 import { describeNode, runImpact, runMultiImpact, type ImpactResponse, type MultiImpactResponse } from "./api";
+import { fetchHeadlines, type Headline } from "./news";
 import {
   buildImpactState,
   buildMultiImpactState,
@@ -475,7 +476,10 @@ async function recenterOn(id: string): Promise<void> {
   cameraReset();
   // Show the focused node in the inspector.
   const center = resp.nodes.find((n) => n.key === resp.center);
-  if (center) showNode(center, g, inspectorExtrasFor(center.key));
+  if (center) {
+    showNode(center, g, inspectorExtrasFor(center.key));
+    hideMorningBrief();
+  }
 }
 
 async function expandFrom(id: string): Promise<void> {
@@ -546,6 +550,7 @@ renderer.on("doubleClickNode", (event) => {
 renderer.on("enterNode", (event) => {
   const attrs = g.getNodeAttributes(event.node);
   showNode(attrs.apiNode, g, inspectorExtrasFor(event.node));
+  hideMorningBrief();
 });
 renderer.on("leaveNode", () => {
   // Keep the panel pinned to whatever the user last selected; don't blank it
@@ -554,6 +559,7 @@ renderer.on("leaveNode", () => {
 
 renderer.on("clickEdge", async (event) => {
   setInspectorCollapsed(false); // show details when user clicks an edge
+  hideMorningBrief();
   // Edge click -> provenance panel. Source/target node attrs come from the
   // live graph so we can show the human names alongside the snippet.
   const eattrs = g.getEdgeAttributes(event.edge);
@@ -574,8 +580,9 @@ renderer.on("clickEdge", async (event) => {
 });
 
 renderer.on("clickStage", () => {
-  // Click on empty canvas resets the inspector.
+  // Click on empty canvas resets the inspector and brings back the brief.
   showEmpty();
+  showMorningBrief();
 });
 
 // ---------------------------------------------------------------------------
@@ -624,9 +631,10 @@ function setView(next: "2d" | "3d" | "globe") {
       container3d,
       g,
       {
-        onNodeClick: (id) => expandFrom(id).catch(console.error),
+        onNodeClick: (id) => { hideMorningBrief(); expandFrom(id).catch(console.error); },
         onNodeDoubleClick: (id) => recenterOn(id).catch(console.error),
         onEdgeClick: async (id) => {
+          hideMorningBrief();
           try {
             const edge = await getEdge(id);
             showEdge(edge);
@@ -995,6 +1003,112 @@ if (impactCancelBtn) impactCancelBtn.addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Morning brief — daily top-5 economic headlines in the inspector panel.
+// Shown when nothing is selected; hidden when node/edge detail is active.
+// ---------------------------------------------------------------------------
+
+const mbBriefEl  = document.getElementById("morning-brief") as HTMLDivElement | null;
+const mbListEl   = document.getElementById("mb-list")        as HTMLOListElement | null;
+const mbDateEl   = document.getElementById("mb-date")        as HTMLSpanElement | null;
+
+// Track which headline indices have already been added to the impact bar.
+const _addedHeadlines = new Set<number>();
+// Keep references so re-renders can restore added state.
+let _currentHeadlines: Headline[] = [];
+
+function showMorningBrief(): void {
+  if (mbBriefEl) mbBriefEl.hidden = false;
+}
+function hideMorningBrief(): void {
+  if (mbBriefEl) mbBriefEl.hidden = true;
+}
+
+function _addHeadlineToBar(h: Headline, idx: number, li: HTMLLIElement, btn: HTMLButtonElement): void {
+  // If the first input row is empty, fill it; otherwise append a new row.
+  const rows = impactInputsList?.querySelectorAll<HTMLInputElement>(".impact-news-input") ?? [];
+  const firstInput = rows[0];
+  if (firstInput && !firstInput.value.trim()) {
+    firstInput.value = h.text;
+  } else {
+    addImpactNewsRow(h.text);
+  }
+  // Mark dimmed in the brief panel.
+  _addedHeadlines.add(idx);
+  li.classList.add("mb-added");
+  btn.textContent = "✓";
+  btn.title = "Added to impact bar";
+}
+
+function renderMorningBrief(headlines: Headline[]): void {
+  if (!mbListEl) return;
+  _currentHeadlines = headlines;
+
+  if (mbDateEl) {
+    const now = new Date();
+    mbDateEl.textContent = now.toLocaleDateString("en-US", {
+      weekday: "short", month: "short", day: "numeric",
+    });
+  }
+
+  mbListEl.innerHTML = "";
+  headlines.forEach((h, idx) => {
+    const li = document.createElement("li");
+    li.className = "mb-item" + (_addedHeadlines.has(idx) ? " mb-added" : "");
+
+    const content = document.createElement("div");
+    content.className = "mb-content";
+
+    const headlineSpan = document.createElement("span");
+    headlineSpan.className = "mb-headline";
+    headlineSpan.textContent = h.text;
+
+    const sourceSpan = document.createElement("span");
+    sourceSpan.className = "mb-source";
+    sourceSpan.textContent = h.source;
+
+    content.appendChild(headlineSpan);
+    content.appendChild(sourceSpan);
+
+    const addBtn = document.createElement("button");
+    addBtn.className = "mb-add-btn";
+    addBtn.type = "button";
+    addBtn.title = _addedHeadlines.has(idx) ? "Added to impact bar" : "Add to impact trace bar";
+    addBtn.textContent = _addedHeadlines.has(idx) ? "✓" : "+";
+    addBtn.setAttribute("aria-label", `Add "${h.text}" to impact bar`);
+
+    if (!_addedHeadlines.has(idx)) {
+      addBtn.addEventListener("click", () => _addHeadlineToBar(h, idx, li, addBtn));
+    }
+
+    li.appendChild(content);
+    li.appendChild(addBtn);
+    mbListEl.appendChild(li);
+  });
+}
+
+function initMorningBrief(): void {
+  if (!mbListEl) return;
+  // Show skeleton loading state immediately.
+  mbListEl.innerHTML = '<li class="mb-loading">Fetching today\'s headlines…</li>';
+  showMorningBrief();
+
+  fetchHeadlines()
+    .then((headlines) => {
+      if (!headlines.length) {
+        if (mbListEl) mbListEl.innerHTML = '<li class="mb-loading">No headlines available.</li>';
+        return;
+      }
+      renderMorningBrief(headlines);
+    })
+    .catch((err) => {
+      console.warn("Morning brief fetch failed:", err);
+      if (mbListEl) mbListEl.innerHTML = '<li class="mb-loading">Headlines unavailable — API offline?</li>';
+    });
+}
+
+initMorningBrief();
+
+// ---------------------------------------------------------------------------
 // Collapsible inspector panel
 // ---------------------------------------------------------------------------
 
@@ -1014,8 +1128,9 @@ function setInspectorCollapsed(collapsed: boolean): void {
 (function wireInspectorToggle() {
   if (!_inspectorAppEl || !_inspectorToggleBtn) return;
   const stored = localStorage.getItem("inspectorCollapsed");
-  // "false" means the user manually opened it last time; anything else → collapsed.
-  setInspectorCollapsed(stored !== "false");
+  // Default: EXPANDED so the Morning Brief is visible on first visit.
+  // Only collapse if the user explicitly did so ("true" stored).
+  setInspectorCollapsed(stored === "true");
 
   _inspectorToggleBtn.addEventListener("click", () => {
     setInspectorCollapsed(!_inspectorAppEl!.classList.contains("inspector-collapsed"));

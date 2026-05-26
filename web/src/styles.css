@@ -868,9 +868,136 @@ html, body {
 .inspector {
   grid-area: inspector;
   background: var(--bg-panel);
-  padding: 22px 20px;
   border-left: 1px solid var(--line);
+  position: relative;     /* anchor for the absolute toggle button */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Scrollable content area — node / edge detail lives here */
+.inspector-body {
+  flex: 1;
   overflow-y: auto;
+  padding: 22px 20px;
+}
+
+/* -------- MORNING BRIEF ------------------------------------------------ */
+
+.morning-brief {
+  flex-shrink: 0;
+  padding: 14px 20px 10px;
+  border-bottom: 1px solid var(--line);
+  max-height: 56vh;
+  overflow-y: auto;
+}
+
+/* Hide morning brief when inspector is collapsed (20-px-wide stub) */
+#app.inspector-collapsed .morning-brief { display: none; }
+
+.mb-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.mb-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.mb-date {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+/* Loading / error state */
+.mb-loading {
+  font-size: 12px;
+  color: var(--text-faint);
+  padding: 8px 0;
+}
+
+.mb-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.mb-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 6px;
+  border-radius: 6px;
+  transition: background 0.12s;
+  cursor: default;
+}
+.mb-item:hover { background: var(--bg-recess); }
+
+/* Dimmed once added to the impact bar */
+.mb-item.mb-added {
+  opacity: 0.38;
+  pointer-events: none;   /* prevent double-add */
+}
+
+.mb-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.mb-headline {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.mb-source {
+  display: block;
+  font-size: 10px;
+  color: var(--text-faint);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mb-add-btn {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+  padding: 0;
+}
+.mb-add-btn:hover {
+  color: var(--text);
+  background: var(--bg-recess);
+  border-color: var(--text-mute);
+}
+.mb-item.mb-added .mb-add-btn {
+  border-color: transparent;
+  cursor: default;
+  font-size: 11px;
 }
 .inspector h2 {
   margin: 0 0 4px;
@@ -1063,11 +1190,6 @@ html, body {
 }
 
 /* -------- INSPECTOR COLLAPSE ---------------------------------------- */
-
-/* The toggle sits on the left edge of the inspector panel */
-.inspector {
-  position: relative; /* anchor for the toggle button */
-}
 
 .inspector-toggle-btn {
   position: absolute;

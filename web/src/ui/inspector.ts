@@ -10,7 +10,9 @@ export interface NodeExtras {
   onDescribe?: (nodeId: string) => Promise<string>;
 }
 
-const root = () => document.getElementById("inspector")!;
+// Point at the BODY div, not the outer <section>.  This keeps the toggle
+// button and morning-brief panel alive when replaceChildren() runs.
+const root = () => document.getElementById("inspector-body")!;
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K, attrs: Record<string, string> = {}, ...children: (Node | string)[]

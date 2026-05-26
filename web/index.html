@@ -196,7 +196,18 @@
 
       <section class="inspector" id="inspector">
         <button class="inspector-toggle-btn" id="inspector-toggle" title="Collapse inspector" aria-label="Toggle inspector">‹</button>
-        <div class="inspector-body">
+
+        <!-- Morning brief: top-5 daily headlines, shown when nothing is selected -->
+        <div id="morning-brief" class="morning-brief" hidden>
+          <div class="mb-header">
+            <span class="mb-title">Morning Brief</span>
+            <span class="mb-date" id="mb-date"></span>
+          </div>
+          <ol class="mb-list" id="mb-list" aria-label="Today's top headlines"></ol>
+        </div>
+
+        <!-- Inspector body: node / edge details, replaced by JS on each selection -->
+        <div class="inspector-body" id="inspector-body">
           <div class="inspector-empty">
             <div class="inspector-empty-title">Inspector</div>
             <p>Hover or click any node or edge to see details and provenance.</p>

@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from schema.store import connect
 
 from . import impact as impact_mod
+from . import news as news_mod
 from . import query as q
 
 
@@ -278,6 +279,18 @@ def post_impact(
             impact_mod.LLM_PROVIDER = prev_provider
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.get("/news/headlines")
+def get_headlines(force: bool = Query(False, description="Bypass the daily cache and re-fetch.")):
+    """Return today's top-5 economic headlines, filtered by Claude for
+    supply-chain / equity relevance. Results are cached per calendar day.
+    Pass ?force=true to bypass the cache (e.g. manual refresh button).
+    """
+    try:
+        return {"headlines": news_mod.get_daily_headlines(force=force)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/impact/multi")
