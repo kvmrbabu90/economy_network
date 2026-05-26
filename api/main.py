@@ -278,3 +278,42 @@ def post_impact(
             impact_mod.LLM_PROVIDER = prev_provider
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.post("/impact/multi")
+def post_impact_multi(payload: dict = Body(...)):
+    """Multi-news impact propagation.
+
+    Accepts a list of independent news texts. Each is propagated through
+    its own isolated BFS (separate SQLite connection per thread), then
+    verdicts are merged: same node appearing in multiple events gets a
+    net direction (positive/negative) and a `mixed_signals` flag when
+    opposing signals both fire.
+
+    Body: {"texts": ["news 1", "news 2", ...], "provider": "claude"|"ollama"}
+    """
+    texts = payload.get("texts") or []
+    if not isinstance(texts, list) or not texts:
+        raise HTTPException(status_code=400, detail="`texts` must be a non-empty list")
+    texts = [str(t).strip() for t in texts if str(t).strip()]
+    if not texts:
+        raise HTTPException(status_code=400, detail="all provided texts were empty")
+    if len(texts) > 8:
+        raise HTTPException(status_code=400, detail="max 8 news items per request")
+
+    provider_override = (payload.get("provider") or "").strip().lower() or None
+    if provider_override and provider_override not in ("claude", "ollama"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown provider {provider_override!r}; use 'claude' or 'ollama'",
+        )
+    try:
+        prev_provider = impact_mod.LLM_PROVIDER
+        if provider_override:
+            impact_mod.LLM_PROVIDER = provider_override
+        try:
+            return impact_mod.run_multi_impact(texts, db_path=_DB_PATH)
+        finally:
+            impact_mod.LLM_PROVIDER = prev_provider
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e

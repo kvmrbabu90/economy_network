@@ -636,7 +636,24 @@ html, body {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
   z-index: 30;
 }
-.impact-bar input {
+/* Multi-news input list */
+.impact-inputs-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.impact-news-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.impact-news-row + .impact-news-row {
+  border-top: 1px solid var(--line);
+  padding-top: 2px;
+}
+.impact-news-input {
   flex: 1;
   background: transparent;
   border: none;
@@ -644,8 +661,35 @@ html, body {
   color: var(--text);
   font-size: 13px;
   padding: 6px 8px;
+  min-width: 0;
 }
-.impact-bar input::placeholder { color: var(--text-mute); }
+.impact-news-input::placeholder { color: var(--text-mute); }
+.impact-news-remove {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-mute);
+  cursor: pointer;
+  padding: 2px 5px;
+  font-size: 13px;
+  border-radius: 3px;
+  line-height: 1;
+  opacity: 0.6;
+}
+.impact-news-remove:hover { color: #e05555; opacity: 1; }
+.impact-add-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px dashed var(--line);
+  color: var(--text-mute);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+.impact-add-btn:hover { color: var(--text); border-color: var(--text-mute); }
 .impact-btn {
   background: #2a2e34;
   color: var(--text);

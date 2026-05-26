@@ -197,6 +197,15 @@ export function search(q: string, limit = 10): Promise<SearchResponse> {
 // Impact propagation (LLM-driven)
 // ---------------------------------------------------------------------------
 
+export interface ImpactEventVerdict {
+  event_idx: number;
+  event_text: string;
+  direction: "positive" | "negative" | "no_effect";
+  magnitude: number;
+  hop: number;
+  reasoning: string;
+}
+
 export interface ImpactVerdict {
   node_id: string;
   name: string;
@@ -207,6 +216,9 @@ export interface ImpactVerdict {
   reasoning: string;
   via_parent: string | null;
   edge_type: string | null;
+  // Multi-event extensions (only present on merged verdicts from /impact/multi)
+  mixed_signals?: boolean;
+  event_verdicts?: ImpactEventVerdict[];
 }
 
 export interface ImpactResponse {
@@ -224,6 +236,32 @@ export interface ImpactResponse {
 }
 
 export type ImpactProvider = "claude" | "ollama";
+
+// ---------------------------------------------------------------------------
+// Multi-news impact
+// ---------------------------------------------------------------------------
+
+/** One event's raw result within a multi-news response. */
+export interface MultiImpactEvent {
+  text: string;
+  seed: ImpactVerdict | null;
+  seeds?: ImpactVerdict[];
+  impacts: ImpactVerdict[];
+  error?: string;
+}
+
+/** Result of POST /impact/multi — merged across all events. */
+export interface MultiImpactResponse {
+  events: MultiImpactEvent[];
+  /** Merged/netted verdicts — one per unique node across all events. */
+  merged: ImpactVerdict[];
+  provider?: string;
+  model?: string;
+  event_count?: number;
+  total_nodes?: number;
+  mixed_signal_nodes?: number;
+  error?: string;
+}
 
 export interface DescribeResponse {
   node_id: string;
@@ -245,6 +283,33 @@ export async function describeNode(nodeId: string): Promise<DescribeResponse> {
       throw new ApiError(resp.status, `${resp.statusText} - ${body.slice(0, 200)}`);
     }
     return (await resp.json()) as DescribeResponse;
+  } finally {
+    inflight -= 1;
+    notifyLoading();
+  }
+}
+
+export async function runMultiImpact(
+  texts: string[],
+  opts: { provider?: ImpactProvider; signal?: AbortSignal } = {},
+): Promise<MultiImpactResponse> {
+  const url = new URL("/impact/multi", API_BASE_URL);
+  inflight += 1;
+  notifyLoading();
+  try {
+    const body: Record<string, unknown> = { texts };
+    if (opts.provider) body.provider = opts.provider;
+    const resp = await fetch(url.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+    if (!resp.ok) {
+      const respBody = await resp.text().catch(() => "");
+      throw new ApiError(resp.status, `${resp.statusText} - ${respBody.slice(0, 200)}`);
+    }
+    return (await resp.json()) as MultiImpactResponse;
   } finally {
     inflight -= 1;
     notifyLoading();

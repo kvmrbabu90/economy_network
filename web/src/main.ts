@@ -46,9 +46,10 @@ import { wireFilters, countryInMarkets, type FilterState } from "./ui/filters";
 import { showEdge, showEmpty, showNode, type NodeExtras } from "./ui/inspector";
 import { wireSearch } from "./ui/search";
 import { startStatusPolling } from "./ui/status";
-import { describeNode, runImpact, type ImpactResponse } from "./api";
+import { describeNode, runImpact, runMultiImpact, type ImpactResponse, type MultiImpactResponse } from "./api";
 import {
   buildImpactState,
+  buildMultiImpactState,
   dimColor,
   tintColor,
   tintColorRGB,
@@ -57,6 +58,7 @@ import {
 import {
   loadArchive,
   saveToArchive,
+  saveMultiToArchive,
   removeFromArchive,
   type ArchiveEntry,
 } from "./impact-archive";
@@ -812,6 +814,8 @@ function applyImpactToScene(state: ImpactState | null): void {
 }
 
 const impactInput = document.getElementById("impact-input") as HTMLInputElement | null;
+const impactInputsList = document.getElementById("impact-inputs-list") as HTMLDivElement | null;
+const impactAddNewsBtn = document.getElementById("impact-add-news") as HTMLButtonElement | null;
 const impactRunBtn = document.getElementById("impact-run") as HTMLButtonElement | null;
 const impactClearBtn = document.getElementById("impact-clear") as HTMLButtonElement | null;
 const impactCancelBtn = document.getElementById("impact-cancel-btn") as HTMLButtonElement | null;
@@ -829,37 +833,110 @@ function setImpactStatus(msg: string | null): void {
   impactStatusEl.textContent = msg;
 }
 
+/** Collect all non-empty news texts from the multi-input list. */
+function getNewsTexts(): string[] {
+  if (!impactInputsList) return impactInput ? [impactInput.value.trim()].filter(Boolean) : [];
+  return Array.from(impactInputsList.querySelectorAll<HTMLInputElement>(".impact-news-input"))
+    .map(el => el.value.trim())
+    .filter(Boolean);
+}
+
+/** Update remove-button visibility: hidden when only 1 row exists. */
+function _syncRemoveBtns(): void {
+  if (!impactInputsList) return;
+  const rows = impactInputsList.querySelectorAll(".impact-news-row");
+  rows.forEach(row => {
+    const btn = row.querySelector<HTMLButtonElement>(".impact-news-remove");
+    if (btn) btn.hidden = rows.length <= 1;
+  });
+}
+
+/** Add a new news-input row to the list. */
+function addImpactNewsRow(prefill = ""): void {
+  if (!impactInputsList) return;
+  const row = document.createElement("div");
+  row.className = "impact-news-row";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "impact-news-input";
+  input.placeholder = "Another news event…";
+  input.autocomplete = "off";
+  input.value = prefill;
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); handleImpactRun().catch(console.error); }
+  });
+
+  const removeBtn = document.createElement("button");
+  removeBtn.className = "impact-news-remove";
+  removeBtn.title = "Remove this news item";
+  removeBtn.textContent = "×";
+  removeBtn.addEventListener("click", () => {
+    row.remove();
+    _syncRemoveBtns();
+  });
+
+  row.appendChild(input);
+  row.appendChild(removeBtn);
+  impactInputsList.appendChild(row);
+  _syncRemoveBtns();
+  input.focus();
+}
+
+if (impactAddNewsBtn) {
+  impactAddNewsBtn.addEventListener("click", () => addImpactNewsRow());
+}
+
 async function handleImpactRun(): Promise<void> {
-  if (!impactInput || !impactRunBtn) return;
-  const text = impactInput.value.trim();
-  if (!text) return;
+  if (!impactRunBtn) return;
+  const texts = getNewsTexts();
+  if (!texts.length) return;
   const provider = (impactProviderEl?.value as "claude" | "ollama" | undefined) ?? "claude";
   const niceProvider = provider === "claude" ? "Claude" : "Gemma";
+
   impactRunBtn.disabled = true;
   setImpactStatus(null);
   showImpactOverlay(provider);
-
-  // Create a fresh AbortController for this run so Cancel works.
   _impactAbortController = new AbortController();
 
   try {
-    const resp: ImpactResponse = await runImpact(text, { provider, signal: _impactAbortController.signal });
-    if (resp.error || !resp.seed) {
-      setImpactStatus(`Failed: ${resp.error || "no seed identified"}`);
-      return;
+    if (texts.length === 1) {
+      // Single event — existing /impact path
+      const resp: ImpactResponse = await runImpact(texts[0], { provider, signal: _impactAbortController.signal });
+      if (resp.error || !resp.seed) {
+        setImpactStatus(`Failed: ${resp.error || "no seed identified"}`);
+        return;
+      }
+      impactState = buildImpactState(g, resp);
+      refreshEdgeVisibility();
+      applyImpactToScene(impactState);
+      if (impactClearBtn) impactClearBtn.hidden = false;
+      const seedNames = resp.seeds && resp.seeds.length > 0
+        ? resp.seeds.map(s => `${s.name} (${s.direction})`).join(", ")
+        : resp.seed ? `${resp.seed.name} (${resp.seed.direction})` : "unknown";
+      setImpactStatus(
+        `[${niceProvider}] Seeds: ${seedNames} → ${resp.impacts.length} nodes across ${resp.max_hops || 3} hops`,
+      );
+      saveToArchive(texts[0], provider, resp);
+
+    } else {
+      // Multi-event — /impact/multi path (no AbortSignal; runs in parallel server-side)
+      const resp: MultiImpactResponse = await runMultiImpact(texts, { provider });
+      if (resp.error) {
+        setImpactStatus(`Failed: ${resp.error}`);
+        return;
+      }
+      impactState = buildMultiImpactState(g, resp);
+      refreshEdgeVisibility();
+      applyImpactToScene(impactState);
+      if (impactClearBtn) impactClearBtn.hidden = false;
+      const mixedCount = resp.mixed_signal_nodes ?? 0;
+      setImpactStatus(
+        `[${niceProvider}] ${texts.length} events merged → ${resp.total_nodes ?? resp.merged.length} nodes` +
+        (mixedCount > 0 ? `, ${mixedCount} amber (mixed signals)` : ""),
+      );
+      saveMultiToArchive(texts, provider, resp);
     }
-    impactState = buildImpactState(g, resp);
-    refreshEdgeVisibility();
-    applyImpactToScene(impactState);
-    if (impactClearBtn) impactClearBtn.hidden = false;
-    const seedNames = resp.seeds && resp.seeds.length > 0
-      ? resp.seeds.map(s => `${s.name} (${s.direction})`).join(", ")
-      : resp.seed ? `${resp.seed.name} (${resp.seed.direction})` : "unknown";
-    setImpactStatus(
-      `[${niceProvider}] Seeds: ${seedNames} → ${resp.impacts.length} nodes touched across ${resp.max_hops || 3} hops`,
-    );
-    // Persist to the 24-h archive so the user can replay without re-running.
-    saveToArchive(text, provider, resp);
   } catch (err) {
     if ((err as Error).name === "AbortError") {
       setImpactStatus("Impact trace cancelled.");
@@ -879,8 +956,33 @@ function handleImpactClear(): void {
   refreshEdgeVisibility();
   applyImpactToScene(null);
   if (impactClearBtn) impactClearBtn.hidden = true;
-  if (impactInput) impactInput.value = "";
   setImpactStatus(null);
+  // Reset to single input row
+  if (impactInputsList) {
+    impactInputsList.innerHTML = "";
+    const row = document.createElement("div");
+    row.className = "impact-news-row";
+    const input = document.createElement("input");
+    input.id = "impact-input";
+    input.type = "text";
+    input.className = "impact-news-input";
+    input.placeholder = "Describe a news event — e.g. 'Tesla secures battery deal with Panasonic'";
+    input.autocomplete = "off";
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") { ev.preventDefault(); handleImpactRun().catch(console.error); }
+    });
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "impact-news-remove";
+    removeBtn.title = "Remove this news item";
+    removeBtn.textContent = "×";
+    removeBtn.hidden = true;
+    removeBtn.addEventListener("click", () => { row.remove(); _syncRemoveBtns(); });
+    row.appendChild(input);
+    row.appendChild(removeBtn);
+    impactInputsList.appendChild(row);
+  } else if (impactInput) {
+    impactInput.value = "";
+  }
 }
 
 if (impactRunBtn) impactRunBtn.addEventListener("click", () => { handleImpactRun().catch(console.error); });
@@ -997,14 +1099,53 @@ function renderArchiveList(): void {
 async function restoreFromArchive(entry: ArchiveEntry): Promise<void> {
   // Ensure the full graph is loaded so all impacted nodes are present.
   await loadFullCore();
-  impactState = buildImpactState(g, entry.response);
-  refreshEdgeVisibility();
-  applyImpactToScene(impactState);
-  if (impactClearBtn) impactClearBtn.hidden = false;
-  if (impactInput) impactInput.value = entry.text;
-  setImpactStatus(
-    `[Archived] ${entry.seedName} (${entry.seedDirection}) → ${entry.nodesCount} nodes across ${entry.maxHops} hops`,
-  );
+
+  if (entry.isMulti && entry.multiResponse) {
+    impactState = buildMultiImpactState(g, entry.multiResponse);
+    refreshEdgeVisibility();
+    applyImpactToScene(impactState);
+    if (impactClearBtn) impactClearBtn.hidden = false;
+    // Restore multi-input rows
+    if (impactInputsList && entry.texts && entry.texts.length > 1) {
+      impactInputsList.innerHTML = "";
+      entry.texts.forEach((t, i) => {
+        if (i === 0) {
+          const row = document.createElement("div");
+          row.className = "impact-news-row";
+          const inp = document.createElement("input");
+          inp.id = "impact-input";
+          inp.type = "text";
+          inp.className = "impact-news-input";
+          inp.autocomplete = "off";
+          inp.value = t;
+          inp.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); handleImpactRun().catch(console.error); } });
+          const rb = document.createElement("button");
+          rb.className = "impact-news-remove";
+          rb.textContent = "×";
+          rb.hidden = true;
+          rb.addEventListener("click", () => { row.remove(); _syncRemoveBtns(); });
+          row.appendChild(inp); row.appendChild(rb);
+          impactInputsList.appendChild(row);
+        } else {
+          addImpactNewsRow(t);
+        }
+      });
+    } else if (impactInput) {
+      impactInput.value = entry.text;
+    }
+    setImpactStatus(
+      `[Archived] ${entry.texts?.length ?? 1} events → ${entry.nodesCount} nodes (multi-news)`,
+    );
+  } else if (entry.response) {
+    impactState = buildImpactState(g, entry.response);
+    refreshEdgeVisibility();
+    applyImpactToScene(impactState);
+    if (impactClearBtn) impactClearBtn.hidden = false;
+    if (impactInput) impactInput.value = entry.text;
+    setImpactStatus(
+      `[Archived] ${entry.seedName} (${entry.seedDirection}) → ${entry.nodesCount} nodes across ${entry.maxHops} hops`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

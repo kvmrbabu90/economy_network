@@ -858,6 +858,165 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Multi-news: isolated BFS per event, then merge verdicts
+# ---------------------------------------------------------------------------
+
+def _merge_impact_results(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge per-node verdicts across multiple independent impact runs.
+
+    For each node that appears in ANY event's impacts list:
+      - Collect every non-no_effect verdict across all events.
+      - Sum positive magnitudes, sum negative magnitudes independently.
+      - Net direction = whichever mass is larger (or no_effect if both zero).
+      - Net magnitude = |pos_mass − neg_mass|, clamped to [0, 1].
+      - mixed_signals = True when both positive AND negative mass > 0.
+        Mixed-signal nodes still show their net direction but the flag lets
+        the UI render them in amber so the user knows they carry tension.
+      - hop = minimum hop across all events (closest causal chain wins).
+    """
+    # node_id → accumulator
+    acc: dict[str, dict[str, Any]] = {}
+
+    for ev_idx, event in enumerate(events):
+        ev_text = event.get("text", "")
+        for v in event.get("impacts", []):
+            nid = v.get("node_id")
+            if not nid:
+                continue
+            direction = v.get("direction", "no_effect")
+            magnitude = float(v.get("magnitude") or 0.0)
+            hop = int(v.get("hop") or 0)
+
+            if nid not in acc:
+                acc[nid] = {
+                    "node_id": nid,
+                    "name": v.get("name", ""),
+                    "type": v.get("type", ""),
+                    "positive_mass": 0.0,
+                    "negative_mass": 0.0,
+                    "min_hop": hop,
+                    "event_verdicts": [],
+                }
+            m = acc[nid]
+            if direction == "positive":
+                m["positive_mass"] += magnitude
+            elif direction == "negative":
+                m["negative_mass"] += magnitude
+            if hop < m["min_hop"]:
+                m["min_hop"] = hop
+            m["event_verdicts"].append({
+                "event_idx": ev_idx,
+                "event_text": ev_text[:120],
+                "direction": direction,
+                "magnitude": magnitude,
+                "hop": hop,
+                "reasoning": (v.get("reasoning") or "")[:200],
+            })
+
+    merged: list[dict[str, Any]] = []
+    for nid, m in acc.items():
+        pos = m["positive_mass"]
+        neg = m["negative_mass"]
+        mixed = pos > 0.0 and neg > 0.0
+
+        if pos > neg:
+            net_dir = "positive"
+            net_mag = min(1.0, pos - neg)
+        elif neg > pos:
+            net_dir = "negative"
+            net_mag = min(1.0, neg - pos)
+        else:
+            # Equal mass or both zero → no_effect at the node level,
+            # but flag as mixed if there were real signals.
+            net_dir = "no_effect"
+            net_mag = 0.0
+
+        # Mixed-signal nodes: boost floor magnitude so they stay visible.
+        if mixed and net_mag < 0.25:
+            net_mag = 0.25
+
+        # Build combined reasoning from all events that fired.
+        reasoning_parts = [
+            f"[Event {ev['event_idx'] + 1}] {ev['reasoning']}"
+            for ev in m["event_verdicts"]
+            if ev["direction"] != "no_effect" and ev["magnitude"] >= 0.1
+        ]
+
+        merged.append({
+            "node_id": nid,
+            "name": m["name"],
+            "type": m["type"],
+            "direction": net_dir,
+            "magnitude": round(net_mag, 3),
+            "hop": m["min_hop"],
+            "reasoning": " | ".join(reasoning_parts)[:400] or "no_effect across all events",
+            "via_parent": None,
+            "edge_type": None,
+            "mixed_signals": mixed,
+            "event_verdicts": m["event_verdicts"],
+        })
+
+    return merged
+
+
+def run_multi_impact(texts: list[str], *, db_path: "Path") -> dict[str, Any]:
+    """Run independent BFS per news text then merge verdicts.
+
+    Each text gets its own SQLite connection (thread-safety) and its own
+    full run_impact() call — completely isolated from the others. After
+    all finish, verdicts are merged by node_id and netted out.
+    """
+    from pathlib import Path as _Path
+    from schema.store import connect as _connect
+    from concurrent.futures import as_completed as _as_completed
+
+    texts = [t.strip() for t in (texts or []) if t.strip()]
+    if not texts:
+        return {"error": "no news texts provided", "events": [], "merged": []}
+
+    log.info("run_multi_impact: %d events", len(texts))
+
+    def _run_one(text: str) -> dict[str, Any]:
+        conn = _connect(db_path)
+        try:
+            result = run_impact(text, conn=conn)
+            return {"text": text, **result}
+        finally:
+            conn.close()
+
+    # Cap parallelism: each subprocess spawns a Claude CLI process; 4 is
+    # comfortable on a 16-GB laptop without saturating the CPU.
+    parallelism = min(len(texts), 4)
+    with ThreadPoolExecutor(max_workers=parallelism) as pool:
+        futures = {pool.submit(_run_one, t): i for i, t in enumerate(texts)}
+        results_by_idx: dict[int, dict[str, Any]] = {}
+        for future in _as_completed(futures):
+            idx = futures[future]
+            try:
+                results_by_idx[idx] = future.result()
+            except Exception as exc:
+                log.error("multi-impact event %d failed: %s", idx, exc)
+                results_by_idx[idx] = {
+                    "text": texts[idx],
+                    "error": str(exc),
+                    "impacts": [],
+                }
+
+    events = [results_by_idx[i] for i in range(len(texts))]
+    merged = _merge_impact_results(events)
+
+    return {
+        "events": events,
+        "merged": merged,
+        "provider": LLM_PROVIDER,
+        "model": "claude-code-cli" if LLM_PROVIDER == "claude" else OLLAMA_MODEL,
+        "event_count": len(texts),
+        "total_nodes": len(merged),
+        "mixed_signal_nodes": sum(1 for v in merged if v.get("mixed_signals")),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Refinement pass (Fix A)
 # ---------------------------------------------------------------------------
 
