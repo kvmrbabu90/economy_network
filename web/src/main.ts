@@ -911,7 +911,11 @@ async function handleImpactRun(): Promise<void> {
     if (texts.length === 1) {
       // Single event — existing /impact path
       const resp: ImpactResponse = await runImpact(texts[0], { provider, signal: _impactAbortController.signal });
-      if (resp.error || !resp.seed) {
+      // Success requires at least one seed — either the commodity/region seed OR
+      // one or more named-entity seeds resolved from the text. M&A / company-
+      // centric news has no commodity seed but can still propagate via entity seeds.
+      const hasAnySeeds = resp.seed != null || (Array.isArray(resp.seeds) && resp.seeds.length > 0);
+      if (resp.error || !hasAnySeeds) {
         setImpactStatus(`Failed: ${resp.error || "no seed identified"}`);
         return;
       }
