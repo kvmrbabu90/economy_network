@@ -108,6 +108,15 @@ function notifyLoading() {
   for (const fn of loadingListeners) fn(inflight > 0);
 }
 
+// Default timeout for graph/search fetches. Impact calls use a higher
+// timeout because the LLM backend can take 1–3 minutes; those go through
+// runImpact() / runMultiImpact() which carry their own AbortSignal.
+// 90 s is intentionally generous: the full-core /subgraph call (5 300+ nodes,
+// 13 000+ edges) returns a large JSON payload that can take 45–70 s over a
+// local FastAPI + SQLite stack on first load. Node/ego fetches complete in
+// under 1 s so the longer ceiling costs nothing in practice.
+const FETCH_TIMEOUT_MS = 90_000;
+
 async function get<T>(path: string, params: Record<string, string | boolean | number | undefined | null> = {}): Promise<T> {
   const url = new URL(path, API_BASE_URL);
   for (const [k, v] of Object.entries(params)) {
@@ -116,14 +125,21 @@ async function get<T>(path: string, params: Record<string, string | boolean | nu
   }
   inflight += 1;
   notifyLoading();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const resp = await fetch(url.toString(), { method: "GET" });
+    const resp = await fetch(url.toString(), { method: "GET", signal: controller.signal });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
       throw new ApiError(resp.status, `${resp.statusText} - ${body.slice(0, 200)}`);
     }
-    return (await resp.json()) as T;
+    try {
+      return (await resp.json()) as T;
+    } catch {
+      throw new Error(`${path}: server returned non-JSON response`);
+    }
   } finally {
+    clearTimeout(timeoutId);
     inflight -= 1;
     notifyLoading();
   }
@@ -268,15 +284,21 @@ export interface DescribeResponse {
   description: string;
 }
 
+// Timeout for LLM-backed calls (describe, impact). The LLM can take 1-3 min.
+const LLM_TIMEOUT_MS = 180_000;
+
 export async function describeNode(nodeId: string): Promise<DescribeResponse> {
   const url = new URL(`/describe/${encodeURI(nodeId)}`, API_BASE_URL);
   inflight += 1;
   notifyLoading();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
   try {
     const resp = await fetch(url.toString(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",
+      signal: controller.signal,
     });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
@@ -284,6 +306,7 @@ export async function describeNode(nodeId: string): Promise<DescribeResponse> {
     }
     return (await resp.json()) as DescribeResponse;
   } finally {
+    clearTimeout(timeoutId);
     inflight -= 1;
     notifyLoading();
   }
@@ -309,7 +332,11 @@ export async function runMultiImpact(
       const respBody = await resp.text().catch(() => "");
       throw new ApiError(resp.status, `${resp.statusText} - ${respBody.slice(0, 200)}`);
     }
-    return (await resp.json()) as MultiImpactResponse;
+    try {
+      return (await resp.json()) as MultiImpactResponse;
+    } catch {
+      throw new Error("/impact/multi: server returned non-JSON response");
+    }
   } finally {
     inflight -= 1;
     notifyLoading();
@@ -336,7 +363,11 @@ export async function runImpact(
       const respBody = await resp.text().catch(() => "");
       throw new ApiError(resp.status, `${resp.statusText} - ${respBody.slice(0, 200)}`);
     }
-    return (await resp.json()) as ImpactResponse;
+    try {
+      return (await resp.json()) as ImpactResponse;
+    } catch {
+      throw new Error("/impact: server returned non-JSON response");
+    }
   } finally {
     inflight -= 1;
     notifyLoading();

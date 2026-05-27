@@ -3,9 +3,19 @@
 
 import { getHealth } from "../api";
 
+let _statusInterval: ReturnType<typeof setInterval> | null = null;
+
 export function startStatusPolling(): void {
+  if (_statusInterval !== null) return; // guard against double-init
   poll();
-  setInterval(poll, 15_000); // mild background poll; nothing aggressive
+  _statusInterval = setInterval(poll, 15_000); // mild background poll; nothing aggressive
+}
+
+export function stopStatusPolling(): void {
+  if (_statusInterval !== null) {
+    clearInterval(_statusInterval);
+    _statusInterval = null;
+  }
 }
 
 async function poll(): Promise<void> {
@@ -15,7 +25,7 @@ async function poll(): Promise<void> {
   try {
     const h = await getHealth();
     if (h.status !== "ok" || h.customer_of_rows_in_db !== 0) {
-      pill.classList.remove("ok");
+      pill.classList.remove("ok", "warn");
       pill.classList.add("error");
       text.textContent = `INVARIANT VIOLATED (${h.customer_of_rows_in_db} rows)`;
       return;

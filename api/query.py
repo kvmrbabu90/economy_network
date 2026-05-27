@@ -52,7 +52,28 @@ DERIVED_KEY_PREFIX = "derived:customer_of:"
 # ---------------------------------------------------------------------------
 
 def _node_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    metadata = json.loads(row["metadata"] or "{}")
+    try:
+        metadata = json.loads(row["metadata"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        metadata = {}
+    try:
+        tickers = json.loads(row["tickers"] or "[]")
+        if not isinstance(tickers, list):
+            tickers = []
+    except (json.JSONDecodeError, TypeError):
+        tickers = []
+    try:
+        identifiers = json.loads(row["identifiers"] or "{}")
+        if not isinstance(identifiers, dict):
+            identifiers = {}
+    except (json.JSONDecodeError, TypeError):
+        identifiers = {}
+    try:
+        aliases = json.loads(row["aliases"] or "[]")
+        if not isinstance(aliases, list):
+            aliases = []
+    except (json.JSONDecodeError, TypeError):
+        aliases = []
     return {
         "key": row["id"],
         "attributes": {
@@ -61,9 +82,9 @@ def _node_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
             "sector": row["sector"],
             "industry": row["industry"],
             "country": row["country"],
-            "tickers": json.loads(row["tickers"] or "[]"),
-            "identifiers": json.loads(row["identifiers"] or "{}"),
-            "aliases": json.loads(row["aliases"] or "[]"),
+            "tickers": tickers,
+            "identifiers": identifiers,
+            "aliases": aliases,
             "provisional": bool(metadata.get("provisional", False)),
             "identity_unverified": bool(metadata.get("identity_unverified", False)),
             "metadata": metadata,
@@ -72,7 +93,10 @@ def _node_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _edge_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    extra = json.loads(row["additional_provenance"] or "[]")
+    try:
+        extra = json.loads(row["additional_provenance"] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        extra = []
     return {
         "key": row["id"],
         "source": row["source"],
@@ -105,7 +129,10 @@ def _derived_customer_of(supplies_row: sqlite3.Row) -> dict[str, Any]:
     /edge endpoint can resolve to real provenance.
     """
     underlying_id = supplies_row["id"]
-    extra = json.loads(supplies_row["additional_provenance"] or "[]")
+    try:
+        extra = json.loads(supplies_row["additional_provenance"] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        extra = []
     return {
         "key": DERIVED_KEY_PREFIX + underlying_id,
         "source": supplies_row["target"],  # reversed
@@ -154,8 +181,13 @@ def resolve_id(conn: sqlite3.Connection, raw_id: str) -> Optional[str]:
         return row["node_id"]
     # Normalized lookup -- use the resolver's normalize() so the same
     # normalization that built the table is used at read time.
-    from pipeline.resolve import normalize as _normalize  # local import: avoid heavy dep at module load
-    norm = _normalize(raw_id)
+    try:
+        from pipeline.resolve import normalize as _normalize  # local import: avoid heavy dep at module load
+        norm = _normalize(raw_id)
+    except ImportError:
+        # Pipeline module not installed in this environment; fall back to
+        # simple lower-casing so at least exact lowercase matches work.
+        norm = raw_id.lower().strip()
     if not norm:
         return None
     row = conn.execute(
@@ -448,7 +480,11 @@ class AliasIndex:
 
     def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
         """Rank candidates by exact, prefix, and fuzzy score on alias_normalized."""
-        from pipeline.resolve import normalize as _normalize
+        try:
+            from pipeline.resolve import normalize as _normalize
+        except ImportError:
+            def _normalize(s: str) -> str:  # type: ignore[misc]
+                return s.lower().strip()
 
         q_norm = _normalize(query)
         if not q_norm:

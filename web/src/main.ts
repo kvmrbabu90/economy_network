@@ -1,6 +1,8 @@
 // Entrypoint. Wires Sigma + UI together.
 
 import Sigma from "sigma";
+import { runLanding } from "./landing";
+import { loadSubgraph, saveSubgraph, loadPositions, savePositions } from "./graph-cache";
 
 import {
   ApiEdge,
@@ -36,6 +38,7 @@ import {
   updateBubbleAppearance,
 } from "./bubbles";
 import {
+  applyImpact3D,
   is3DRunning,
   resize3D,
   start3D,
@@ -51,9 +54,7 @@ import { fetchHeadlines, type Headline } from "./news";
 import {
   buildImpactState,
   buildMultiImpactState,
-  dimColor,
   tintColor,
-  tintColorRGB,
   type ImpactState,
 } from "./impact";
 import {
@@ -198,7 +199,7 @@ const NODE_SCALE_STEP = 0.15;
 
 // Impact-overlay state. When set, the node + edge reducers below
 // tint/dim everything accordingly. The 3D mesh tinting is applied
-// separately in applyImpactToScene().
+// via applyImpact3D() in render3d.ts.
 let impactState: ImpactState | null = null;
 
 // Build the inspector's contextual extras: surfaces the LLM verdict
@@ -295,7 +296,7 @@ function refreshEdgeVisibility(): void {
         color: tint ?? "#1e2228",
         size: isImpacted ? baseSize * 1.8 : baseSize * 0.45,
         zIndex: isImpacted ? 10 : 0,
-        forceLabel: isImpacted && (verdict!.hop === 0 || verdict!.magnitude >= 0.6),
+        forceLabel: isImpacted && (verdict?.hop === 0 || (verdict?.magnitude ?? 0) >= 0.6),
       };
     }
     return { ...nattrs, label, hidden: hide, size: baseSize };
@@ -390,24 +391,40 @@ let _fvResponse: SubgraphResponse | null = null;
 let _fvCacheKey = "";
 let _fvPositions: Map<string, { x: number; y: number }> | null = null;
 let _graphIsFullView = false;
+let _fvInFlight = false; // guard against concurrent loadFullCore() calls
+let _fvInFlightPromise: Promise<void> | null = null; // shared promise for in-flight callers
 
 function _fvKey(): string {
   return `${filters.includeProvisional}:${filters.includeInferred}`;
 }
 
-async function loadFullCore(): Promise<void> {
+// skipLayout=true: only populate graphology `g` — skip FA2 and camera reset.
+// Used by the background prefetch during the landing overlay so that the
+// synchronous FA2 pass (~2 s for 5 000+ nodes) never blocks the main thread
+// while the landing animation is running. Layout is deferred to the next
+// non-skipLayout call (Tier 2.25 below).
+async function loadFullCore(skipLayout = false): Promise<void> {
   const cacheKey = _fvKey();
 
-  // Tier 1: already showing the full graph with the same filter settings.
-  // Nothing to rebuild — just snap the camera back to the overview.
+  // Tier 1: fully loaded and laid out — nothing to do except reset camera.
   if (_graphIsFullView && _fvCacheKey === cacheKey) {
-    cameraReset();
+    if (!skipLayout) cameraReset();
     return;
   }
 
-  // Tier 2: we have a cached response + saved positions. Skip the network
-  // call and FA2 entirely; just restore graph state from memory.
+  // Guard: a data load is already in flight.
+  // skipLayout callers just wait for the shared promise.
+  // Layout callers chain a follow-up so layout runs once data is ready.
+  if (_fvInFlight) {
+    const inflight = _fvInFlightPromise ?? Promise.resolve();
+    if (skipLayout) return inflight;
+    return inflight.then(() => { if (!_graphIsFullView) return loadFullCore(false); });
+  }
+
+  // Tier 2: in-memory cache with saved positions (same session, same filters).
+  // Skip network + FA2 entirely; just restore graph state from RAM.
   if (_fvResponse && _fvCacheKey === cacheKey && _fvPositions) {
+    if (skipLayout) return; // data already in g, nothing more needed
     replaceGraph(g, _fvResponse.nodes, _fvResponse.edges);
     restyleAfterMerge(g);
     // Restore FA2 positions so the graph appears instantly settled.
@@ -424,43 +441,183 @@ async function loadFullCore(): Promise<void> {
     return;
   }
 
-  // Tier 3: cold load — hit the API and run layout from scratch.
-  showGraphOverlay();
-  _graphIsFullView = false;
-  try {
-    // /subgraph seeded at SEC at hops=3 covers every filer + their high-confidence
-    // neighbors. Provisional layer respects the user's current toggle (default off).
-    const resp = await getSubgraph(FULL_VIEW_SEED, {
-      hops: FULL_VIEW_HOPS,
-      includeProvisional: filters.includeProvisional,
-      includeInferred: filters.includeInferred,
-    });
-    _fvResponse = resp;
-    _fvCacheKey = cacheKey;
-    _fvPositions = null; // will be populated after layout below
-    setGraphOverlayStage(
-      `Rendering ${resp.nodes.length.toLocaleString()} nodes, ${resp.edges.length.toLocaleString()} edges…`
-    );
-    replaceGraph(g, resp.nodes, resp.edges);
-    restyleAfterMerge(g);
-    applyLayout();
-    cameraReset();
-    // Snapshot FA2 node positions so the next "Full graph" press
-    // can restore them without re-running the physics simulation.
-    if (layoutMode === "force") {
-      const snap: Map<string, { x: number; y: number }> = new Map();
-      g.forEachNode((id) => {
-        snap.set(id, {
-          x: g.getNodeAttribute(id, "x") ?? 0,
-          y: g.getNodeAttribute(id, "y") ?? 0,
-        });
-      });
-      _fvPositions = snap;
+  // Tier 2.25: IDB response is cached in _fvResponse but the graph may be
+  // empty (background prefetch skipped replaceGraph to avoid blocking the
+  // landing animation) or already populated (prior non-skipLayout call).
+  // Try to load saved FA2 positions from IDB — avoids the 6+ s synchronous
+  // FA2 pass on every page reload. Falls back to FA2 if no positions saved.
+  if (_fvResponse && _fvCacheKey === cacheKey && !skipLayout) {
+    // Guard: if another Tier 2.25 call is already in flight, chain behind it.
+    // Without this, runLanding().then() can trigger a second concurrent call
+    // that races on the same IDB connection, causing onblocked hangs.
+    if (_fvInFlight) {
+      const inflight = _fvInFlightPromise ?? Promise.resolve();
+      return inflight.then(() => { if (!_graphIsFullView) return loadFullCore(false); });
     }
-    _graphIsFullView = true;
-  } finally {
-    hideGraphOverlay();
+    _fvInFlight = true;
+    _fvInFlightPromise = (async () => {
+      try {
+        showGraphOverlay();
+        if (g.order === 0) {
+          // Graph is empty — background prefetch only stored _fvResponse without
+          // calling replaceGraph (to keep the main thread free during landing).
+          // Populate now with overlay feedback.
+          setGraphOverlayStage(
+            `Loading ${_fvResponse!.nodes.length.toLocaleString()} nodes…`
+          );
+          replaceGraph(g, _fvResponse!.nodes, _fvResponse!.edges);
+          restyleAfterMerge(g);
+        }
+
+        // Try to restore previously saved FA2 positions — skips the 6+ s FA2 block.
+        setGraphOverlayStage("Restoring layout…");
+        const savedPositions = await loadPositions(cacheKey);
+        if (savedPositions) {
+          savedPositions.forEach((pos, id) => {
+            if (g.hasNode(id)) {
+              g.setNodeAttribute(id, "x", pos.x);
+              g.setNodeAttribute(id, "y", pos.y);
+            }
+          });
+          _fvPositions = savedPositions;
+          refreshEdgeVisibility();
+          renderer.refresh();
+        } else {
+          // No saved positions — run FA2 (slow first time, then saved for next load).
+          setGraphOverlayStage("Computing layout…");
+          applyLayout();
+          if (layoutMode === "force") {
+            const snap: Map<string, { x: number; y: number }> = new Map();
+            g.forEachNode((id) => {
+              snap.set(id, {
+                x: g.getNodeAttribute(id, "x") ?? 0,
+                y: g.getNodeAttribute(id, "y") ?? 0,
+              });
+            });
+            _fvPositions = snap;
+            savePositions(cacheKey, _fvPositions); // fire-and-forget — persists for next reload
+          }
+        }
+
+        cameraReset();
+        hideGraphOverlay();
+        _graphIsFullView = true;
+      } finally {
+        _fvInFlight = false;
+        _fvInFlightPromise = null;
+      }
+    })();
+    return _fvInFlightPromise;
   }
+
+  // Tiers 2.5 + 3 both async — set the flight guard before any await.
+  _graphIsFullView = false;
+  _fvInFlight = true;
+
+  const loadPromise: Promise<void> = (async () => {
+    try {
+      // ── Tier 2.5: IndexedDB persistent cache ────────────────────────────
+      // On page refresh the in-memory cache is gone but IDB persists.
+      // Reading 5 000+ nodes from IDB takes ~100–200 ms vs 45–70 s from API.
+      const cached = await loadSubgraph(cacheKey);
+      if (cached) {
+        _fvResponse = cached;
+        _fvCacheKey = cacheKey;
+        _fvPositions = null;
+        if (!skipLayout) {
+          // Landing is gone — safe to populate the graph now.
+          showGraphOverlay();
+          setGraphOverlayStage(
+            `Restoring ${cached.nodes.length.toLocaleString()} nodes from cache…`
+          );
+          replaceGraph(g, cached.nodes, cached.edges);
+          restyleAfterMerge(g);
+
+          // Try saved positions first — avoids the 6+ s FA2 block.
+          setGraphOverlayStage("Restoring layout…");
+          const savedPos = await loadPositions(cacheKey);
+          if (savedPos) {
+            savedPos.forEach((pos, id) => {
+              if (g.hasNode(id)) {
+                g.setNodeAttribute(id, "x", pos.x);
+                g.setNodeAttribute(id, "y", pos.y);
+              }
+            });
+            _fvPositions = savedPos;
+            refreshEdgeVisibility();
+            renderer.refresh();
+          } else {
+            setGraphOverlayStage("Computing layout…");
+            applyLayout();
+            if (layoutMode === "force") {
+              const snap: Map<string, { x: number; y: number }> = new Map();
+              g.forEachNode((id) => {
+                snap.set(id, {
+                  x: g.getNodeAttribute(id, "x") ?? 0,
+                  y: g.getNodeAttribute(id, "y") ?? 0,
+                });
+              });
+              _fvPositions = snap;
+              savePositions(cacheKey, _fvPositions); // fire-and-forget
+            }
+          }
+          cameraReset();
+          hideGraphOverlay();
+          _graphIsFullView = true;
+        }
+        // skipLayout=true (background prefetch): just store _fvResponse —
+        // do NOT call replaceGraph/restyleAfterMerge here because those fire
+        // Sigma callbacks for every node/edge and block the main thread.
+        // Tier 2.25 will do the full setup when the user launches.
+        return;
+      }
+
+      // ── Tier 3: cold API fetch ───────────────────────────────────────────
+      // IDB miss (first ever load, or cache expired after 24 h).
+      showGraphOverlay();
+      try {
+        const resp = await getSubgraph(FULL_VIEW_SEED, {
+          hops: FULL_VIEW_HOPS,
+          includeProvisional: filters.includeProvisional,
+          includeInferred: filters.includeInferred,
+        });
+        // Persist to IDB — fire-and-forget, never delays the render pipeline.
+        saveSubgraph(cacheKey, resp);
+
+        _fvResponse = resp;
+        _fvCacheKey = cacheKey;
+        _fvPositions = null;
+        setGraphOverlayStage(
+          `Rendering ${resp.nodes.length.toLocaleString()} nodes, ${resp.edges.length.toLocaleString()} edges…`
+        );
+        replaceGraph(g, resp.nodes, resp.edges);
+        restyleAfterMerge(g);
+        if (!skipLayout) {
+          applyLayout();
+          cameraReset();
+          if (layoutMode === "force") {
+            const snap: Map<string, { x: number; y: number }> = new Map();
+            g.forEachNode((id) => {
+              snap.set(id, {
+                x: g.getNodeAttribute(id, "x") ?? 0,
+                y: g.getNodeAttribute(id, "y") ?? 0,
+              });
+            });
+            _fvPositions = snap;
+          }
+          _graphIsFullView = true;
+        }
+      } finally {
+        hideGraphOverlay();
+      }
+    } finally {
+      _fvInFlight = false;
+      _fvInFlightPromise = null;
+    }
+  })();
+
+  _fvInFlightPromise = loadPromise;
+  return loadPromise;
 }
 
 async function recenterOn(id: string): Promise<void> {
@@ -522,6 +679,10 @@ renderer.on("clickNode", (event) => {
     toggleSector(sector);
     return;
   }
+  // In impact mode, only tinted (active chain) nodes respond to clicks.
+  // Dim/grey nodes are still rendered but should not open the inspector
+  // or trigger expansion -- clicking them is a mis-click, not intent.
+  if (impactState && tintColor(impactState.byNode.get(id)) === null) return;
   if (pendingClick) {
     clearTimeout(pendingClick.timer);
     pendingClick = null;
@@ -547,9 +708,14 @@ renderer.on("doubleClickNode", (event) => {
 });
 
 // Hovering shows node detail without committing to a navigation.
+// In impact mode, dim (no-tint) nodes are intentionally suppressed -- hovering
+// them would replace the active inspector with an irrelevant "no effect" node,
+// which is confusing when the user is reading a red/green node's panel.
 renderer.on("enterNode", (event) => {
-  const attrs = g.getNodeAttributes(event.node);
-  showNode(attrs.apiNode, g, inspectorExtrasFor(event.node));
+  const id = event.node;
+  if (impactState && tintColor(impactState.byNode.get(id)) === null) return;
+  const attrs = g.getNodeAttributes(id);
+  showNode(attrs.apiNode, g, inspectorExtrasFor(id));
   hideMorningBrief();
 });
 renderer.on("leaveNode", () => {
@@ -615,6 +781,12 @@ let viewMode: "2d" | "3d" | "globe" = "2d";
 
 function setView(next: "2d" | "3d" | "globe") {
   if (next === viewMode) return;
+  // Cancel any pending single-click action before switching views to avoid
+  // firing a expand/recenter in the wrong view after the transition.
+  if (pendingClick) {
+    clearTimeout(pendingClick.timer);
+    pendingClick = null;
+  }
   viewMode = next;
   document.querySelectorAll<HTMLButtonElement>(".view-tab").forEach((btn) => {
     btn.classList.toggle("is-active", btn.dataset.view === next);
@@ -631,7 +803,20 @@ function setView(next: "2d" | "3d" | "globe") {
       container3d,
       g,
       {
-        onNodeClick: (id) => { hideMorningBrief(); expandFrom(id).catch(console.error); },
+        onNodeClick: (id) => {
+          // In impact mode, only tinted (active chain) nodes respond to clicks.
+          // The globe renders every node as a sphere -- dim ones are still
+          // ray-cast-able, so stray clicks on grey spheres must be swallowed.
+          if (impactState && tintColor(impactState.byNode.get(id)) === null) return;
+          hideMorningBrief();
+          setInspectorCollapsed(false);
+          // Show node details immediately from what's already in the graph,
+          // then expand its neighbours in the background.
+          if (g.hasNode(id)) {
+            showNode(g.getNodeAttributes(id).apiNode, g, inspectorExtrasFor(id));
+          }
+          expandFrom(id).catch(console.error);
+        },
         onNodeDoubleClick: (id) => recenterOn(id).catch(console.error),
         onEdgeClick: async (id) => {
           hideMorningBrief();
@@ -645,18 +830,12 @@ function setView(next: "2d" | "3d" | "globe") {
       },
       { layout: next === "globe" ? "globe" : "ball", filterState: filters },
     );
-    // CRITICAL: re-apply impact tinting if an impact run is active.
-    // start3D() creates a fresh scene with default colours; without this
-    // the user switches 2D -> 3D/Globe and loses the red/green tint
-    // even though impactState is still set. Globe arcs need a moment
-    // for buildArcs() rAF callbacks to populate geometry, so we
-    // schedule the impact re-tint a few times to win whichever frame
-    // wins last.
+    // Re-apply impact tinting when switching to 3D while an impact is active.
+    // start3D()'s nodeColor/nodeVisibility closures read _currentImpactState
+    // directly, so node tinting is already correct from the first render.
+    // applyImpact3D() handles link tinting (scheduled with delays so arcs settle).
     if (impactState) {
-      const reapply = () => applyImpactToScene(impactState);
-      requestAnimationFrame(reapply);
-      setTimeout(reapply, 200);
-      setTimeout(reapply, 800);
+      applyImpact3D(g, impactState, filters);
     }
   } else {
     stop3D();
@@ -675,7 +854,9 @@ document.querySelectorAll<HTMLButtonElement>(".view-tab").forEach((btn) => {
 
 document.querySelectorAll<HTMLButtonElement>(".layout-tab").forEach((btn) => {
   btn.addEventListener("click", () => {
-    const next = (btn.dataset.layout as "force" | "sector" | undefined) ?? "force";
+    const rawLayout = btn.dataset.layout;
+    const next: "force" | "sector" | "bubble" =
+      rawLayout === "sector" ? "sector" : rawLayout === "bubble" ? "bubble" : "force";
     if (next === layoutMode) return;
     layoutMode = next;
     document.querySelectorAll<HTMLButtonElement>(".layout-tab").forEach((b) => {
@@ -697,8 +878,21 @@ function refreshAll() {
 // We monkey-patch in a tiny way: the original functions call renderer.refresh();
 // we ALSO call update3D when the 3D renderer is alive. The cheapest path is
 // to add a global graph-change listener -- graphology emits events.
-g.on("nodeAdded", () => { if (is3DRunning()) update3D(g, filters); });
-g.on("edgeAdded", () => { if (is3DRunning()) update3D(g, filters); });
+//
+// Debounce node/edge additions so a bulk mergeFromApi (50 nodes + 100 edges)
+// doesn't trigger 150 redundant update3D calls. A single rAF deferred call
+// wins the race and fires once per tick at most.
+let _3dUpdateScheduled = false;
+function _schedule3DUpdate() {
+  if (!is3DRunning() || _3dUpdateScheduled) return;
+  _3dUpdateScheduled = true;
+  requestAnimationFrame(() => {
+    _3dUpdateScheduled = false;
+    if (is3DRunning()) update3D(g, filters);
+  });
+}
+g.on("nodeAdded", _schedule3DUpdate);
+g.on("edgeAdded", _schedule3DUpdate);
 g.on("cleared",   () => { if (is3DRunning()) update3D(g, filters); });
 
 // Resize handling for the 3D canvas.
@@ -732,94 +926,6 @@ document.addEventListener("keydown", (ev) => {
 // ---------------------------------------------------------------------------
 // Impact propagation -- news/hypothetical -> tinted overlay
 // ---------------------------------------------------------------------------
-
-function applyImpactToScene(state: ImpactState | null): void {
-  // 3D / Globe mesh tinting. Walk the live force-graph instance's
-  // scene; for each node mesh, replace its material colour with the
-  // verdict tint (or a dim grey if outside the chain). Reset on null.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const inst = (window as any).__force3D;
-  if (!inst) return;
-
-  // Fix hover tooltips: update nodeLabel so non-impacted nodes return ""
-  // even if their invisible geometry is still hit by 3d-force-graph's
-  // raycaster. Must be reset to the default label fn when clearing.
-  if (state) {
-    inst.nodeLabel((n: { id: string; label: string }) => {
-      const tint = tintColorRGB(state.byNode.get(n.id));
-      return tint ? `<span style="color:#e8e3da">${n.label}</span>` : "";
-    });
-  } else {
-    inst.nodeLabel((n: { label: string }) => `<span style="color:#e8e3da">${n.label}</span>`);
-  }
-
-  const scene = inst.scene();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  scene.traverse((obj: any) => {
-    if (obj.__graphObjType === "node") {
-      // 3d-force-graph node objects are THREE.Groups (no material on the
-      // group itself). NEVER gate visibility on obj.material — it will
-      // always be falsy for groups, leaving every node permanently visible.
-      // Instead: set obj.visible on the group (children inherit it) and
-      // walk children to apply tint color to the actual sphere Mesh.
-      const data = obj.__data;
-      if (state) {
-        const verdict = data ? state.byNode.get(data.id) : undefined;
-        const tint = tintColorRGB(verdict);
-        obj.visible = tint !== null;
-        if (tint) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const applyRGB = (o: any) => {
-            if (o.material && o.material.color) {
-              o.material.color.setRGB(tint.r, tint.g, tint.b);
-              o.material.opacity = 1.0;
-              o.material.transparent = true;
-              o.material.needsUpdate = true;
-            }
-          };
-          applyRGB(obj);
-          obj.children?.forEach(applyRGB);
-        }
-      } else if (data?.color) {
-        obj.visible = true;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const applyColor = (o: any) => {
-          if (o.material && o.material.color) {
-            o.material.color.set(data.color);
-            o.material.opacity = 0.95;
-            o.material.transparent = true;
-            o.material.needsUpdate = true;
-          }
-        };
-        applyColor(obj);
-        obj.children?.forEach(applyColor);
-      }
-    } else if (obj.__graphObjType === "link" && obj.material && obj.material.color) {
-      const data = obj.__data;
-      if (state) {
-        const src = data && data.source && data.source.id;
-        const tgt = data && data.target && data.target.id;
-        const srcFired = src ? tintColorRGB(state.byNode.get(src)) !== null : false;
-        const tgtFired = tgt ? tintColorRGB(state.byNode.get(tgt)) !== null : false;
-        const inChain = srcFired && tgtFired;
-        if (inChain) {
-          obj.visible = true;
-          obj.material.color.setRGB(1.0, 1.0, 1.0);  // pure white
-          obj.material.opacity = 0.9;
-          obj.material.transparent = true;
-        } else {
-          obj.visible = false;
-        }
-      } else if (data && data.color) {
-        obj.visible = true;
-        obj.material.color.set(data.color);
-        obj.material.opacity = data.below ? 0.30 : 0.75;
-        obj.material.transparent = true;
-      }
-      obj.material.needsUpdate = true;
-    }
-  });
-}
 
 const impactInput = document.getElementById("impact-input") as HTMLInputElement | null;
 const impactInputsList = document.getElementById("impact-inputs-list") as HTMLDivElement | null;
@@ -871,9 +977,7 @@ function addImpactNewsRow(prefill = ""): void {
   input.placeholder = "Another news event…";
   input.autocomplete = "off";
   input.value = prefill;
-  input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") { ev.preventDefault(); handleImpactRun().catch(console.error); }
-  });
+  // Enter key is handled by delegated listener on impactInputsList; no per-input listener needed.
 
   const removeBtn = document.createElement("button");
   removeBtn.className = "impact-news-remove";
@@ -895,14 +999,26 @@ if (impactAddNewsBtn) {
   impactAddNewsBtn.addEventListener("click", () => addImpactNewsRow());
 }
 
+// Flag to prevent concurrent multi-impact fetches (the AbortController
+// only cancels the current one; a second call starting before abort
+// completes would still race). Multi-path shares the same _impactAbortController
+// mechanism but an extra flag makes the guard explicit for both paths.
+let _impactInFlight = false;
+
 async function handleImpactRun(): Promise<void> {
   if (!impactRunBtn) return;
+  // Guard: prevent a second concurrent impact run (e.g. rapid double-click
+  // on the Run button or Enter key). The button is disabled below, but the
+  // check here is authoritative so the first concurrent call wins.
+  if (impactRunBtn.disabled) return;
+  if (_impactInFlight) return;
   const texts = getNewsTexts();
   if (!texts.length) return;
   const provider = (impactProviderEl?.value as "claude" | "ollama" | undefined) ?? "claude";
   const niceProvider = provider === "claude" ? "Claude" : "Gemma";
 
   impactRunBtn.disabled = true;
+  _impactInFlight = true;
   setImpactStatus(null);
   showImpactOverlay(provider);
   _impactAbortController = new AbortController();
@@ -919,9 +1035,19 @@ async function handleImpactRun(): Promise<void> {
         setImpactStatus(`Failed: ${resp.error || "no seed identified"}`);
         return;
       }
+      // If the graph hasn't been loaded yet (search-mode start or impact run
+      // straight from the morning brief), load the full graph now so the
+      // impacted nodes are actually present in `g` for the reducer to tint.
+      if (g.order === 0) {
+        hideImpactOverlay();   // graph overlay takes over while loading
+        await loadFullCore();
+      }
       impactState = buildImpactState(g, resp);
       refreshEdgeVisibility();
-      applyImpactToScene(impactState);
+      // applyImpact3D sets _currentImpactState and triggers a kapsule re-digest
+      // so nodeColor/nodeVisibility closures re-evaluate with tint colours.
+      // The delay retries inside applyImpact3D handle arc-settle timing.
+      applyImpact3D(g, impactState, filters);
       if (impactClearBtn) impactClearBtn.hidden = false;
       const seedNames = resp.seeds && resp.seeds.length > 0
         ? resp.seeds.map(s => `${s.name} (${s.direction})`).join(", ")
@@ -932,15 +1058,20 @@ async function handleImpactRun(): Promise<void> {
       saveToArchive(texts[0], provider, resp);
 
     } else {
-      // Multi-event — /impact/multi path (no AbortSignal; runs in parallel server-side)
-      const resp: MultiImpactResponse = await runMultiImpact(texts, { provider });
+      // Multi-event — /impact/multi path
+      const resp: MultiImpactResponse = await runMultiImpact(texts, { provider, signal: _impactAbortController.signal });
       if (resp.error) {
         setImpactStatus(`Failed: ${resp.error}`);
         return;
       }
+      // Same guard as single-event: ensure the graph is populated first.
+      if (g.order === 0) {
+        hideImpactOverlay();
+        await loadFullCore();
+      }
       impactState = buildMultiImpactState(g, resp);
       refreshEdgeVisibility();
-      applyImpactToScene(impactState);
+      applyImpact3D(g, impactState, filters);
       if (impactClearBtn) impactClearBtn.hidden = false;
       const mixedCount = resp.mixed_signal_nodes ?? 0;
       setImpactStatus(
@@ -958,6 +1089,7 @@ async function handleImpactRun(): Promise<void> {
     }
   } finally {
     _impactAbortController = null;
+    _impactInFlight = false;
     hideImpactOverlay();
     impactRunBtn.disabled = false;
   }
@@ -966,9 +1098,12 @@ async function handleImpactRun(): Promise<void> {
 function handleImpactClear(): void {
   impactState = null;
   refreshEdgeVisibility();
-  applyImpactToScene(null);
+  applyImpact3D(g, null, filters);
   if (impactClearBtn) impactClearBtn.hidden = true;
   setImpactStatus(null);
+  // Reset added-headline tracking so the morning brief buttons re-enable.
+  _addedHeadlines.clear();
+  if (_currentHeadlines.length > 0) renderMorningBrief(_currentHeadlines);
   // Reset to single input row
   if (impactInputsList) {
     impactInputsList.innerHTML = "";
@@ -980,9 +1115,7 @@ function handleImpactClear(): void {
     input.className = "impact-news-input";
     input.placeholder = "Describe a news event — e.g. 'Tesla secures battery deal with Panasonic'";
     input.autocomplete = "off";
-    input.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter") { ev.preventDefault(); handleImpactRun().catch(console.error); }
-    });
+    // Enter key is handled by delegated listener on impactInputsList.
     const removeBtn = document.createElement("button");
     removeBtn.className = "impact-news-remove";
     removeBtn.title = "Remove this news item";
@@ -998,9 +1131,20 @@ function handleImpactClear(): void {
 }
 
 if (impactRunBtn) impactRunBtn.addEventListener("click", () => { handleImpactRun().catch(console.error); });
-if (impactInput) impactInput.addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter") { ev.preventDefault(); handleImpactRun().catch(console.error); }
-});
+// Use event delegation on the container so newly-created rows (after Clear)
+// also trigger the run — stale references to individual input elements break.
+if (impactInputsList) {
+  impactInputsList.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && (ev.target as HTMLElement).classList.contains("impact-news-input")) {
+      ev.preventDefault();
+      handleImpactRun().catch(console.error);
+    }
+  });
+} else if (impactInput) {
+  impactInput.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); handleImpactRun().catch(console.error); }
+  });
+}
 if (impactClearBtn) impactClearBtn.addEventListener("click", handleImpactClear);
 if (impactCancelBtn) impactCancelBtn.addEventListener("click", () => {
   _impactAbortController?.abort();
@@ -1125,13 +1269,14 @@ function setInspectorCollapsed(collapsed: boolean): void {
   _inspectorAppEl.classList.toggle("inspector-collapsed", collapsed);
   _inspectorToggleBtn.textContent = collapsed ? "›" : "‹";
   _inspectorToggleBtn.title = collapsed ? "Expand inspector" : "Collapse inspector";
-  localStorage.setItem("inspectorCollapsed", String(collapsed));
+  try { localStorage.setItem("inspectorCollapsed", String(collapsed)); } catch { /* quota or private mode */ }
 }
 
 // Default: collapsed unless the user explicitly opened it in a previous session.
 (function wireInspectorToggle() {
   if (!_inspectorAppEl || !_inspectorToggleBtn) return;
-  const stored = localStorage.getItem("inspectorCollapsed");
+  let stored: string | null = null;
+  try { stored = localStorage.getItem("inspectorCollapsed"); } catch { /* private mode */ }
   // Default: EXPANDED so the Morning Brief is visible on first visit.
   // Only collapse if the user explicitly did so ("true" stored).
   setInspectorCollapsed(stored === "true");
@@ -1187,9 +1332,9 @@ function renderArchiveList(): void {
       </div>
       <div class="archive-entry-text">${escapeHtml(e.text)}</div>
       <div class="archive-entry-meta">
-        <span>${e.nodesCount} nodes</span>
-        <span>${e.maxHops} hops</span>
-        <span>${e.provider}</span>
+        <span>${escapeHtml(String(e.nodesCount))} nodes</span>
+        <span>${escapeHtml(String(e.maxHops))} hops</span>
+        <span>${escapeHtml(e.provider)}</span>
       </div>
       <div class="archive-entry-time">
         <span>${relativeTime(e.timestamp)}</span>
@@ -1219,10 +1364,14 @@ async function restoreFromArchive(entry: ArchiveEntry): Promise<void> {
   // Ensure the full graph is loaded so all impacted nodes are present.
   await loadFullCore();
 
+  // Reset headline "added" tracking so the morning brief reflects the
+  // restored state cleanly (not the previous session's added state).
+  _addedHeadlines.clear();
+
   if (entry.isMulti && entry.multiResponse) {
     impactState = buildMultiImpactState(g, entry.multiResponse);
     refreshEdgeVisibility();
-    applyImpactToScene(impactState);
+    applyImpact3D(g, impactState, filters);
     if (impactClearBtn) impactClearBtn.hidden = false;
     // Restore multi-input rows
     if (impactInputsList && entry.texts && entry.texts.length > 1) {
@@ -1237,7 +1386,7 @@ async function restoreFromArchive(entry: ArchiveEntry): Promise<void> {
           inp.className = "impact-news-input";
           inp.autocomplete = "off";
           inp.value = t;
-          inp.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); handleImpactRun().catch(console.error); } });
+          // Enter key is handled by delegated listener on impactInputsList.
           const rb = document.createElement("button");
           rb.className = "impact-news-remove";
           rb.textContent = "×";
@@ -1258,9 +1407,12 @@ async function restoreFromArchive(entry: ArchiveEntry): Promise<void> {
   } else if (entry.response) {
     impactState = buildImpactState(g, entry.response);
     refreshEdgeVisibility();
-    applyImpactToScene(impactState);
+    applyImpact3D(g, impactState, filters);
     if (impactClearBtn) impactClearBtn.hidden = false;
-    if (impactInput) impactInput.value = entry.text;
+    // Prefer the live first-row input (rebuilt by handleImpactClear) over the
+    // possibly-detached module-level impactInput reference.
+    const _firstInput = impactInputsList?.querySelector<HTMLInputElement>(".impact-news-input") ?? impactInput;
+    if (_firstInput) _firstInput.value = entry.text;
     setImpactStatus(
       `[Archived] ${entry.seedName} (${entry.seedDirection}) → ${entry.nodesCount} nodes across ${entry.maxHops} hops`,
     );
@@ -1303,3 +1455,47 @@ async function restoreFromArchive(entry: ArchiveEntry): Promise<void> {
     console.error("initial load failed", err);
   }
 })();
+
+// ---------------------------------------------------------------------------
+// Landing intro — shown on every page load.
+// The overlay renders its own standalone Three.js globe (no nodes/edges) and
+// plays the "So What?" animation. After dismiss, activate Globe mode so the
+// app opens on the globe view directly.
+// ---------------------------------------------------------------------------
+
+// Pre-fetch: populate g with node/edge data while the landing animation plays.
+// skipLayout=true so FA2 (synchronous, ~2 s for 5 000+ nodes) never runs on
+// the main thread during the animation — that would freeze the spinning globe.
+// Layout is deferred to the post-landing loadFullCore() call (Tier 2.25).
+loadFullCore(true).catch(console.error);
+
+runLanding().then(() => {
+  // ── Futuristic launch transition ──────────────────────────────────────
+  // A bright scan line sweeps the screen while the dashboard flashes in.
+  const scanEl = document.createElement("div");
+  scanEl.className = "launch-scan-overlay";
+  document.body.appendChild(scanEl);
+
+  // Flash-overexposure reveal on the main app.
+  const appEl = document.getElementById("app");
+  appEl?.classList.add("dashboard-reveal");
+
+  // Switch to Globe mode. start3D() reads whatever is already in `g`, so
+  // if the background fetch finished the globe populates instantly.
+  const globeTab = document.querySelector<HTMLButtonElement>('[data-view="globe"]');
+  globeTab?.click();
+
+  // Coalesces with the in-flight background call via _fvInFlight guard —
+  // no double-fetch. Ensures the full graph is loaded even if the user
+  // dismissed the landing before the background fetch completed.
+  loadFullCore().catch(console.error);
+
+  // After scan line finishes (~700 ms), fade the overlay out and clean up.
+  setTimeout(() => {
+    scanEl.classList.add("lt-done");
+    setTimeout(() => {
+      scanEl.remove();
+      appEl?.classList.remove("dashboard-reveal");
+    }, 450);
+  }, 700);
+}).catch(console.error);

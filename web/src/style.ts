@@ -51,10 +51,6 @@ export function nodeSizeByType(n: ApiNode): number {
   return NODE_BASE_SIZE[n.attributes.type] ?? NODE_BASE_SIZE.Default;
 }
 
-/** @deprecated kept for call-sites that haven't been updated yet */
-export function nodeSizeFromDegree(degree: number): number {
-  return Math.max(3, Math.min(18, 3 + Math.sqrt(degree) * 1.6));
-}
 
 export function edgeAttributes(e: ApiEdge) {
   const base = EDGE_COLOR[e.attributes.type] ?? "#9e9e9e";

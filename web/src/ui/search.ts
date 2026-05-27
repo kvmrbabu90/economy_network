@@ -15,11 +15,12 @@ export function wireSearch(onSelect: (hit: SearchHit) => void): void {
   const debounceMs = 140;
   let timer: number | undefined;
 
-  function close() {
+  function close(clearInput = false) {
     list!.hidden = true;
     list!.replaceChildren();
     activeIndex = -1;
     currentHits = [];
+    if (clearInput) input!.value = "";
   }
 
   function render(hits: SearchHit[]) {
@@ -50,7 +51,7 @@ export function wireSearch(onSelect: (hit: SearchHit) => void): void {
       li.addEventListener("mousedown", (ev) => {
         ev.preventDefault(); // avoid losing input focus before click handler
         onSelect(hit);
-        close();
+        close(true);
       });
       li.addEventListener("mouseenter", () => highlight(i));
       list!.appendChild(li);
@@ -83,7 +84,7 @@ export function wireSearch(onSelect: (hit: SearchHit) => void): void {
     clearTimeout(timer);
     timer = window.setTimeout(fire, debounceMs);
   });
-  input.addEventListener("focus", fire);
+  input.addEventListener("focus", () => { if (input!.value.trim()) fire(); });
   input.addEventListener("blur", () => setTimeout(close, 120));
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "ArrowDown") {
@@ -96,10 +97,10 @@ export function wireSearch(onSelect: (hit: SearchHit) => void): void {
       if (activeIndex >= 0 && currentHits[activeIndex]) {
         ev.preventDefault();
         onSelect(currentHits[activeIndex]);
-        close();
+        close(true);
       }
     } else if (ev.key === "Escape") {
-      close();
+      close(false);
     }
   });
 }

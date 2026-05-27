@@ -99,12 +99,14 @@ export function wireFilters(onChange: FilterListener): FilterState {
     }
     // No chips in DOM → treat every type as checked.
     const effectiveTypes = chips.length === 0 ? ALL_EDGE_TYPES : types;
-    // Determine market filter: null if all selected, otherwise list of keys
-    const selectedMarkets = marketCbs
-      .filter((c) => c.checked)
-      .map((c) => c.dataset.market as string);
-    const markets =
-      selectedMarkets.length === ALL_MARKET_KEYS.length ? null : selectedMarkets;
+    // Determine market filter: null if all known markets are selected,
+    // otherwise list of selected keys. Compare against ALL_MARKET_KEYS by
+    // value (not just length) to be robust against stray DOM checkboxes.
+    const selectedMarketSet = new Set(
+      marketCbs.filter((c) => c.checked).map((c) => c.dataset.market as string),
+    );
+    const allSelected = ALL_MARKET_KEYS.every((k) => selectedMarketSet.has(k));
+    const markets = allSelected ? null : Array.from(selectedMarketSet);
 
     return {
       types: effectiveTypes,

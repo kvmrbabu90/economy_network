@@ -112,7 +112,22 @@ export function restyleAfterMerge(g: EconGraph): void {
 
 /** Run FA2 to a settled-ish layout. Synchronous; runs in <500ms for ~200 nodes. */
 export function runLayout(g: EconGraph, iterations = 220): void {
-  if (g.order === 0) return;
+  // ForceAtlas2 requires at least 2 nodes: with 0 there is nothing to lay out,
+  // and with exactly 1 the algorithm still runs fine but the gravity step can
+  // produce NaN positions if the single node sits exactly at the origin.
+  // Skip both degenerate cases.
+  if (g.order < 2) return;
+  // Guard: ForceAtlas2 fails silently if any node has NaN/undefined x or y.
+  // Seed such nodes onto a unit ring so the simulation has valid starting positions.
+  let i = 0;
+  g.forEachNode((id, attrs) => {
+    if (!isFinite(attrs.x) || !isFinite(attrs.y)) {
+      const angle = (i / Math.max(1, g.order)) * Math.PI * 2;
+      g.setNodeAttribute(id, "x", Math.cos(angle) * 0.5);
+      g.setNodeAttribute(id, "y", Math.sin(angle) * 0.5);
+    }
+    i++;
+  });
   forceAtlas2.assign(g, {
     iterations,
     settings: {

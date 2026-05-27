@@ -236,7 +236,7 @@ def get_edge(conn: sqlite3.Connection, edge_id: str) -> Optional[Edge]:
         return None
     try:
         extra = json.loads(row["additional_provenance"]) if row["additional_provenance"] else []
-    except (KeyError, IndexError):
+    except (KeyError, IndexError, json.JSONDecodeError):
         extra = []
     return Edge.model_validate(
         {

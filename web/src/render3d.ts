@@ -26,6 +26,8 @@ import { feature as topoFeature } from "topojson-client";
 
 import type { EconGraph } from "./graph";
 import { countryInMarkets, type FilterState } from "./ui/filters";
+import type { ImpactState } from "./impact";
+import { tintColor, tintColorRGB } from "./impact";
 
 export interface View3DCallbacks {
   onNodeClick?: (id: string) => void;
@@ -188,6 +190,16 @@ function buildContinentLines(): THREE.BufferGeometry {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let instance: any = null;
 let mountedContainer: HTMLElement | null = null;
+// Cleanup callbacks registered on start3D; called by stop3D.
+let _cleanup3D: (() => void) | null = null;
+
+/**
+ * Current impact overlay state — read by the nodeColor / nodeVisibility /
+ * nodeLabel closures registered in start3D(). Persists across stop3D/start3D
+ * cycles so switching 2D→3D while an impact is active immediately renders
+ * tint colors without a separate applyImpact3D() call.
+ */
+let _currentImpactState: ImpactState | null = null;
 
 /**
  * Reverse the premultiplication applied by style.ts/toRgba so the 3D renderer
@@ -271,11 +283,12 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
       id,
       label: attrs.label,
       color: attrs.color,
-      // 3d-force-graph uses node "val" for sphere radius; map from the size
-      // we already computed for Sigma (degree-based, 3..18).
-      size: Math.max(2, attrs.size * 0.7),
+      // 3d-force-graph uses node "val" for sphere volume (radius ∝ val^⅓).
+      // Scale up from the Sigma base sizes so spheres are comfortably
+      // clickable on the globe (Company=4→20, Regulator=10→50, etc.).
+      size: Math.max(10, attrs.size * 5),
       apiType: apiNode.attributes.type,
-      provisional: apiNode.attributes.provisional,
+      provisional: !!apiNode.attributes.provisional,
     };
     if (layout === "globe") {
       // Wikidata enrichment writes metadata.wikidata = { lat, lon, ... }.
@@ -285,7 +298,8 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
         | undefined);
       let lat: number;
       let lon: number;
-      if (wd && typeof wd.lat === "number" && typeof wd.lon === "number") {
+      if (wd && typeof wd.lat === "number" && typeof wd.lon === "number" &&
+          isFinite(wd.lat) && isFinite(wd.lon)) {
         // Defensive: a small number of Wikidata records come back with
         // lat/lon swapped (the field stores longitude where it should
         // store latitude). Detect the swap by checking that lat is in
@@ -296,7 +310,9 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
         if (!latOK && lonOK) {
           const tmp = la; la = lo; lo = tmp;
         }
-        lat = la; lon = lo;
+        // Clamp to valid ranges after potential swap.
+        lat = Math.max(-90, Math.min(90, la));
+        lon = Math.max(-180, Math.min(180, lo));
       } else if (apiNode.attributes.type === "Regulator") {
         // All but one of our regulators are US federal -- pin at
         // Washington DC. NAIC is the only multistate body; nudge it to
@@ -378,6 +394,8 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
     if (src.startsWith("bubble:") || tgt.startsWith("bubble:") || id.startsWith("bubble-edge:")) return;
     // Skip edges where either endpoint was filtered out by the market filter.
     if (hiddenIds.has(src) || hiddenIds.has(tgt)) return;
+    // Guard against edges added with missing apiEdge (e.g. bubble aggregated edges).
+    if (!attrs.apiEdge) return;
     links.push({
       source: src,
       target: tgt,
@@ -410,9 +428,36 @@ export function start3D(
   instance = ForceGraph3D({ controlType: "orbit" })(container)
     .backgroundColor("#14171a")  // match --bg in styles.css
     .graphData(toForceData(g, opts))
-    .nodeLabel((n: ForceNode) => `<span style="color:#e8e3da">${n.label}</span>`)
-    .nodeColor((n: ForceNode) => n.color)
+    .nodeLabel((n: ForceNode) => {
+      if (_currentImpactState) {
+        const tc = tintColor(_currentImpactState.byNode.get(n.id));
+        return tc ? `<span style="color:#e8e3da">${n.label}</span>` : "";
+      }
+      return `<span style="color:#e8e3da">${n.label}</span>`;
+    })
+    .nodeColor((n: ForceNode) => {
+      // When an impact is active, return the tint colour for impacted nodes
+      // and the background colour for everything else. Each unique colour
+      // string gets its OWN MeshLambertMaterial in three-forcegraph's
+      // sphereMaterials cache, so nodes with different tints never share a
+      // material — fixing the bug where direct material mutation caused the
+      // last-applied tint to overwrite all earlier ones.
+      if (_currentImpactState) {
+        return tintColor(_currentImpactState.byNode.get(n.id)) ?? "#14171a";
+      }
+      return n.color;
+    })
+    .nodeVisibility((n: ForceNode) => {
+      // Hide non-impacted nodes during an impact trace (removes their meshes
+      // entirely, which is cleaner than setting obj.visible=false and avoids
+      // the raycaster hitting invisible geometry).
+      if (_currentImpactState) {
+        return tintColor(_currentImpactState.byNode.get(n.id)) !== null;
+      }
+      return true;
+    })
     .nodeVal((n: ForceNode) => n.size)
+    .nodeRelSize(2)          // default is 4; 2 → 50% visual radius at launch
     .nodeResolution(12)
     .nodeOpacity(0.95)
     .linkColor((l: ForceLink) => l.color)
@@ -474,6 +519,9 @@ export function start3D(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       scene.traverse((obj: any) => {
         if (obj.__graphObjType !== "link" || !obj.isMesh) return;
+        // Skip links whose arc geometry was already built on a previous pass.
+        // TubeGeometry has type === "TubeGeometry"; placeholder BufferGeometry does not.
+        if (obj.geometry && obj.geometry.type === "TubeGeometry") return;
         const link = obj.__data;
         const src = link && link.source;
         const tgt = link && link.target;
@@ -565,13 +613,14 @@ export function start3D(
   // small angular delta translates to a large screen-space jump, which
   // reads as "drag is way too sensitive."
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const cameraRef = instance.camera();
+  const cameraRef = instance.camera?.();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ctrlRef: any = instance.controls();
-  const refCamDist = cameraRef.position.length() || 1;
-  const defaultRotateSpeed = ctrlRef.rotateSpeed ?? 1.0;
-  const defaultPanSpeed = ctrlRef.panSpeed ?? 1.0;
+  const ctrlRef: any = instance.controls?.();
+  const refCamDist = cameraRef?.position?.length?.() || 1;
+  const defaultRotateSpeed = ctrlRef?.rotateSpeed ?? 1.0;
+  const defaultPanSpeed = ctrlRef?.panSpeed ?? 1.0;
   const tuneControls = () => {
+    if (!cameraRef || !ctrlRef) return;
     const d = cameraRef.position.length();
     // ratio in [0, 1]; clamp to a floor so drags still respond at deep zoom.
     const ratio = Math.max(0.08, Math.min(1.0, d / refCamDist));
@@ -637,15 +686,42 @@ export function start3D(
   };
   document.addEventListener("keydown", sizeKeydown);
 
+  // Register cleanup so stop3D() removes both listeners and cancels any
+  // pending single-click timer (prevents firing on a torn-down instance).
+  _cleanup3D = () => {
+    container.removeEventListener("wheel", onWheel);
+    document.removeEventListener("keydown", sizeKeydown);
+    if (pendingClick) {
+      window.clearTimeout(pendingClick.timer);
+      pendingClick = null;
+    }
+  };
+
   // Expose for live debugging / preview-tool inspection.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).__force3D = instance;
 
   // Single click distinguished from double-click via a small delay.
+  // 3d-force-graph fires onNodeClick twice in quick succession for a
+  // double-click. A single handler uses both a pending-timer approach and
+  // a lastClickAt timestamp to distinguish the two gestures correctly.
   let pendingClick: { id: string; timer: number } | null = null;
+  let lastClickAt = 0;
   const DOUBLE = 280;
   instance.onNodeClick((node: ForceNode) => {
     const id = node.id;
+    const now = performance.now();
+    // If two clicks arrive within DOUBLE ms, treat as double-click.
+    if (now - lastClickAt < DOUBLE) {
+      if (pendingClick) {
+        window.clearTimeout(pendingClick.timer);
+        pendingClick = null;
+      }
+      lastClickAt = 0; // reset so a third click isn't also treated as double
+      cbs.onNodeDoubleClick?.(id);
+      return;
+    }
+    lastClickAt = now;
     if (pendingClick) {
       window.clearTimeout(pendingClick.timer);
       pendingClick = null;
@@ -657,20 +733,6 @@ export function start3D(
         cbs.onNodeClick?.(id);
       }, DOUBLE),
     };
-  });
-  // 3d-force-graph fires onNodeClick twice in quick succession for a
-  // double-click; intercept the second one as the recenter signal.
-  let lastClickAt = 0;
-  instance.onNodeClick((node: ForceNode) => {
-    const now = performance.now();
-    if (now - lastClickAt < DOUBLE) {
-      if (pendingClick) {
-        window.clearTimeout(pendingClick.timer);
-        pendingClick = null;
-      }
-      cbs.onNodeDoubleClick?.(node.id);
-    }
-    lastClickAt = now;
   });
 
   instance.onLinkClick((link: ForceLink) => {
@@ -719,19 +781,29 @@ export function start3D(
     sphere.name = "econgraph-globe";
     scene.add(sphere);
     // Equator + prime-meridian arcs at slightly stronger weight for
-    // orientation (so "north" reads at a glance).
-    const ringGeom = new THREE.RingGeometry(GLOBE_RADIUS - 4, GLOBE_RADIUS - 3.5, 64);
-    const ringMat = new THREE.MeshBasicMaterial({
+    // orientation (so "north" reads at a glance). Use separate geometry +
+    // material instances so the scene-traverse dispose loop doesn't attempt
+    // to free the same GPU resource twice (Three.js is tolerant but it's
+    // still incorrect ownership semantics).
+    const ringGeomEq = new THREE.RingGeometry(GLOBE_RADIUS - 4, GLOBE_RADIUS - 3.5, 64);
+    const ringMatEq = new THREE.MeshBasicMaterial({
       color: 0x9c978a,
       transparent: true,
       opacity: 0.35,
       side: THREE.DoubleSide,
     });
-    const equator = new THREE.Mesh(ringGeom, ringMat);
+    const equator = new THREE.Mesh(ringGeomEq, ringMatEq);
     equator.name = "econgraph-equator";
     equator.rotation.x = Math.PI / 2;
     scene.add(equator);
-    const prime = new THREE.Mesh(ringGeom, ringMat);
+    const ringGeomPm = new THREE.RingGeometry(GLOBE_RADIUS - 4, GLOBE_RADIUS - 3.5, 64);
+    const ringMatPm = new THREE.MeshBasicMaterial({
+      color: 0x9c978a,
+      transparent: true,
+      opacity: 0.35,
+      side: THREE.DoubleSide,
+    });
+    const prime = new THREE.Mesh(ringGeomPm, ringMatPm);
     prime.name = "econgraph-prime-meridian";
     scene.add(prime);
 
@@ -756,13 +828,44 @@ export function start3D(
     // this the user would see Europe/Africa on first paint and assume
     // the globe is empty.
     const camFocus = latLonToXYZ(30, -90, GLOBE_RADIUS * 3);
-    instance.cameraPosition({ x: camFocus.x, y: camFocus.y, z: camFocus.z });
+    instance.cameraPosition?.({ x: camFocus.x, y: camFocus.y, z: camFocus.z });
   }
 }
 
 export function update3D(g: EconGraph, filterState?: FilterState | null): void {
   if (!instance) return;
+  // In globe mode, dispose any custom TubeGeometry arc objects before
+  // replacing graphData. 3d-force-graph handles teardown of its own internal
+  // primitives but our linkThreeObject meshes are external — leaking them
+  // causes GPU memory to accumulate on every update3D() call.
+  if (currentLayout === "globe") {
+    try {
+      const scene = instance.scene?.();
+      if (scene) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        scene.traverse((obj: any) => {
+          if (obj.__graphObjType === "link" && obj.isMesh) {
+            // Dispose TubeGeometry arcs created by linkThreeObject.
+            if (obj.geometry && obj.geometry.type === "TubeGeometry") {
+              try { obj.geometry.dispose(); } catch { /* ignore */ }
+            }
+            // Also dispose the material; 3d-force-graph replaces the entire
+            // link object on graphData() refresh so these materials are orphaned.
+            if (obj.material) {
+              try { obj.material.dispose?.(); } catch { /* ignore */ }
+            }
+          }
+        });
+      }
+    } catch { /* best-effort */ }
+  }
   instance.graphData(toForceData(g, { layout: currentLayout, filterState }));
+  // In globe mode, re-build arc geometry after the data update since
+  // graphData() replaces link objects.
+  if (currentLayout === "globe" && (window as any).__rebuildArcs) {
+    requestAnimationFrame((window as any).__rebuildArcs);
+    setTimeout((window as any).__rebuildArcs, 100);
+  }
 }
 
 export function resize3D(width: number, height: number): void {
@@ -772,7 +875,34 @@ export function resize3D(width: number, height: number): void {
 
 export function stop3D(): void {
   if (!instance) return;
+  // Remove event listeners registered during start3D.
+  if (_cleanup3D) { _cleanup3D(); _cleanup3D = null; }
   try {
+    // Dispose cached continent geometry to free GPU buffer memory.
+    if (cachedContinentGeometry) {
+      cachedContinentGeometry.dispose();
+      cachedContinentGeometry = null;
+    }
+    // Walk the scene and dispose all geometries + materials before teardown
+    // so three.js doesn't leak GPU memory across view-mode switches.
+    try {
+      const scene = instance.scene?.();
+      if (scene) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        scene.traverse((obj: any) => {
+          if (obj.geometry) {
+            try { obj.geometry.dispose(); } catch { /* ignore */ }
+          }
+          if (obj.material) {
+            if (Array.isArray(obj.material)) {
+              obj.material.forEach((m: { dispose?: () => void }) => { try { m.dispose?.(); } catch { /* ignore */ } });
+            } else {
+              try { obj.material.dispose?.(); } catch { /* ignore */ }
+            }
+          }
+        });
+      }
+    } catch { /* best-effort */ }
     // 3d-force-graph exposes _destructor() via three's renderer cleanup path.
     instance._destructor?.();
   } catch {
@@ -787,4 +917,83 @@ export function stop3D(): void {
 
 export function is3DRunning(): boolean {
   return instance !== null;
+}
+
+// ---------------------------------------------------------------------------
+// Impact overlay — kapsule-aware tinting
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply (or clear) an impact overlay on the running 3D scene.
+ *
+ * **Why not `scene.traverse` + direct material mutation?**
+ * three-forcegraph caches materials in `sphereMaterials[colorString]`. All
+ * Company nodes share one `MeshLambertMaterial` instance (they all start
+ * life as `#c8ccd2`). Calling `obj.material.color.setRGB(...)` modifies
+ * that shared material, so the last node processed overwrites every earlier
+ * tint — producing a monochromatic scene.
+ *
+ * **The fix:** set `_currentImpactState` before triggering a kapsule
+ * re-digest via `update3D()`. The `nodeColor` closure in `start3D()` returns
+ * the tint colour string for impacted nodes. Since `sphereMaterials` is keyed
+ * by colour string, each distinct tint gets its OWN material — no sharing,
+ * no overwriting.
+ *
+ * Link tinting still uses `scene.traverse` because link objects are per-link
+ * (no shared-material problem there).
+ */
+export function applyImpact3D(
+  g: EconGraph,
+  state: ImpactState | null,
+  filterState?: FilterState | null,
+): void {
+  _currentImpactState = state;
+  if (!instance) return;
+  // update3D() handles globe-arc disposal + graphData() re-trigger + arc rebuild.
+  // The nodeColor / nodeVisibility / nodeLabel closures read _currentImpactState,
+  // so the kapsule digest that follows will paint nodes with tint colours.
+  update3D(g, filterState);
+  // Link tinting — apply with delays so the kapsule digest (debounced 1 ms)
+  // and arc construction (rAF + 100ms) settle before we walk the scene.
+  const _snap = state;
+  requestAnimationFrame(() => _applyLinkTint(_snap));
+  setTimeout(() => _applyLinkTint(_snap), 300);
+  setTimeout(() => _applyLinkTint(_snap), 900);
+}
+
+function _applyLinkTint(state: ImpactState | null): void {
+  if (!instance) return;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const scene: THREE.Scene = instance.scene();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  scene.traverse((obj: any) => {
+    // Links in ball mode are THREE.Line objects; in globe mode they are
+    // THREE.Mesh (TubeGeometry). Both get __graphObjType === "link" and
+    // have an obj.material with a .color property.
+    if (obj.__graphObjType !== "link" || !obj.material?.color) return;
+    const data = obj.__data;
+    if (state) {
+      const src = data?.source?.id as string | undefined;
+      const tgt = data?.target?.id as string | undefined;
+      const srcFired = src ? tintColorRGB(state.byNode.get(src)) !== null : false;
+      const tgtFired = tgt ? tintColorRGB(state.byNode.get(tgt)) !== null : false;
+      if (srcFired && tgtFired) {
+        obj.visible = true;
+        obj.material.color.setRGB(1.0, 1.0, 1.0);  // white chain edges
+        obj.material.opacity = 0.9;
+        obj.material.transparent = true;
+      } else {
+        obj.visible = false;
+      }
+    } else {
+      // Restore default link appearance.
+      if (data?.color) {
+        obj.visible = true;
+        obj.material.color.set(data.color);
+        obj.material.opacity = data.below ? 0.30 : 0.75;
+        obj.material.transparent = true;
+      }
+    }
+    obj.material.needsUpdate = true;
+  });
 }

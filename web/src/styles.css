@@ -1238,3 +1238,309 @@ html, body {
   #app { grid-template-columns: 220px 1fr 300px; }
   #app.inspector-collapsed { grid-template-columns: 220px 1fr 20px; }
 }
+
+/* ============================================================
+   LANDING OVERLAY
+   Full-viewport animated intro: spinning globe + "So What?"
+   reveal. Sits at z-index 9999 over the entire app. The app
+   loads normally behind it; after dismiss, Globe mode is
+   activated via main.ts.
+   ============================================================ */
+
+#landing-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  /* Deep space black with a slight warm-tinted blue undertone */
+  background: #06090d;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+/* Exit: fade-out + very slight zoom-in for a "pull-into-the-screen" feel */
+#landing-overlay.landing-exit {
+  animation: lExit 0.9s cubic-bezier(0.4, 0, 0.8, 1) forwards;
+  pointer-events: none;
+}
+
+@keyframes lExit {
+  to { opacity: 0; transform: scale(1.04); }
+}
+
+/* Globe canvas fills the entire viewport behind the text */
+#landing-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+  /* Fade the globe in over 2 s with a subtle scale-up so it
+     materialises rather than just appearing */
+  opacity: 0;
+  animation: lCanvasIn 2.2s cubic-bezier(0.22, 0.61, 0.36, 1) forwards 0.15s;
+}
+
+@keyframes lCanvasIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* Text block — left-aligned, vertically centred, clear of the globe.
+   Use margin-left (not padding) so the percentage offset is NOT deducted
+   from the max-width content area — with box-sizing:border-box, percentage
+   padding is relative to the parent (viewport) and would shrink the inner
+   width to ~350 px at large viewports, causing the title to wrap. */
+.landing-content {
+  position: relative;
+  z-index: 1;
+  margin-left: clamp(40px, 7vw, 120px);
+  padding: 0;
+  max-width: 540px;
+}
+
+/* "EconGraph" eyebrow label */
+.landing-eyebrow {
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: #3a7abf;
+  opacity: 0;
+  margin-bottom: 20px;
+  animation: lFadeUp 0.6s ease forwards 0.45s;
+}
+
+/* "So What?" — each character is a separate <span> animated
+   individually so they drop in from above, left-to-right.
+   white-space: nowrap prevents adjacent inline-block spans from
+   wrapping mid-word when the container is just barely wide enough. */
+.landing-title {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: clamp(54px, 8.5vw, 92px);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  color: #f0ebe2;
+  margin: 0 0 28px;
+  white-space: nowrap;
+}
+
+/* Individual character — starts invisible and above, then drops in */
+.lc {
+  display: inline-block;
+  opacity: 0;
+  animation: lcDrop 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+}
+
+@keyframes lcDrop {
+  from {
+    opacity: 0;
+    transform: translateY(-18px);
+    filter: blur(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+/* The "?" gets a cyan accent */
+.landing-q {
+  color: #4a9eff;
+}
+
+/* Tagline */
+.landing-tagline {
+  font-size: clamp(15px, 2vw, 18px);
+  color: #8a8e94;
+  line-height: 1.55;
+  margin: 0 0 36px;
+  opacity: 0;
+  animation: lFadeUp 0.7s ease forwards 2.5s;
+}
+
+/* Feature bullet list */
+.landing-features {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 44px;
+}
+
+.lf {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 14px;
+  color: #6e6a62;
+  padding: 9px 0;
+  border-top: 1px solid #111820;
+  opacity: 0;
+  animation: lFadeUp 0.6s ease forwards;
+}
+
+.lf:first-child { border-top: none; }
+
+.lf-dot {
+  font-size: 13px;
+  color: #3a7abf;
+  flex-shrink: 0;
+  width: 22px;
+  text-align: center;
+}
+
+@keyframes lFadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+
+/* "Launch →" button — appears last with a slow pulse glow */
+.landing-enter {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 30px;
+  background: transparent;
+  border: 1px solid #253a54;
+  color: #c8ccd2;
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.025em;
+  cursor: pointer;
+  opacity: 0;
+  /* Appear, then pulse indefinitely */
+  animation:
+    lFadeUp    0.6s ease         forwards 4.6s,
+    lBtnGlow   3.0s ease-in-out  infinite  5.3s;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.landing-enter:hover {
+  background: rgba(74, 158, 255, 0.07);
+  border-color: #4a7ab5;
+  color: #f0ebe2;
+}
+
+.landing-enter:focus-visible {
+  outline: none;
+  border-color: #4a9eff;
+}
+
+.landing-arrow {
+  font-size: 18px;
+  line-height: 1;
+  transition: transform 0.2s ease;
+  display: inline-block;
+}
+
+.landing-enter:hover .landing-arrow {
+  transform: translateX(5px);
+}
+
+@keyframes lBtnGlow {
+  0%, 100% { box-shadow: 0 0  0   0 rgba(74, 140, 220, 0.00); }
+  50%       { box-shadow: 0 0 22px 5px rgba(74, 140, 220, 0.14); }
+}
+
+/* "skip intro" ghost link */
+.landing-skip {
+  display: block;
+  background: none;
+  border: none;
+  color: #2a2e35;
+  font-size: 11px;
+  font-family: "Inter", system-ui, sans-serif;
+  cursor: pointer;
+  padding: 10px 0 0;
+  letter-spacing: 0.04em;
+  opacity: 0;
+  animation: lFadeUp 0.5s ease forwards 1.5s;
+  transition: color 0.2s ease;
+}
+
+.landing-skip:hover { color: #6e6a62; }
+
+/* ── Launch transition ────────────────────────────────────────────────────────
+   Plays immediately after the landing overlay exits. A bright horizontal scan
+   line sweeps the screen top-to-bottom while the dashboard flashes into view.  */
+
+/* Scan-line overlay — sits above the app, below nothing (landing is gone) */
+.launch-scan-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  pointer-events: none;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* The bright scan bar */
+.launch-scan-overlay::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(74, 158, 255, 0.3) 15%,
+    #a8d4ff 40%,
+    #ffffff 50%,
+    #a8d4ff 60%,
+    rgba(74, 158, 255, 0.3) 85%,
+    transparent 100%
+  );
+  box-shadow: 0 0 24px 8px rgba(74, 158, 255, 0.5),
+              0 0  6px 2px rgba(180, 220, 255, 0.8);
+  animation: ltScanLine 0.7s cubic-bezier(0.4, 0, 0.6, 1) forwards;
+}
+
+/* Wide glow band that trails behind the scan bar */
+.launch-scan-overlay::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: -150px;
+  height: 150px;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(74, 158, 255, 0.05) 60%,
+    rgba(74, 158, 255, 0.12) 100%
+  );
+  animation: ltGlowBand 0.7s cubic-bezier(0.4, 0, 0.6, 1) forwards;
+}
+
+@keyframes ltScanLine {
+  0%   { top: 0;      opacity: 1; }
+  90%  { top: 100vh;  opacity: 1; }
+  100% { top: 100vh;  opacity: 0; }
+}
+
+@keyframes ltGlowBand {
+  0%   { top: -150px; }
+  100% { top: 100vh;  }
+}
+
+/* Fade the whole overlay out once scan is done */
+.launch-scan-overlay.lt-done {
+  animation: ltOverlayOut 0.45s ease forwards;
+}
+
+@keyframes ltOverlayOut {
+  0%   { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Dashboard reveal: the #app flashes bright (overexposure) then settles */
+#app.dashboard-reveal {
+  animation: dashReveal 1.1s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+}
+
+@keyframes dashReveal {
+  0%   { opacity: 0;   filter: brightness(4) saturate(0); }
+  12%  { opacity: 1;   filter: brightness(2) saturate(0.4); }
+  40%  { opacity: 1;   filter: brightness(1.3) saturate(0.8); }
+  100% { opacity: 1;   filter: brightness(1) saturate(1); }
+}

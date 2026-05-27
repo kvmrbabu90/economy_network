@@ -267,16 +267,7 @@ def post_impact(
             detail=f"unknown provider {provider_override!r}; use 'claude' or 'ollama'",
         )
     try:
-        # Per-request override via a thread-local-ish swap on the module
-        # global; restore even on error so concurrent requests don't see
-        # the swap.
-        prev_provider = impact_mod.LLM_PROVIDER
-        if provider_override:
-            impact_mod.LLM_PROVIDER = provider_override
-        try:
-            return impact_mod.run_impact(text, conn=conn)
-        finally:
-            impact_mod.LLM_PROVIDER = prev_provider
+        return impact_mod.run_impact(text, conn=conn, provider=provider_override)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
@@ -321,12 +312,6 @@ def post_impact_multi(payload: dict = Body(...)):
             detail=f"unknown provider {provider_override!r}; use 'claude' or 'ollama'",
         )
     try:
-        prev_provider = impact_mod.LLM_PROVIDER
-        if provider_override:
-            impact_mod.LLM_PROVIDER = provider_override
-        try:
-            return impact_mod.run_multi_impact(texts, db_path=_DB_PATH)
-        finally:
-            impact_mod.LLM_PROVIDER = prev_provider
+        return impact_mod.run_multi_impact(texts, db_path=_DB_PATH, provider=provider_override)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e

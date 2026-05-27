@@ -13,7 +13,8 @@ import shutil
 import subprocess
 import time
 import xml.etree.ElementTree as ET
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import requests
@@ -94,35 +95,69 @@ def _claude_call(prompt: str, timeout: int = 120) -> str:
 # ---------------------------------------------------------------------------
 
 _FILTER_PROMPT = """\
-You are a wire-service copy editor for a supply-chain and equity-markets tool. \
-Select and rewrite headlines as pure, neutral facts — no drama, no spin.
+You are filtering headlines for a supply-chain and equity impact tool. \
+The tool traces how news propagates through a graph of companies, commodities, \
+and regions. For a headline to be useful it must have an IDENTIFIABLE SEED — \
+a named company taking an action, or a named commodity/region experiencing a \
+supply or demand shock — so the tool can start a propagation chain without \
+hallucinating a node.
 
-SELECTION — always include if present:
-- Named company events: earnings, deals, layoffs, M&A, product launches, regulatory approvals
-- Commodity / input-cost moves: oil price change, gas supply, semiconductors, metals, crops, freight rates
-- Trade policy with named market impact: tariffs, sanctions, export controls, port disruptions
-- Central bank decisions, rate changes
-- Geopolitical events only when they have a direct, stated commodity or market impact (e.g. oil supply disruption, shipping lane closure, trade route affected)
+TODAY'S DATE: {today}
+RECENCY RULE — exclude anything older than 5 days:
+- If the underlying event clearly happened more than 5 days before today, \
+  exclude it — even if the article was published today. Signs of staleness: \
+  explicit past dates ("announced March 10"), "last week", "earlier this month", \
+  or context that makes clear the event predates the 5-day window.
+- If you cannot tell when the event happened, keep it (benefit of the doubt).
+- Recap, anniversary, and retrospective articles about past events are excluded \
+  regardless of publication date.
 
-SELECTION — exclude:
-- Pure political coverage (polling, campaigns, elections) with no stated market effect
-- Celebrity, entertainment, sports
-- Stock / index price moves: "X shares rise/fall", "S&P 500 up/down", "Nikkei hits high", etc. — unless the move is caused by a concrete named event (earnings, M&A, regulatory ruling) stated in the same headline
-- "Markets up/down/mixed" with no named driver
-- Opinion, analysis, or editorial pieces
+INCLUDE — headline has a clear seed and describes a CAUSE, not an effect:
+- Named company actions: M&A, partnerships, deals, product launches, factory \
+  openings/closures, layoffs, regulatory approvals/rejections, contract wins/losses
+- Named company earnings ONLY when tied to a concrete driver (new product, \
+  cost programme, market entry) — not just "beat estimates"
+- Commodity supply or demand events: output cuts, crop failures, new discoveries, \
+  trade route disruptions, freight rate changes, energy supply agreements
+- Macroeconomic data releases with a named sector or region: industrial output, \
+  manufacturing PMI, trade balance, inflation by category
+- Trade policy directly affecting named goods or companies: tariffs, sanctions, \
+  export controls, import bans
+- Central bank rate decisions
+- Geopolitical events ONLY when the headline explicitly names a commodity or \
+  supply-chain impact (e.g. "Hormuz closure cuts oil flow", "port strike halts \
+  auto parts" — not just "tensions rise")
 
-REWRITE RULES — no exceptions:
+EXCLUDE — no identifiable seed, or describes aftermath rather than a cause:
+- Political news (elections, primaries, endorsements, polling) unless the \
+  headline names a specific company or commodity directly affected by that event
+- Stock price or valuation milestones: "X shares rise/fall N%", "X hits $1T \
+  valuation", "X stock surges" — these are outcomes, not causes; the tool \
+  cannot act on past price moves
+- Index or broad market moves: "S&P 500 up/down", "Nasdaq hits high", \
+  "markets mixed"
+- Earnings beats/misses with no named driver ("X tops estimates", "profits rise")
+- Celebrity, entertainment, sports, obituaries
+- Opinion, analysis, editorial, or forecast pieces
+- Any headline where you would need to invent a company or commodity name to \
+  create a seed — if the seed is not stated, exclude it
+
+REWRITE RULES — apply to every headline you keep:
 - ≤15 words
-- State only verifiable facts: who, what. Use neutral verbs: announces, reports, rises, falls, cuts, acquires, approves, launches, signs, halts, closes, opens, raises.
-- Remove all dramatic or loaded words. Do not use: rattles, heats up, warns, fears, surges, soars, plummets, looms, threatens, roils, jolts, shocks, crisis, turmoil, chaos, escalates, sparks.
-- No judgment adjectives: massive, alarming, stunning, historic, surprising, unprecedented.
-- Preserve specific numbers (prices, percentages, quantities) — they are facts, not opinions.
-- Do NOT invent facts. Stay within what the original headline states.
+- Who + what only. Neutral verbs: announces, reports, rises, falls, cuts, \
+  acquires, approves, launches, signs, halts, closes, opens, raises, reduces.
+- No loaded words: rattles, warns, fears, surges, soars, plummets, looms, \
+  threatens, roils, jolts, shocks, crisis, turmoil, chaos, sparks.
+- No judgment adjectives: massive, alarming, stunning, historic, unprecedented.
+- Keep specific numbers (prices, %, quantities) — they are facts.
+- Do NOT invent facts not in the original headline.
 
-Return ONLY a valid JSON array — absolutely no markdown, no other text:
+Return ONLY a valid JSON array — no markdown, no other text:
 [{{"text": "<rewritten headline ≤15 words>", "source": "<outlet name>", "url": "<url>"}}]
 
-Select the top 5 by relevance. Return fewer only if fewer than 5 qualify.
+Select the top 5 by usefulness for supply-chain impact tracing. \
+Return fewer if fewer than 5 qualify — it is better to return 2 good headlines \
+than 5 where some are borderline.
 
 Raw headlines:
 {headlines}
@@ -131,6 +166,10 @@ Raw headlines:
 # ---------------------------------------------------------------------------
 # Fetching
 # ---------------------------------------------------------------------------
+
+
+# Articles older than this are dropped before Claude ever sees them.
+_MAX_ARTICLE_AGE_DAYS = 5
 
 
 def _get_link_from_item(item: ET.Element) -> str:
@@ -149,8 +188,30 @@ def _get_link_from_item(item: ET.Element) -> str:
     return ""
 
 
+def _parse_pub_date(item: ET.Element) -> datetime | None:
+    """Return the UTC-aware pubDate of an RSS item, or None if unparseable."""
+    raw = item.findtext("pubDate") or ""
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        dt = parsedate_to_datetime(raw)
+        # Ensure timezone-aware for comparison with utcnow.
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
 def _fetch_raw(max_items: int = 40) -> list[dict[str, Any]]:
-    """Pull headlines from RSS feeds. Returns up to max_items dicts."""
+    """Pull headlines from RSS feeds published within the last 5 days.
+
+    Articles whose <pubDate> is older than _MAX_ARTICLE_AGE_DAYS are dropped
+    at the feed layer so Claude never sees stale items. Articles with no
+    parseable pubDate are kept (benefit of the doubt — most are same-day).
+    """
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=_MAX_ARTICLE_AGE_DAYS)
     items: list[dict[str, Any]] = []
     for source, url in _RSS_FEEDS:
         if len(items) >= max_items:
@@ -162,8 +223,20 @@ def _fetch_raw(max_items: int = 40) -> list[dict[str, Any]]:
             for elem in root.iter("item"):
                 title = (elem.findtext("title") or "").strip()
                 link = _get_link_from_item(elem)
-                if title and link:
-                    items.append({"title": title, "source": source, "url": link})
+                if not title or not link:
+                    continue
+                # Drop articles older than the cutoff. Items with no pubDate
+                # are kept — most are same-day and better to include than skip.
+                pub_dt = _parse_pub_date(elem)
+                if pub_dt is not None and pub_dt < cutoff:
+                    log.debug("news: skipping stale item (%s): %s", pub_dt.date(), title[:60])
+                    continue
+                items.append({
+                    "title": title,
+                    "source": source,
+                    "url": link,
+                    "pub_date": pub_dt.strftime("%Y-%m-%d") if pub_dt else None,
+                })
                 if len(items) >= max_items:
                     break
         except Exception as exc:
@@ -174,10 +247,13 @@ def _fetch_raw(max_items: int = 40) -> list[dict[str, Any]]:
 def _filter_with_claude(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Ask Claude to pick + trim the top-5 economic headlines."""
     headlines_block = "\n".join(
-        f"{i + 1}. [{item['source']}] {item['title']}  URL: {item['url']}"
+        # Include pub_date so Claude can reason about recency precisely.
+        f"{i + 1}. [{item['source']}] [published: {item.get('pub_date') or 'unknown'}] "
+        f"{item['title']}  URL: {item['url']}"
         for i, item in enumerate(raw)
     )
-    prompt = _FILTER_PROMPT.format(headlines=headlines_block)
+    today_str = date.today().strftime("%Y-%m-%d")
+    prompt = _FILTER_PROMPT.format(headlines=headlines_block, today=today_str)
     text = _claude_call(prompt)
     if not text:
         return []
@@ -190,7 +266,11 @@ def _filter_with_claude(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
         lines = text.splitlines()
         text = "\n".join(lines[:-1])
     text = text.strip()
-    parsed = json.loads(text)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        log.warning("news: Claude JSON parse failed: %s; head=%s", exc, text[:200])
+        return []
     if not isinstance(parsed, list):
         return []
     result = []

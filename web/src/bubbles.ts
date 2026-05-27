@@ -253,7 +253,6 @@ export function layoutBubbleView(g: EconGraph, expanded: Set<string>): void {
   const slugOuterRadius = 200;
 
   // Per-sector enumeration so spiral positions stay deterministic.
-  const sectorOrder = new Map<string, number>();
   let slugCount = 0;
   g.forEachNode((id, attrs) => {
     if (isBubble(id)) return;
@@ -294,7 +293,6 @@ export function layoutBubbleView(g: EconGraph, expanded: Set<string>): void {
       // hides it but layout is set in case the user expands.
       g.setNodeAttribute(id, "x", anchor.x);
       g.setNodeAttribute(id, "y", anchor.y);
-      sectorOrder.set(id, 0);
       return;
     }
     const k = sectorCounters.get(sector) ?? 0;

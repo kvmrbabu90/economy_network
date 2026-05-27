@@ -30,6 +30,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -64,6 +65,10 @@ RING_PARALLELISM = int(os.environ.get("IMPACT_RING_PARALLELISM", "8"))
 # that to 10 calls → 2 rounds -- ~5x faster with identical quality since
 # Claude already multi-scores ring chunks of 24.
 REFINEMENT_BATCH_SIZE = int(os.environ.get("IMPACT_REFINE_BATCH", "6"))
+
+# Thread-local storage for per-request LLM provider override, eliminating
+# the race condition on the module-level LLM_PROVIDER global.
+_thread_local = threading.local()
 
 
 # ---------------------------------------------------------------------------
@@ -136,13 +141,16 @@ def _claude_call(prompt: str) -> str:
 
 def _llm_call(prompt: str, *, fmt_json: bool = False) -> str:
     """Dispatch to the configured LLM provider. Returns the raw text the
-    provider emitted; callers run _parse_llm_json on it."""
-    if LLM_PROVIDER == "claude":
+    provider emitted; callers run _parse_llm_json on it.
+    Uses the thread-local provider override when set (per-request isolation);
+    falls back to the module-level LLM_PROVIDER default."""
+    provider = getattr(_thread_local, "provider", None) or LLM_PROVIDER
+    if provider == "claude":
         return _claude_call(prompt)
-    if LLM_PROVIDER == "ollama":
+    if provider == "ollama":
         return _ollama_call(prompt, fmt_json=fmt_json)
     raise RuntimeError(
-        f"Unknown IMPACT_LLM_PROVIDER={LLM_PROVIDER!r}; use 'claude' or 'ollama'."
+        f"Unknown IMPACT_LLM_PROVIDER={provider!r}; use 'claude' or 'ollama'."
     )
 
 
@@ -281,10 +289,14 @@ def _extract_named_entities(text: str) -> list[dict[str, Any]]:
         name = (item.get("company_name") or "").strip()
         direction = item.get("direction", "")
         if name and direction in ("positive", "negative"):
+            try:
+                magnitude = max(0.0, min(1.0, float(item.get("magnitude") or 0.7)))
+            except (TypeError, ValueError):
+                magnitude = 0.7
             result.append({
                 "company_name": name,
                 "direction": direction,
-                "magnitude": max(0.0, min(1.0, float(item.get("magnitude") or 0.7))),
+                "magnitude": magnitude,
                 "reasoning": (item.get("reasoning") or "")[:200],
             })
     return result
@@ -304,15 +316,15 @@ def _resolve_entity(
 
     Returns a dict with id, type, name, sector, industry, country — or None.
     """
-    q = company_name.lower().strip()
-    if not q:
+    qnorm = company_name.lower().strip()
+    if not qnorm:
         return None
 
     # 1. Exact node name
     row = conn.execute(
         "SELECT id, type, name, sector, industry, country FROM nodes "
         "WHERE LOWER(name) = ? AND type = 'Company' LIMIT 1",
-        (q,),
+        (qnorm,),
     ).fetchone()
     if row:
         return dict(row)
@@ -325,7 +337,7 @@ def _resolve_entity(
         WHERE a.alias_normalized = ? AND n.type = 'Company'
         LIMIT 1
         """,
-        (q,),
+        (qnorm,),
     ).fetchone()
     if row:
         return dict(row)
@@ -334,7 +346,7 @@ def _resolve_entity(
     row = conn.execute(
         "SELECT id, type, name, sector, industry, country FROM nodes "
         "WHERE LOWER(name) LIKE ? AND type = 'Company' LIMIT 1",
-        (q + "%",),
+        (qnorm + "%",),
     ).fetchone()
     if row:
         return dict(row)
@@ -347,17 +359,17 @@ def _resolve_entity(
         WHERE a.alias_normalized LIKE ? AND n.type = 'Company'
         LIMIT 1
         """,
-        (q + "%",),
+        (qnorm + "%",),
     ).fetchone()
     if row:
         return dict(row)
 
     # 5. Contains fallback (only for reasonably long names to avoid false positives)
-    if len(q) >= 5:
+    if len(qnorm) >= 5:
         row = conn.execute(
             "SELECT id, type, name, sector, industry, country FROM nodes "
             "WHERE LOWER(name) LIKE ? AND type = 'Company' LIMIT 1",
-            (f"%{q}%",),
+            (f"%{qnorm}%",),
         ).fetchone()
         if row:
             return dict(row)
@@ -416,7 +428,14 @@ def _neighbors(conn: sqlite3.Connection, node_ids: list[str], visited: set[str])
     """Return new neighbour summaries reachable from any of the given
     parent nodes via supplies / customer_of (derived) / competes_with /
     regulated_by edges. Skips below_threshold edges so we don't chase
-    the audit layer through impact propagation."""
+    the audit layer through impact propagation.
+
+    Regulators are intentionally excluded from BFS expansion. They are
+    not investable and their presence in hop chains is misleading --
+    Lilly -> FDA -> every pharma company FDA regulates is not a useful
+    signal. Regulators CAN still be hop-0 seeds (e.g. "FDA approves a
+    new drug") since seeds are resolved before this function is called.
+    """
     if not node_ids:
         return []
     placeholder = ",".join("?" for _ in node_ids)
@@ -443,6 +462,12 @@ def _neighbors(conn: sqlite3.Connection, node_ids: list[str], visited: set[str])
         seen_local.add(cid)
         summary = _node_summary(conn, cid)
         if not summary:
+            continue
+        # Regulators are not investable and pollute the BFS chain with
+        # non-actionable nodes (e.g. FDA appearing as a hop-1 node from
+        # any pharma company). Only the explicit seed can be a Regulator.
+        if summary.get("type") == "Regulator":
+            visited.add(cid)  # mark visited so they don't re-enter later
             continue
         summary["via_parent"] = r["parent"]
         summary["edge_type"] = r["edge_type"]
@@ -568,12 +593,29 @@ def _build_seeds_block(all_seeds: list[dict[str, Any]]) -> str:
     return "\n".join(lines) if lines else "  (none)"
 
 
-def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
+def run_impact(text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None) -> dict[str, Any]:
     text = (text or "").strip()
     if not text:
         return {"error": "empty news text", "seed": None, "impacts": []}
 
+    # Set thread-local provider override so all _llm_call()s from this
+    # thread (including those dispatched to the thread pool for rings)
+    # use the right provider without mutating module-level state.
+    effective_provider = (provider or LLM_PROVIDER).lower()
+    prev_thread_provider = getattr(_thread_local, "provider", None)
+    _thread_local.provider = effective_provider
+
     debug_log: list[str] = []
+
+    def _restore_thread_local() -> None:
+        """Restore thread-local provider to prior state. Always called in finally."""
+        if prev_thread_provider is None:
+            try:
+                del _thread_local.provider
+            except AttributeError:
+                pass
+        else:
+            _thread_local.provider = prev_thread_provider
 
     # == Step 1: Build commodity/region seed prompt (no LLM yet) ==========
     candidates = _list_seed_candidates(conn)
@@ -635,12 +677,13 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
     if commodity_seed_id and commodity_seed_id not in seen_ids:
         commodity_summary = _node_summary(conn, commodity_seed_id)
         if commodity_summary:
+            raw_mag = seed_obj.get("magnitude")
             commodity_seed = {
                 "node_id": commodity_seed_id,
                 "name": commodity_summary["name"],
                 "type": commodity_summary["type"],
                 "direction": seed_obj.get("direction") or "negative",
-                "magnitude": float(seed_obj.get("magnitude") or 0.9),
+                "magnitude": float(raw_mag) if raw_mag is not None else 0.9,
                 "reasoning": seed_obj.get("reasoning") or "",
                 "sector": commodity_summary.get("sector"),
                 "country": commodity_summary.get("country"),
@@ -757,8 +800,15 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
 
         t_hop = time.time()
         workers = min(RING_PARALLELISM, len(chunks))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            chunk_raws = list(pool.map(_llm_call, chunk_prompts))
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                chunk_raws = list(pool.map(_llm_call, chunk_prompts))
+        except Exception as exc:
+            # _ollama_call can raise RuntimeError on network failure. Treat the
+            # entire hop as failed rather than letting the exception propagate
+            # past the thread-local restoration finally block.
+            log.warning("hop %d: LLM pool raised %s — treating as failed hop", hop, exc)
+            chunk_raws = [""] * len(chunk_prompts)
         debug_log.append(
             f"hop {hop}: {len(chunks)} chunks done in {time.time() - t_hop:.1f}s"
         )
@@ -834,13 +884,18 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
     # Only apply the new verdict if it strengthens (higher magnitude or
     # flipped direction from no_effect to a definite call) -- never
     # downgrade an already-strong verdict.
-    refinement_summary = _refinement_pass(
-        text=text,
-        impacts=impacts,
-        seeds_block=seeds_block,
-        conn=conn,
-        debug_log=debug_log,
-    )
+    try:
+        refinement_summary = _refinement_pass(
+            text=text,
+            impacts=impacts,
+            seeds_block=seeds_block,
+            conn=conn,
+            debug_log=debug_log,
+        )
+    finally:
+        # Restore thread-local provider to prior state even if refinement raises.
+        # Important when threads are pooled and reused across requests.
+        _restore_thread_local()
 
     # `seed` field: first named-entity seed, or commodity/region if no
     # named entities resolved. Kept for backward-compat with older frontends.
@@ -849,8 +904,8 @@ def run_impact(text: str, *, conn: sqlite3.Connection) -> dict[str, Any]:
         "seed": impacts.get(primary_seed_id),
         "seeds": seeds_response,
         "impacts": list(impacts.values()),
-        "provider": LLM_PROVIDER,
-        "model": "claude-code-cli" if LLM_PROVIDER == "claude" else OLLAMA_MODEL,
+        "provider": effective_provider,
+        "model": "claude-code-cli" if effective_provider == "claude" else OLLAMA_MODEL,
         "max_hops": MAX_HOPS,
         "debug": debug_log,
         "refinement": refinement_summary,
@@ -883,7 +938,9 @@ def _merge_impact_results(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             nid = v.get("node_id")
             if not nid:
                 continue
-            direction = v.get("direction", "no_effect")
+            direction = v.get("direction") or "no_effect"
+            if direction not in ("positive", "negative", "no_effect"):
+                direction = "no_effect"
             magnitude = float(v.get("magnitude") or 0.0)
             hop = int(v.get("hop") or 0)
 
@@ -959,7 +1016,7 @@ def _merge_impact_results(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return merged
 
 
-def run_multi_impact(texts: list[str], *, db_path: "Path") -> dict[str, Any]:
+def run_multi_impact(texts: list[str], *, db_path: "Path", provider: Optional[str] = None) -> dict[str, Any]:
     """Run independent BFS per news text then merge verdicts.
 
     Each text gets its own SQLite connection (thread-safety) and its own
@@ -976,10 +1033,12 @@ def run_multi_impact(texts: list[str], *, db_path: "Path") -> dict[str, Any]:
 
     log.info("run_multi_impact: %d events", len(texts))
 
+    effective_provider = (provider or LLM_PROVIDER).lower()
+
     def _run_one(text: str) -> dict[str, Any]:
         conn = _connect(db_path)
         try:
-            result = run_impact(text, conn=conn)
+            result = run_impact(text, conn=conn, provider=effective_provider)
             return {"text": text, **result}
         finally:
             conn.close()
@@ -1008,8 +1067,8 @@ def run_multi_impact(texts: list[str], *, db_path: "Path") -> dict[str, Any]:
     return {
         "events": events,
         "merged": merged,
-        "provider": LLM_PROVIDER,
-        "model": "claude-code-cli" if LLM_PROVIDER == "claude" else OLLAMA_MODEL,
+        "provider": effective_provider,
+        "model": "claude-code-cli" if effective_provider == "claude" else OLLAMA_MODEL,
         "event_count": len(texts),
         "total_nodes": len(merged),
         "mixed_signal_nodes": sum(1 for v in merged if v.get("mixed_signals")),
@@ -1216,8 +1275,13 @@ def _refinement_pass(
     )
     workers = min(RING_PARALLELISM, len(prompts))
     t_refine = time.time()
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        batch_raws = list(pool.map(_llm_call, prompts))
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            batch_raws = list(pool.map(_llm_call, prompts))
+    except Exception as exc:
+        log.warning("refine: LLM pool raised %s — skipping refinement", exc)
+        debug_log.append(f"refine: LLM pool error: {exc}")
+        return {"considered": len(eligible), "rescored": 0, "applied": 0, "error": str(exc)}
     debug_log.append(f"refine: {len(batch_raws)} batch calls done in {time.time() - t_refine:.1f}s")
 
     # Flatten verdicts: each raw is a JSON array for its batch.
