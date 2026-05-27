@@ -491,13 +491,25 @@ class AliasIndex:
             return []
         # Score each canonical id once -- take the BEST score across its aliases.
         best: dict[str, tuple[int, str]] = {}  # canonical_id -> (score, matched_alias)
+        # Pre-split tokens for word-boundary checks.
+        q_tokens = set(q_norm.split())
         for alias_norm, canonical_id in self.normalized:
             score = 0
             if alias_norm == q_norm:
                 score = 100
-            elif alias_norm.startswith(q_norm) or q_norm in alias_norm:
-                # Substring/prefix bonus, but never beats exact.
+            elif alias_norm.startswith(q_norm):
+                # Prefix match: alias begins with the exact query.
+                # e.g. query="apple" matches alias="apple international" → 95.
                 score = 95
+            elif q_tokens and q_tokens.issubset(set(alias_norm.split())):
+                # Every query token appears as a whole word in the alias.
+                # e.g. query="apple" matches alias="apple inc" but NOT
+                # "dr pepper snapple" (token "apple" ≠ token "snapple").
+                score = 88
+            elif q_norm in alias_norm:
+                # Non-word-boundary substring: "apple" inside "snapple".
+                # Valid but low-confidence — don't let it beat real fuzzy hits.
+                score = 45
             else:
                 score = int(fuzz.token_set_ratio(q_norm, alias_norm))
             existing = best.get(canonical_id)

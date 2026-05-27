@@ -229,10 +229,17 @@ export function runLanding(): Promise<void> {
       cancelAnimationFrame(rafId);
       window.removeEventListener("resize", onResize);
       // Fade-out lasts 0.9 s (matches CSS transition), then clean up.
+      // The dispose calls are best-effort — a WebGL context loss or HMR
+      // re-import can make them throw. Wrap in try-catch so overlay.remove()
+      // and resolve() always run regardless.
       setTimeout(() => {
-        renderer.dispose();
-        [oceanGeo, landGeo, gratGeo, atmosGeo].forEach((g) => g.dispose());
-        [oceanMat, landMat, gratMat, atmosMat].forEach((m) => m.dispose());
+        try {
+          renderer.dispose();
+          [oceanGeo, landGeo, gratGeo, atmosGeo].forEach((g) => g.dispose());
+          [oceanMat, landMat, gratMat, atmosMat].forEach((m) => m.dispose());
+        } catch (e) {
+          console.warn("[landing] dispose error (ignored):", e);
+        }
         overlay.remove();
         resolve();
       }, 900);

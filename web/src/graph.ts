@@ -110,8 +110,19 @@ export function restyleAfterMerge(g: EconGraph): void {
   });
 }
 
-/** Run FA2 to a settled-ish layout. Synchronous; runs in <500ms for ~200 nodes. */
-export function runLayout(g: EconGraph, iterations = 220): void {
+/** Run FA2 to a settled-ish layout.
+ *
+ * Async — processes FA2 in BATCH-sized chunks and yields to the event loop
+ * between each chunk via `setTimeout(0)`. For a full-core graph (2 600+ nodes,
+ * 18 000+ edges) the total wall time is the same as the old synchronous call,
+ * but the main thread is never blocked for more than a few hundred milliseconds
+ * at a stretch, so:
+ *   • CDP / console calls remain responsive during layout computation.
+ *   • The browser can paint "Computing layout…" progress and respond to clicks.
+ *   • Impact-trace results that arrive while layout is still running get applied
+ *     correctly instead of being silently dropped behind a frozen event loop.
+ */
+export async function runLayout(g: EconGraph, iterations = 220): Promise<void> {
   // ForceAtlas2 requires at least 2 nodes: with 0 there is nothing to lay out,
   // and with exactly 1 the algorithm still runs fine but the gravity step can
   // produce NaN positions if the single node sits exactly at the origin.
@@ -128,17 +139,33 @@ export function runLayout(g: EconGraph, iterations = 220): void {
     }
     i++;
   });
-  forceAtlas2.assign(g, {
-    iterations,
-    settings: {
-      gravity: 1.0,
-      scalingRatio: 8,
-      slowDown: 1.5,
-      strongGravityMode: false,
-      barnesHutOptimize: g.order > 300,
-      adjustSizes: false,
-    },
-  });
+  const settings = {
+    gravity: 1.0,
+    scalingRatio: 8,
+    slowDown: 1.5,
+    strongGravityMode: false,
+    barnesHutOptimize: g.order > 300,
+    adjustSizes: false,
+  };
+  // Run FA2 in small batches, yielding to the event loop between each batch.
+  // BATCH=5 keeps per-tick blocking < ~1 s even on a slow machine while
+  // keeping total overhead (44 × ~4 ms setTimeout) well under a second.
+  //
+  // Yield strategy: setTimeout(0) when visible (allows repaints between
+  // batches); microtask Promise.resolve() when hidden (Chrome throttles
+  // setTimeout to ≥1 s in background/frozen tabs, but microtasks are exempt).
+  const yieldFn = (): Promise<void> =>
+    document.hidden
+      ? Promise.resolve()
+      : new Promise<void>(r => setTimeout(r, 0));
+  const BATCH = 5;
+  for (let done = 0; done < iterations; done += BATCH) {
+    forceAtlas2.assign(g, {
+      iterations: Math.min(BATCH, iterations - done),
+      settings,
+    });
+    await yieldFn();
+  }
 }
 
 /**

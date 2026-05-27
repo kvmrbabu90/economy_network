@@ -415,6 +415,14 @@ function toForceData(g: EconGraph, opts: View3DOptions = {}) {
 // new nodes pinned at their HQ coords too.
 let currentLayout: "ball" | "globe" = "ball";
 
+// One-shot flag: set to true after the globe camera has been positioned for
+// the first time following a real (non-empty) data load. Without this guard
+// the 3d-force-graph library's internal zoomToFit() — fired via onEngineStop
+// after graphData() settles — overrides the cameraPosition() set at the end
+// of start3D(), zooming the camera into the dense North American cluster
+// instead of framing the full globe.
+let _globeCameraInitialized = false;
+
 export function start3D(
   container: HTMLElement,
   g: EconGraph,
@@ -827,8 +835,42 @@ export function start3D(
     // the S&P 500 HQs land on the visible hemisphere by default. Without
     // this the user would see Europe/Africa on first paint and assume
     // the globe is empty.
-    const camFocus = latLonToXYZ(30, -90, GLOBE_RADIUS * 3);
-    instance.cameraPosition?.({ x: camFocus.x, y: camFocus.y, z: camFocus.z });
+    //
+    // Two-stage approach to win against 3d-force-graph's internal zoomToFit():
+    //   1. Set position immediately (covers first paint before any data loads).
+    //   2. Re-assert via onEngineStop after the first real data load settles.
+    //      The library fires onEngineStop → zoomToFit → overrides cameraPosition,
+    //      so we re-assert once and then stop listening (_globeCameraInitialized).
+    _globeCameraInitialized = false;
+    const _assertGlobeCamera = () => {
+      if (!instance || currentLayout !== "globe") return;
+      // 3d-force-graph's underlying renderer sets scene.visible = false at
+      // init when waitForLoadComplete=true (its default). It normally becomes
+      // visible again when backgroundImageUrl changes, but we never set that
+      // prop so the scene stays hidden on every re-entry into Globe mode.
+      // We force it visible here because _assertGlobeCamera is only called
+      // after the engine has confirmed data is loaded (onEngineStop guard).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const s = instance.scene?.() as any;
+      if (s) s.visible = true;
+      const cf = latLonToXYZ(30, -90, GLOBE_RADIUS * 3);
+      // Set camera position. The 2nd-argument lookAt is ignored by the
+      // library in globe mode (it defers to OrbitControls), so after
+      // positioning we orient the Three.js camera toward origin directly.
+      instance.cameraPosition?.({ x: cf.x, y: cf.y, z: cf.z });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (instance.camera?.() as any)?.lookAt(0, 0, 0);
+    };
+    instance.onEngineStop?.(() => {
+      if (_globeCameraInitialized || currentLayout !== "globe") return;
+      // Skip the empty-graph stop fired during initialization (g.order === 0
+      // means start3D was called before loadFullCore pushed real nodes in).
+      const fd = instance.graphData?.();
+      if (!fd || (fd as { nodes?: unknown[] }).nodes?.length === 0) return;
+      _globeCameraInitialized = true;
+      _assertGlobeCamera();
+    });
+    _assertGlobeCamera(); // immediate fallback for first frame
   }
 }
 
@@ -918,6 +960,8 @@ export function stop3D(): void {
   }
   instance = null;
   mountedContainer = null;
+  // Reset camera init flag so the next start3D() cycle gets fresh positioning.
+  _globeCameraInitialized = false;
 }
 
 export function is3DRunning(): boolean {

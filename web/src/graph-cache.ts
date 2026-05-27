@@ -60,7 +60,16 @@ function openDB(): Promise<IDBDatabase> {
         db.createObjectStore(POS_STORE, { keyPath: "cacheKey" });
       }
     };
-    req.onsuccess = () => { clearTimeout(timer); resolve(req.result); };
+    req.onsuccess = () => {
+      clearTimeout(timer);
+      const db = req.result;
+      // Close voluntarily when a newer-version upgrade is requested.
+      // Without this, v1→v2 upgrades (or any future bump) stall forever:
+      // the old connection never goes away, onblocked fires on the new
+      // request, and the 8-second timeout kills the caller.
+      db.onversionchange = () => { db.close(); };
+      resolve(db);
+    };
     req.onerror   = () => { clearTimeout(timer); reject(req.error); };
     // onblocked fires when a higher-version open is attempted while lower-
     // version connections are still open. The timeout above handles this,

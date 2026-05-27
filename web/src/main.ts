@@ -153,7 +153,7 @@ let layoutMode: "force" | "sector" | "bubble" = "force";
 const expandedSectors = new Set<string>();
 let hiddenForBubble = { nodes: new Set<string>(), edges: new Set<string>() };
 
-function applyLayout() {
+async function applyLayout(): Promise<void> {
   if (layoutMode === "bubble") {
     ensureBubbleNodes(g);
     refreshBubbleEdges(g);
@@ -165,7 +165,9 @@ function applyLayout() {
     if (layoutMode === "sector") {
       layoutBySector(g);
     } else {
-      runLayout(g, 220);
+      // runLayout is async — yields to the event loop every 5 FA2 iterations
+      // so the main thread is never frozen for more than ~1 s at a stretch.
+      await runLayout(g, 220);
     }
   }
   renderer.refresh();
@@ -398,6 +400,69 @@ function _fvKey(): string {
   return `${filters.includeProvisional}:${filters.includeInferred}`;
 }
 
+/**
+ * Async-batched graph load: clears the graph and re-populates it in small
+ * chunks, yielding to the event loop between each chunk via setTimeout(0).
+ *
+ * Why this exists: Sigma subscribes to every graphology nodeAdded / edgeAdded
+ * event and does synchronous internal state updates for each one. Calling
+ * replaceGraph() (i.e. g.clear() + mergeFromApi()) for the full S&P 500
+ * corpus (2 600+ nodes, 18 000+ edges) in a single synchronous pass blocks
+ * the main thread for 45+ seconds — freezing the UI, dropping frames, and
+ * causing CDP timeouts.
+ *
+ * With BATCH_NODES=150 and BATCH_EDGES=600 we keep each main-thread hold
+ * under ~150 ms, give the browser time to paint the "Loading…" overlay
+ * between chunks, and let the 3D globe progressively populate instead of
+ * appearing all at once after an opaque freeze.
+ *
+ * Call restyleAfterMerge(g) AFTER awaiting this function.
+ */
+/** Yield to the event loop between batch operations.
+ *
+ * In VISIBLE tabs, use setTimeout(0) so the browser can repaint between
+ * batches and the user sees incremental progress.
+ *
+ * In HIDDEN / FROZEN tabs (document.hidden === true), Chrome throttles
+ * setTimeout to ≥1 s and may completely freeze macrotask execution after
+ * 5+ minutes of inactivity.  A microtask yield (Promise.resolve()) is
+ * NOT subject to that throttling — it runs immediately after the current
+ * microtask queue drains.  The tradeoff is that repaints can't happen
+ * between microtask-yielded batches, but since the tab is hidden there
+ * is nothing to paint anyway.
+ */
+function _yieldToScheduler(): Promise<void> {
+  if (document.hidden) {
+    // Microtask yield: immune to background-tab timer throttling.
+    return Promise.resolve();
+  }
+  return new Promise<void>(r => setTimeout(r, 0));
+}
+
+async function _batchLoadGraph(
+  nodes: ApiNode[],
+  edges: ApiEdge[],
+  onProgress?: (msg: string) => void,
+): Promise<void> {
+  g.clear();
+  const NODE_BATCH = 150;
+  const EDGE_BATCH = 600;
+  for (let i = 0; i < nodes.length; i += NODE_BATCH) {
+    mergeFromApi(g, nodes.slice(i, i + NODE_BATCH), []);
+    onProgress?.(
+      `Loading ${Math.min(i + NODE_BATCH, nodes.length).toLocaleString()} / ${nodes.length.toLocaleString()} nodes…`,
+    );
+    await _yieldToScheduler();
+  }
+  for (let i = 0; i < edges.length; i += EDGE_BATCH) {
+    mergeFromApi(g, [], edges.slice(i, i + EDGE_BATCH));
+    onProgress?.(
+      `Loading edges… ${Math.min(i + EDGE_BATCH, edges.length).toLocaleString()} / ${edges.length.toLocaleString()}`,
+    );
+    await _yieldToScheduler();
+  }
+}
+
 // skipLayout=true: only populate graphology `g` — skip FA2 and camera reset.
 // Used by the background prefetch during the landing overlay so that the
 // synchronous FA2 pass (~2 s for 5 000+ nodes) never blocks the main thread
@@ -425,7 +490,7 @@ async function loadFullCore(skipLayout = false): Promise<void> {
   // Skip network + FA2 entirely; just restore graph state from RAM.
   if (_fvResponse && _fvCacheKey === cacheKey && _fvPositions) {
     if (skipLayout) return; // data already in g, nothing more needed
-    replaceGraph(g, _fvResponse.nodes, _fvResponse.edges);
+    await _batchLoadGraph(_fvResponse.nodes, _fvResponse.edges);
     restyleAfterMerge(g);
     // Restore FA2 positions so the graph appears instantly settled.
     _fvPositions.forEach((pos, id) => {
@@ -462,10 +527,11 @@ async function loadFullCore(skipLayout = false): Promise<void> {
           // Graph is empty — background prefetch only stored _fvResponse without
           // calling replaceGraph (to keep the main thread free during landing).
           // Populate now with overlay feedback.
-          setGraphOverlayStage(
-            `Loading ${_fvResponse!.nodes.length.toLocaleString()} nodes…`
+          await _batchLoadGraph(
+            _fvResponse!.nodes,
+            _fvResponse!.edges,
+            setGraphOverlayStage,
           );
-          replaceGraph(g, _fvResponse!.nodes, _fvResponse!.edges);
           restyleAfterMerge(g);
         }
 
@@ -485,7 +551,7 @@ async function loadFullCore(skipLayout = false): Promise<void> {
         } else {
           // No saved positions — run FA2 (slow first time, then saved for next load).
           setGraphOverlayStage("Computing layout…");
-          applyLayout();
+          await applyLayout();
           if (layoutMode === "force") {
             const snap: Map<string, { x: number; y: number }> = new Map();
             g.forEachNode((id) => {
@@ -530,10 +596,11 @@ async function loadFullCore(skipLayout = false): Promise<void> {
         if (!skipLayout) {
           // Landing is gone — safe to populate the graph now.
           showGraphOverlay();
-          setGraphOverlayStage(
-            `Restoring ${cached.nodes.length.toLocaleString()} nodes from cache…`
+          await _batchLoadGraph(
+            cached.nodes,
+            cached.edges,
+            setGraphOverlayStage,
           );
-          replaceGraph(g, cached.nodes, cached.edges);
           restyleAfterMerge(g);
 
           // Try saved positions first — avoids the 6+ s FA2 block.
@@ -551,7 +618,7 @@ async function loadFullCore(skipLayout = false): Promise<void> {
             renderer.refresh();
           } else {
             setGraphOverlayStage("Computing layout…");
-            applyLayout();
+            await applyLayout();
             if (layoutMode === "force") {
               const snap: Map<string, { x: number; y: number }> = new Map();
               g.forEachNode((id) => {
@@ -590,13 +657,16 @@ async function loadFullCore(skipLayout = false): Promise<void> {
         _fvResponse = resp;
         _fvCacheKey = cacheKey;
         _fvPositions = null;
-        setGraphOverlayStage(
-          `Rendering ${resp.nodes.length.toLocaleString()} nodes, ${resp.edges.length.toLocaleString()} edges…`
-        );
-        replaceGraph(g, resp.nodes, resp.edges);
-        restyleAfterMerge(g);
         if (!skipLayout) {
-          applyLayout();
+          // Landing is gone — safe to populate the graph now with
+          // batched loading so the main thread never freezes.
+          await _batchLoadGraph(
+            resp.nodes,
+            resp.edges,
+            setGraphOverlayStage,
+          );
+          restyleAfterMerge(g);
+          await applyLayout();
           cameraReset();
           if (layoutMode === "force") {
             const snap: Map<string, { x: number; y: number }> = new Map();
@@ -610,6 +680,13 @@ async function loadFullCore(skipLayout = false): Promise<void> {
           }
           _graphIsFullView = true;
         }
+        // skipLayout=true (background prefetch during landing): just store
+        // _fvResponse here — graph population is deferred to the Tier 2.25
+        // call that fires after the landing overlay dismisses, which calls
+        // _batchLoadGraph with a visible overlay and yields between chunks.
+        // Mirroring Tier 2.5: do NOT populate g here, as the event storm from
+        // 2 600+ nodeAdded callbacks blocks the main thread and freezes the
+        // landing globe animation.
       } finally {
         hideGraphOverlay();
       }
@@ -637,7 +714,7 @@ async function recenterOn(id: string): Promise<void> {
   });
   replaceGraph(g, resp.nodes, resp.edges);
   restyleAfterMerge(g);
-  applyLayout();
+  await applyLayout();
   cameraReset();
   // Show the focused node in the inspector.
   const center = resp.nodes.find((n) => n.key === resp.center);
@@ -657,7 +734,7 @@ async function expandFrom(id: string): Promise<void> {
   const changed = mergeFromApi(g, resp.nodes, resp.edges);
   if (changed) {
     restyleAfterMerge(g);
-    runLayout(g, 120);
+    await runLayout(g, 120);
   }
   renderer.refresh();
 }
@@ -1496,7 +1573,13 @@ runLanding().then(() => {
   // Coalesces with the in-flight background call via _fvInFlight guard —
   // no double-fetch. Ensures the full graph is loaded even if the user
   // dismissed the landing before the background fetch completed.
-  loadFullCore().catch(console.error);
+  // After loading, explicitly refresh the Globe so it never shows 0 nodes:
+  // if globeTab?.click() fired while g.order === 0, start3D returned an
+  // empty scene and the nodeAdded events may have already resolved before
+  // the .then() below runs — this guarantees a final sync.
+  loadFullCore()
+    .then(() => { if (is3DRunning()) update3D(g, filters); })
+    .catch(console.error);
 
   // After scan line finishes (~700 ms), fade the overlay out and clean up.
   setTimeout(() => {
