@@ -861,10 +861,15 @@ export function update3D(g: EconGraph, filterState?: FilterState | null): void {
   }
   instance.graphData(toForceData(g, { layout: currentLayout, filterState }));
   // In globe mode, re-build arc geometry after the data update since
-  // graphData() replaces link objects.
+  // graphData() replaces link objects. Three passes mirror start3D's schedule:
+  // rAF catches the common case where positions resolve in one tick;
+  // 100 ms covers slower resolution; 600 ms is a safety net for the rare
+  // case where the d3 simulation hasn't fully settled link.source / .target
+  // references yet when update3D is triggered mid-session by replaceGraph.
   if (currentLayout === "globe" && (window as any).__rebuildArcs) {
     requestAnimationFrame((window as any).__rebuildArcs);
     setTimeout((window as any).__rebuildArcs, 100);
+    setTimeout((window as any).__rebuildArcs, 600);
   }
 }
 

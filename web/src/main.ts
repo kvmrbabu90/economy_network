@@ -500,9 +500,12 @@ async function loadFullCore(skipLayout = false): Promise<void> {
         }
 
         cameraReset();
-        hideGraphOverlay();
         _graphIsFullView = true;
       } finally {
+        // Always dismiss the overlay — even if an error is thrown before the
+        // happy-path hideGraphOverlay() call inside the try block, the user
+        // would otherwise be permanently stuck at "Restoring layout…".
+        hideGraphOverlay();
         _fvInFlight = false;
         _fvInFlightPromise = null;
       }
@@ -611,6 +614,11 @@ async function loadFullCore(skipLayout = false): Promise<void> {
         hideGraphOverlay();
       }
     } finally {
+      // Always dismiss the overlay — if an error bubbles out of the Tier 2.5
+      // layout-restore block or the Tier 3 inner try-finally, the overlay
+      // would be permanently stuck without this safety net. hideGraphOverlay()
+      // is idempotent (double-calling when already hidden is a no-op).
+      hideGraphOverlay();
       _fvInFlight = false;
       _fvInFlightPromise = null;
     }
