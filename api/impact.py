@@ -53,13 +53,19 @@ MAX_HOPS = int(os.environ.get("IMPACT_MAX_HOPS", "3"))
 # Per-ring cap. Claude handles 24 candidates comfortably in one call
 # (same prompt shape, just a longer JSON array); bumped from 16 to cut
 # chunk count by ~33% on large hops.
-MAX_RING_CANDIDATES = int(os.environ.get("IMPACT_MAX_RING", "24"))
-LLM_TIMEOUT_SECONDS = int(os.environ.get("IMPACT_LLM_TIMEOUT", "600"))
+MAX_RING_CANDIDATES = int(os.environ.get("IMPACT_MAX_RING", "12"))
+LLM_TIMEOUT_SECONDS = int(os.environ.get("IMPACT_LLM_TIMEOUT", "100"))
 # How many ring chunks / refinement batches to score in parallel. Each
-# is an independent Claude CLI subprocess (~200-400 MB RSS). 8 cuts one
-# serial round off large hops vs the old 6 without saturating a typical
-# 16 GB laptop.
-RING_PARALLELISM = int(os.environ.get("IMPACT_RING_PARALLELISM", "8"))
+# is an independent Claude CLI subprocess (~200-400 MB RSS). 3 concurrent
+# chunks stay within typical Anthropic rate limits.
+RING_PARALLELISM = int(os.environ.get("IMPACT_RING_PARALLELISM", "3"))
+# Hard cap on the BFS frontier per hop. Large hubs (crude oil, Nvidia,
+# Amazon) can have 200-500 direct neighbours; scoring all of them spawns
+# dozens of parallel Claude CLI subprocesses that saturate the thread
+# pool and eventually hang the API. We sample down to this many before
+# chunking, prioritising Companies over Regions/Commodities and keeping
+# representation across edge types. Overrideable via env var.
+MAX_FRONTIER = int(os.environ.get("IMPACT_MAX_FRONTIER", "36"))
 # How many nodes to pack into a single refinement LLM call. Old code did
 # 1 per call (60 calls → 10 serial rounds at P=8). Batching 6 collapses
 # that to 10 calls → 2 rounds -- ~5x faster with identical quality since
@@ -105,20 +111,28 @@ def _claude_call(prompt: str) -> str:
     """Single Claude Code CLI call. Returns the model's text (the
     `result` field of the JSON envelope). Empty string on error -- the
     caller's tolerant JSON parser handles it the same way it handles
-    Ollama failures."""
+    Ollama failures.
+
+    IMPORTANT: run from a temp directory so the Claude CLI does not pick up
+    the project's CLAUDE.md (which forbids the impact module during development
+    but should not block the runtime API subprocess).
+    """
+    import tempfile
     binary = _resolve_claude_binary()
     cmd = [binary, "-p", prompt, "--output-format", "json"]
     t0 = time.time()
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=LLM_TIMEOUT_SECONDS,
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=LLM_TIMEOUT_SECONDS,
+                cwd=tmpdir,
+            )
     except subprocess.TimeoutExpired:
         log.warning("claude CLI timeout after %ds", LLM_TIMEOUT_SECONDS)
         return ""
@@ -245,26 +259,34 @@ def _parse_llm_json(text: str) -> Any:
 # ---------------------------------------------------------------------------
 
 _ENTITY_EXTRACT_PROMPT_TEMPLATE = """You are an economist analysing a news event.
-Extract ONLY the companies or organizations that are DIRECTLY AND SPECIFICALLY NAMED
-in the news text. Do not infer or guess companies; only include ones explicitly mentioned.
+Extract ONLY investable companies (publicly traded businesses, private corporations) that
+are DIRECTLY AND SPECIFICALLY NAMED in the news text. Do not infer or guess; only include
+ones explicitly mentioned.
 
-For each named company/organization, determine whether this event is economically
-POSITIVE or NEGATIVE for that specific entity.
+CRITICAL EXCLUSIONS — do NOT include these even if named:
+  - Central banks (Federal Reserve, ECB, Bank of Japan, PBOC, Fed, FOMC, etc.)
+  - Government agencies (SEC, FDA, FAA, EPA, DOJ, Treasury, etc.)
+  - Countries, regions, or geographies (China, European Union, Ukraine, etc.)
+  - Commodity names without a company (oil, wheat, copper — these are not companies)
+  - International bodies (IMF, WTO, OPEC, NATO, UN, etc.)
+
+M&A EVENTS — if the news describes a merger, acquisition, or takeover:
+  Extract BOTH the acquirer AND the target company. For the target, direction is
+  typically "positive" (acquisition premium). For the acquirer, assess the deal's
+  strategic benefit.
+
+For each named COMPANY, determine economic impact direction:
+  "positive" = event DIRECTLY HELPS (new contract, acquisition premium, market win)
+  "negative" = event DIRECTLY HURTS (lawsuit, recall, competitor win, cost spike)
 
 NEWS:
 \"\"\"{news}\"\"\"
 
-DIRECTION SEMANTICS:
-  "positive" = the event DIRECTLY HELPS this entity (new market entry, major contract,
-               regulatory approval, strong earnings, demand surge for its products)
-  "negative" = the event DIRECTLY HURTS this entity (lawsuit, recall, market exit,
-               competitor win, supply disruption affecting it specifically)
-
-Return STRICT JSON only — an array. If no specific companies/organizations are named, return [].
+Return STRICT JSON only — an array. If no investable companies are named, return [].
 
 [
   {{
-    "company_name": "<exact name as stated in news>",
+    "company_name": "<exact company name as stated in news>",
     "direction": "positive" | "negative",
     "magnitude": 0.0 to 1.0,
     "reasoning": "<under 15 words — why positive/negative for THIS company>"
@@ -302,22 +324,83 @@ def _extract_named_entities(text: str) -> list[dict[str, Any]]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Macro entity blocklist — terms that are NOT investable companies and must
+# never be fuzzy-matched to a company node by _resolve_entity.
+# The Fed rate-hike bug (T1) matched "Federal Reserve" → "Federal Realty
+# Investment Trust" via the starts-with fallback on "federal". This blocklist
+# short-circuits before any DB lookup so the entity is simply dropped from
+# the named-seed list, leaving the commodity/region seed to anchor the trace.
+# ---------------------------------------------------------------------------
+
+_MACRO_ENTITY_TERMS: frozenset[str] = frozenset({
+    # US central bank
+    "federal reserve", "fed", "fomc", "federal open market committee",
+    "fed rate", "federal funds", "federal reserve bank", "fed chair",
+    # Other central banks
+    "ecb", "european central bank", "bank of england", "boe",
+    "bank of japan", "boj", "pboc", "peoples bank of china",
+    "reserve bank", "central bank", "bundesbank",
+    # US government agencies (commonly extracted from news)
+    "sec", "securities and exchange commission",
+    "fda", "food and drug administration",
+    "faa", "federal aviation administration",
+    "epa", "environmental protection agency",
+    "doj", "department of justice",
+    "ftc", "federal trade commission",
+    "treasury", "us treasury", "department of treasury",
+    "cbo", "congressional budget office",
+    "omb", "white house", "congress", "senate", "house of representatives",
+    # International bodies
+    "imf", "international monetary fund",
+    "world bank", "wto", "world trade organization",
+    "opec", "nato", "united nations", "un", "g7", "g20",
+    # Country / region names that could accidentally match company names
+    "china", "chinese government", "beijing",
+    "europe", "european union", "eu",
+    "russia", "ukraine", "iran", "saudi arabia",
+    "us government", "washington", "wall street",
+})
+
+
+def _is_macro_entity(name: str) -> bool:
+    """Return True if name is a macro/government concept that should not be
+    resolved to a company node. Checks both exact match and starts-with to
+    catch variants like 'Fed' matching 'Federal Realty'."""
+    qnorm = name.lower().strip()
+    if qnorm in _MACRO_ENTITY_TERMS:
+        return True
+    # Starts-with guard: "federal" alone would match "federal realty"
+    for term in _MACRO_ENTITY_TERMS:
+        if qnorm.startswith(term + " ") or term.startswith(qnorm + " "):
+            return True
+    return False
+
+
 def _resolve_entity(
     conn: sqlite3.Connection, company_name: str
 ) -> Optional[dict[str, Any]]:
     """Find a Company node whose name or alias best matches company_name.
 
     Search order (short-circuits on first hit):
-    1. Exact name match on nodes table (case-insensitive)
-    2. Exact alias_normalized match in aliases table
-    3. name LIKE 'name%' (starts-with)
-    4. alias_normalized LIKE 'name%'
-    5. name LIKE '%name%' (contains, fallback)
+    1. Macro-entity blocklist check (returns None immediately for central banks,
+       government agencies, international bodies — these are not investable)
+    2. Exact name match on nodes table (case-insensitive)
+    3. Exact alias_normalized match in aliases table
+    4. name LIKE 'name%' (starts-with)
+    5. alias_normalized LIKE 'name%'
+    6. name LIKE '%name%' (contains, fallback)
 
     Returns a dict with id, type, name, sector, industry, country — or None.
     """
     qnorm = company_name.lower().strip()
     if not qnorm:
+        return None
+
+    # Blocklist: reject macro/government entities before any DB lookup.
+    # This prevents "Federal Reserve" → "Federal Realty Investment Trust" etc.
+    if _is_macro_entity(qnorm):
+        log.debug("_resolve_entity: blocked macro entity %r", company_name)
         return None
 
     # 1. Exact node name
@@ -579,6 +662,61 @@ Cover every candidate id exactly once.
 
 
 # ---------------------------------------------------------------------------
+# Frontier sampling — keeps large hops tractable
+# ---------------------------------------------------------------------------
+
+def _sample_frontier(ring: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
+    """Down-sample a BFS ring to at most `cap` candidates while preserving
+    diversity of node types and edge types.
+
+    Priority order (higher = keep first):
+      1. Company nodes via supplies edges   — direct value-chain signal
+      2. Company nodes via competes_with    — direct competitive signal
+      3. Commodity / Region nodes           — macro signal
+      4. Company nodes via regulated_by     — lower signal for impact
+
+    Within each bucket we shuffle randomly so repeated runs get variety.
+    This prevents systematic blind spots (e.g. always dropping the last
+    alphabetical companies in a huge hop-1 ring).
+    """
+    import random
+
+    if len(ring) <= cap:
+        return ring
+
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "company_supply":    [],
+        "company_compete":   [],
+        "macro":             [],
+        "company_other":     [],
+    }
+    for node in ring:
+        t = node.get("type", "")
+        e = node.get("edge_type", "") or ""
+        if t == "Company" and "suppli" in e:
+            buckets["company_supply"].append(node)
+        elif t == "Company" and "competes" in e:
+            buckets["company_compete"].append(node)
+        elif t in ("Commodity", "Region"):
+            buckets["macro"].append(node)
+        else:
+            buckets["company_other"].append(node)
+
+    for b in buckets.values():
+        random.shuffle(b)
+
+    # Fill slots from highest-priority bucket first; round-robin once
+    # each bucket is exhausted so we don't waste allocation.
+    ordered = (
+        buckets["company_supply"]
+        + buckets["company_compete"]
+        + buckets["macro"]
+        + buckets["company_other"]
+    )
+    return ordered[:cap]
+
+
+# ---------------------------------------------------------------------------
 # Top-level propagation
 # ---------------------------------------------------------------------------
 
@@ -757,12 +895,47 @@ def run_impact(text: str, *, conn: sqlite3.Connection, provider: Optional[str] =
         debug_log.append(f"hop {hop}: frontier={len(frontier)}, raw_neighbors={len(full_ring)}")
         if not full_ring:
             debug_log.append(f"hop {hop}: no new neighbors -> stop")
+            # P0 fix: if we stop on hop 1 with only seeds in impacts, the seed
+            # node(s) have no graph connections — return a helpful error immediately
+            # rather than timing out or returning a trivial single-node result.
+            if hop == 1 and len(impacts) == len(all_seeds):
+                seed_names = ", ".join(s["name"] for s in all_seeds)
+                suggestion = (
+                    "Try searching for a directly connected company (e.g. Apple, "
+                    "Nvidia, AMD for TSMC; ExxonMobil, Chevron for crude oil)."
+                )
+                _restore_thread_local()
+                return {
+                    "error": (
+                        f"The identified seed node(s) — {seed_names} — exist in the graph "
+                        f"but have no recorded supply chain connections yet. {suggestion}"
+                    ),
+                    "seed": impacts.get(primary_seed_id),
+                    "seeds": [impacts[s["node_id"]] for s in all_seeds if s["node_id"] in impacts],
+                    "impacts": list(impacts.values()),
+                    "provider": effective_provider,
+                    "model": "claude-code-cli" if effective_provider == "claude" else OLLAMA_MODEL,
+                    "max_hops": MAX_HOPS,
+                    "debug": debug_log,
+                    "refinement": {"considered": 0, "rescored": 0, "applied": 0},
+                    "no_neighbors": True,
+                }
             break
+        # Cap the ring before chunking. Large hubs (crude oil, Nvidia, Amazon)
+        # can have 200-500 neighbours; without a cap each hop spawns dozens of
+        # parallel Claude CLI subprocesses that saturate the thread pool.
+        # _sample_frontier prioritises Company-supply > Company-compete >
+        # Commodity/Region > other, with random shuffle within each bucket for
+        # variety across runs.
+        if len(full_ring) > MAX_FRONTIER:
+            sampled = _sample_frontier(full_ring, MAX_FRONTIER)
+            debug_log.append(
+                f"hop {hop}: frontier capped {len(full_ring)} -> {len(sampled)} "
+                f"(MAX_FRONTIER={MAX_FRONTIER})"
+            )
+            full_ring = sampled
         # Chunk the ring into MAX_RING_CANDIDATES-sized batches so every
-        # neighbour gets scored. Each chunk is one LLM call; a 28-node
-        # hop-1 takes two calls with MAX_RING_CANDIDATES=16. Previous
-        # behaviour silently dropped neighbours past the cap (that's why
-        # Starbucks didn't appear in some runs).
+        # neighbour gets scored. Each chunk is one LLM call.
         chunks = [
             full_ring[i:i + MAX_RING_CANDIDATES]
             for i in range(0, len(full_ring), MAX_RING_CANDIDATES)

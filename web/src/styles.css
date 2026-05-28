@@ -737,6 +737,74 @@ html, body {
   font-style: italic;
 }
 
+/* Top-5 most-affected summary strip — shown above the impact bar after a
+   successful trace, below the status line. Gives the novice investor an
+   instant "who wins / who loses" answer without having to read the graph. */
+.impact-top5 {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 28px); /* sits above .impact-status */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(26, 30, 34, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  backdrop-filter: blur(6px);
+  z-index: 12;
+}
+.impact-top5-label {
+  width: 100%;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 2px;
+}
+.impact-top5-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: default;
+  border: 1px solid transparent;
+}
+.impact-top5-chip.positive {
+  background: rgba(0, 180, 60, 0.18);
+  border-color: rgba(0, 200, 70, 0.35);
+  color: #4ddb7f;
+}
+.impact-top5-chip.negative {
+  background: rgba(220, 40, 0, 0.18);
+  border-color: rgba(240, 60, 0, 0.35);
+  color: #ff6040;
+}
+.impact-top5-chip.mixed {
+  background: rgba(220, 140, 0, 0.18);
+  border-color: rgba(240, 160, 0, 0.35);
+  color: #ffb833;
+}
+.impact-top5-arrow { font-size: 10px; opacity: 0.75; }
+.impact-top5-mag { font-size: 10px; opacity: 0.65; }
+/* Error state for no-neighbors traces */
+.impact-status.impact-status-error {
+  color: #ff8060;
+  font-style: normal;
+  font-size: 12px;
+  background: rgba(200, 40, 0, 0.12);
+  border: 1px solid rgba(200, 40, 0, 0.25);
+  border-radius: 4px;
+  padding: 6px 10px;
+  line-height: 1.5;
+  text-align: left;
+}
+
 .legend {
   position: absolute;
   bottom: 16px;

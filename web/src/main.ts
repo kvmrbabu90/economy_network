@@ -1019,17 +1019,67 @@ const impactRunBtn = document.getElementById("impact-run") as HTMLButtonElement 
 const impactClearBtn = document.getElementById("impact-clear") as HTMLButtonElement | null;
 const impactCancelBtn = document.getElementById("impact-cancel-btn") as HTMLButtonElement | null;
 const impactStatusEl = document.getElementById("impact-status") as HTMLDivElement | null;
+const impactTop5El = document.getElementById("impact-top5") as HTMLDivElement | null;
 const impactProviderEl = document.getElementById("impact-provider") as HTMLSelectElement | null;
 
 // AbortController for the in-flight /impact fetch — lets the Cancel button
 // terminate the LLM call without a page reload.
 let _impactAbortController: AbortController | null = null;
 
-function setImpactStatus(msg: string | null): void {
+function setImpactStatus(msg: string | null, isError = false): void {
   if (!impactStatusEl) return;
-  if (!msg) { impactStatusEl.hidden = true; impactStatusEl.textContent = ""; return; }
+  if (!msg) {
+    impactStatusEl.hidden = true;
+    impactStatusEl.textContent = "";
+    impactStatusEl.classList.remove("impact-status-error");
+    return;
+  }
   impactStatusEl.hidden = false;
   impactStatusEl.textContent = msg;
+  impactStatusEl.classList.toggle("impact-status-error", isError);
+}
+
+/** Render the "Top 5 most affected" quick-read strip above the impact bar. */
+function renderTop5(impacts: import("./api").ImpactVerdict[]): void {
+  if (!impactTop5El) return;
+  // Filter to real directional verdicts only; exclude seeds (hop 0 for seeds)
+  // since those are always "starting points", not surprising findings.
+  const verdicts = impacts
+    .filter(v => v.direction !== "no_effect" && v.magnitude > 0.1 && v.hop > 0)
+    .sort((a, b) => b.magnitude - a.magnitude)
+    .slice(0, 6);  // show up to 6 chips
+
+  if (!verdicts.length) {
+    impactTop5El.hidden = true;
+    return;
+  }
+
+  impactTop5El.innerHTML = "";
+  const label = document.createElement("div");
+  label.className = "impact-top5-label";
+  label.textContent = "Most affected";
+  impactTop5El.appendChild(label);
+
+  for (const v of verdicts) {
+    const chip = document.createElement("span");
+    const dirClass = v.mixed_signals ? "mixed" : v.direction === "positive" ? "positive" : "negative";
+    chip.className = `impact-top5-chip ${dirClass}`;
+    chip.title = v.reasoning || "";
+
+    const arrow = v.mixed_signals ? "⚡" : v.direction === "positive" ? "▲" : "▼";
+    chip.innerHTML =
+      `<span class="impact-top5-arrow">${arrow}</span>` +
+      `<span>${v.name}</span>` +
+      `<span class="impact-top5-mag">${v.magnitude.toFixed(2)}</span>`;
+    impactTop5El.appendChild(chip);
+  }
+  impactTop5El.hidden = false;
+}
+
+function clearTop5(): void {
+  if (!impactTop5El) return;
+  impactTop5El.hidden = true;
+  impactTop5El.innerHTML = "";
 }
 
 /** Collect all non-empty news texts from the multi-input list. */
@@ -1116,8 +1166,18 @@ async function handleImpactRun(): Promise<void> {
       // one or more named-entity seeds resolved from the text. M&A / company-
       // centric news has no commodity seed but can still propagate via entity seeds.
       const hasAnySeeds = resp.seed != null || (Array.isArray(resp.seeds) && resp.seeds.length > 0);
-      if (resp.error || !hasAnySeeds) {
-        setImpactStatus(`Failed: ${resp.error || "no seed identified"}`);
+      if (resp.error && !hasAnySeeds) {
+        // No seeds at all — complete failure.
+        setImpactStatus(`Failed: ${resp.error}`, true);
+        return;
+      }
+      if ((resp as any).no_neighbors) {
+        // Seed found but has no graph connections — show helpful error.
+        setImpactStatus(resp.error || "Seed node has no recorded supply chain connections.", true);
+        return;
+      }
+      if (!hasAnySeeds) {
+        setImpactStatus(`No seed identified — try a more specific entity name.`, true);
         return;
       }
       // If the graph hasn't been loaded yet (search-mode start or impact run
@@ -1140,6 +1200,7 @@ async function handleImpactRun(): Promise<void> {
       setImpactStatus(
         `[${niceProvider}] Seeds: ${seedNames} → ${resp.impacts.length} nodes across ${resp.max_hops || 3} hops`,
       );
+      renderTop5(resp.impacts);
       saveToArchive(texts[0], provider, resp);
 
     } else {
@@ -1163,6 +1224,7 @@ async function handleImpactRun(): Promise<void> {
         `[${niceProvider}] ${texts.length} events merged → ${resp.total_nodes ?? resp.merged.length} nodes` +
         (mixedCount > 0 ? `, ${mixedCount} amber (mixed signals)` : ""),
       );
+      renderTop5(resp.merged);
       saveMultiToArchive(texts, provider, resp);
     }
   } catch (err) {
@@ -1186,6 +1248,7 @@ function handleImpactClear(): void {
   applyImpact3D(g, null, filters);
   if (impactClearBtn) impactClearBtn.hidden = true;
   setImpactStatus(null);
+  clearTop5();
   // Reset added-headline tracking so the morning brief buttons re-enable.
   _addedHeadlines.clear();
   if (_currentHeadlines.length > 0) renderMorningBrief(_currentHeadlines);
@@ -1458,6 +1521,7 @@ async function restoreFromArchive(entry: ArchiveEntry): Promise<void> {
     refreshEdgeVisibility();
     applyImpact3D(g, impactState, filters);
     if (impactClearBtn) impactClearBtn.hidden = false;
+    renderTop5(entry.multiResponse.merged ?? []);
     // Restore multi-input rows
     if (impactInputsList && entry.texts && entry.texts.length > 1) {
       impactInputsList.innerHTML = "";
@@ -1494,6 +1558,7 @@ async function restoreFromArchive(entry: ArchiveEntry): Promise<void> {
     refreshEdgeVisibility();
     applyImpact3D(g, impactState, filters);
     if (impactClearBtn) impactClearBtn.hidden = false;
+    renderTop5(entry.response.impacts ?? []);
     // Prefer the live first-row input (rebuilt by handleImpactClear) over the
     // possibly-detached module-level impactInput reference.
     const _firstInput = impactInputsList?.querySelector<HTMLInputElement>(".impact-news-input") ?? impactInput;
