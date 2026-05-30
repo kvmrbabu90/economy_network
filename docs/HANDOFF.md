@@ -1,5 +1,5 @@
 # EconGraph — Session Handoff Document
-*Written 2026-05-25. Covers everything built, the current codebase state, and what's next.*
+*Last updated 2026-05-29. Covers everything built, the current codebase state, and what's next.*
 
 ---
 
@@ -12,7 +12,7 @@ A single, queryable, directed, typed graph of the global economy.
 - **`customer_of` is derived**: never stored. It's the reversal of `supplies` computed at query time.
 - **Every edge has provenance**: filing accession, URL, verbatim snippet, extracted_by tag.
 
-Current scale: **5,328 nodes**, **18,528 edges** (13,435 core + 5,093 audit/inferred).
+Current scale: **5,334 nodes**, **18,558 edges** (13,465 core + 5,093 audit/inferred).
 
 ---
 
@@ -94,7 +94,7 @@ Each stage reads the previous stage's JSONL files from `data/`. Re-runnable inde
 - Strategy: Wikidata SPARQL P:17 (HQ country) + P:414 (any exchange listing)
 - Wikipedia LLM extraction: ~73 new edges from Phase F companies
 - Wikidata P1830 competitor enrichment: +1,088 competes_with edges
-- **Final graph: 5,328 nodes, 18,528 edges, largest component 5,223 nodes**
+- **Final graph after Phase F: 5,328 nodes, 18,528 edges, largest component 5,223 nodes**
 - Supply layer: 6,090 supplies edges (up from 4,194)
 - New file: `pipeline/ingest_phase_f.py`
 - Config: 36 new overrides in `company_sub_industry_overrides.yaml`; 4 new entries in
@@ -102,6 +102,12 @@ Each stage reads the previous stage's JSONL files from `data/`. Re-runnable inde
 - TypeScript fix: `render3d.ts` TS2448 (apiNode used before declaration)
 - Acceptance tests: all 6 geography tests PASS (India ≥100, UK ≥100, Germany ≥30,
   Japan ≥80, Korea ≥100, Australia ≥100)
+
+### Phase G: Market-Movers Curation + Impact Engine Hardening (complete 2026-05-28)
+See §12 below for full detail.
+
+### Phase H: Globe Load Performance (complete 2026-05-29)
+See §13 below for full detail.
 
 ---
 
@@ -178,6 +184,8 @@ Each stage reads the previous stage's JSONL files from `data/`. Re-runnable inde
 6. Bubble nodes (`bubble:` prefix) must never appear in the 3D renderer.
 7. Edge colors for Sigma must be premultiplied (`toRgba` in style.ts).
 8. Edge colors for three.js must be un-premultiplied (`unpremultiply` in render3d.ts).
+9. **`manual:curation` extracted_by**: hand-curated edges (no SEC filing) must use `extracted_by="manual:curation"` (not `"manual"`). The `"manual"` tag requires a non-empty `filing` + `url`; `"manual:curation"` does not. Both the Pydantic model (`schema/models.py`) and the SQLite CHECK constraint (`schema/store.py`) enumerate this value.
+10. **`add_market_movers.py` must run after `build_graph.py`** — or its nodes must already be in the three JSONL pipeline files (`data/nodes.jsonl`, `data/edges.jsonl`, `data/aliases.jsonl`). `build_graph.py` wipes and rebuilds `econgraph.db` from those files; any DB-only inserts will be lost. The script now writes to all three JSONL files automatically.
 
 ---
 
@@ -213,7 +221,8 @@ Each stage reads the previous stage's JSONL files from `data/`. Re-runnable inde
 ## 8. Phase F (Complete 2026-05-25) — Exchange-Index Global Expansion
 
 See Phase History above for full details. Key stats: 2,862 companies in companies.jsonl
-(up from 1,253 pre-Phase F), 5,328 graph nodes, 18,528 edges, 6,090 supply edges.
+(up from 1,253 pre-Phase F), 5,328 graph nodes post-Phase F, 18,528 edges, 6,090 supply edges.
+*Graph has since grown to 5,334 nodes / 18,558 edges after Phase G curation (§12).*
 
 Pipeline execution order for rebuild:
 ```bash
@@ -271,3 +280,121 @@ python pipeline/build_graph.py
 1. **Phase D**: should the country-default markets be additive (base markets UNION country markets) or restrictive (base markets INTERSECTION country markets)? Current plan: additive union capped by the industry base list. If a Korean telco's industry_to_retail is [us, eu], it should stay [us, eu, kr, jp, cn, sea] not lose US.
 2. **Phase B follow-up**: 6 companies in `foreign_filers.yaml` commented out (Tata Motors, CBD, Westpac, MercadoLibre, Yum China, BeiGene) — all addressable via Phase B Wikidata path. Do now or defer?
 3. **Phase E**: complete. No open questions remaining on this phase.
+4. **Globe edge density (idle state)**: arcs are now hidden when no impact trace is active (Phase G fix). Consider whether a "show top-N supply edges" toggle would be useful for exploring the graph in globe mode without running a trace.
+5. **IDB cache key does not include graph version**: if `build_graph.py` is re-run, the browser cache still serves old data for up to 24 h. No action needed for normal use, but if you need fresh data immediately after a pipeline rebuild, open DevTools → Application → IndexedDB → `econgraph-cache` → Clear.
+
+---
+
+## 12. Phase G (Complete 2026-05-28) — Market-Movers Curation + Impact Engine Hardening
+
+### 12.1 Impact Engine Speed (api/impact.py)
+- `RING_PARALLELISM` 3 → **8** (concurrent Claude CLI subprocesses per hop ring)
+- `MAX_RING_CANDIDATES` 12 → **24** (entities packed per LLM call; fewer total subprocess launches)
+- Safe because commit `b91320f` (CLAUDE.md tempdir fix) was already in place — confirmed in git history before applying.
+- Same `cwd=tmpdir` guard applied to `api/news.py`'s `_claude_call()` (was missing, could block news filtering).
+
+### 12.2 New Provisional Company Nodes (scripts/add_market_movers.py)
+**6 new nodes** added as `manual:curation` edges, persisted to all three JSONL pipeline files:
+
+| Company | ID | Key role |
+|---|---|---|
+| NIO Inc. | `wikidata:Q16957870` | Chinese premium EV (NYSE:NIO); aliases: "nio", "NIO", "NIO Inc." |
+| Li Auto | `wikidata:Q78793803` | Chinese EV/EREV (NASDAQ:LI) |
+| XPeng Inc. | `wikidata:Q66041928` | Chinese EV (NYSE:XPEV) |
+| CATL | `wikidata:Q21751798` | World's largest EV battery maker (~37% global share); hub node |
+| Novo Nordisk | `wikidata:Q386708` | GLP-1 leader (Ozempic/Wegovy); alias "novo nordisk" resolves |
+| Roche Holding | `wikidata:Q212322` | Swiss pharma/diagnostics (Genentech parent) |
+
+BMW Group (`wikidata:Q26678`) was already in the graph; 10 new edges added to it.
+
+**30 new edges**:
+- CATL → Tesla, VW Group, BMW, Mercedes, NIO, Li Auto, XPeng (`supplies`, global)
+- Albemarle → CATL, SQM → CATL, Ganfeng → CATL (`supplies`, global)
+- commodity:lithium/nickel/cobalt/graphite → CATL (`supplies`, global)
+- NIO ↔ XPeng, Li Auto, BYD Auto, Tesla (`competes_with`)
+- Li Auto ↔ XPeng, BYD Auto; XPeng ↔ BYD Auto (`competes_with`)
+- Novo Nordisk ↔ Eli Lilly, AstraZeneca, Roche Holding (`competes_with`)
+- Roche ↔ Pfizer, Novartis, AstraZeneca (`competes_with`)
+- BMW ↔ Mercedes, VW Group, Tesla (`competes_with`)
+
+**Graph after Phase G: 5,334 nodes (+6), 13,465 core edges (+30), 18,558 total.**
+
+### 12.3 Schema: `manual:curation` Extracted-By Tag
+- **`schema/models.py`**: `"manual:curation"` added to `extracted_by` Literal. NOT in `REQUIRES_SOURCE` — does not require a `filing` or `url`. Snippet (human justification) is still required.
+- **`schema/store.py`**: SQLite CHECK constraint extended to include `'manual:curation'`.
+- All 30 new edges use this tag.
+
+### 12.4 Archive Restore Bug Fix (web/src/main.ts + render3d.ts)
+Two bugs fixed on `restoreFromArchive()`:
+1. **Globe washed out**: `resetGlobeCamera()` now called on restore (was missing), returning camera to lat=30, lon=−90 default view.
+2. **Stale inspector**: `showEmpty()` called before re-applying the trace, so the inspector never shows data from a previous interaction.
+
+### 12.5 Globe Cache Load Speed (web/src/main.ts + graph-cache.ts)
+- **Fast mode** added to `_batchLoadGraph(nodes, edges, onProgress, fast=false)`:
+  - `fast=true` (IDB cache hit): NODE_BATCH=2000, EDGE_BATCH=4000 → ~4 yields (~2–3 s)
+  - `fast=false` (cold API fetch): NODE_BATCH=150, EDGE_BATCH=600 → ~67 yields, granular progress counter (unchanged)
+- `showGraphOverlay(fixedMessage?)`: accepts an optional static message. Cache-hit paths show `"Restoring graph…"` instead of the rotating "Fetching nodes from economy network…" animation.
+- Tiers 2, 2.25, and 2.5 all pass `fast=true`.
+
+### 12.6 Globe Edge Visibility (web/src/render3d.ts)
+Two bugs fixed:
+
+**Bug A — market filter change un-tinted arcs**  
+`update3D()` calls `instance.graphData()` which replaces every link object with a fresh THREE primitive — no tint applied. If an impact trace was active, switching market filters would make all edges re-appear at default colors. Fix: `update3D()` now schedules `_applyLinkTint(_currentImpactState)` at 150 ms / 350 ms / 750 ms (after arc-rebuild at rAF / 100 ms / 600 ms).
+
+**Bug B — idle globe showed all 18k edges**  
+`_applyLinkTint(null)` (called on trace clear or globe reset) previously made all edges visible. With 13k+ core + 5k audit tubes, the globe was unreadable under "All Markets". Fix: `state=null` now hides all arcs. Arcs are only visible during an active impact trace (both endpoints must be impacted).
+
+---
+
+## 13. Phase H (Complete 2026-05-29) — Globe Load Performance
+
+### Problem
+First open of the dashboard (globe mode) had 20–30 s of lag before the scene was interactive. Three root causes identified:
+
+1. **8+ intermediate `update3D()` calls during batch load** — the RAF-debounced `nodeAdded`/`edgeAdded` listeners fire once per batch yield (one `setTimeout(0)` → one RAF tick → one `update3D()`). Each `update3D()` in globe mode: disposes all TubeGeometry arcs, replaces all link objects via `graphData()`, then schedules 3 more `buildArcs` passes. With ~8 batches at NODE_BATCH=2000 / EDGE_BATCH=4000, that's ~8 arc disposals + rebuilds of 13k TubeGeometry objects during load.
+
+2. **FA2 layout (6+ s) running in globe mode** — globe nodes are pinned at HQ lat/lon via `fx/fy/fz`. The 220-iteration FA2 pass computes 2D `x/y` positions that the globe never reads. Pure wasted CPU on every globe load.
+
+3. **13k TubeGeometry arcs built at `start3D()` mount** — `buildArcs` was scheduled at rAF/100ms/600ms unconditionally. In idle mode, `_applyLinkTint(null)` hides every arc immediately — so building them was pure overhead.
+
+### Fix 1 — `_bulkLoadInProgress` flag (`web/src/main.ts`)
+```typescript
+let _bulkLoadInProgress = false;
+// In _schedule3DUpdate:
+if (!is3DRunning() || _3dUpdateScheduled || _bulkLoadInProgress) return;
+// In g.on("cleared"):
+if (is3DRunning() && !_bulkLoadInProgress) update3D(g, filters);
+// In _batchLoadGraph:
+_bulkLoadInProgress = true;
+try { g.clear(); ...batches... }
+finally {
+  _bulkLoadInProgress = false;
+  if (is3DRunning()) update3D(g, filters); // ONE final sync
+}
+```
+Result: 8+ intermediate `update3D()` calls → **1** at load completion.
+
+### Fix 2 — Skip FA2 in globe mode (`web/src/main.ts`)
+All `applyLayout()` / `runLayout()` call sites (Tier 2.25, Tier 2.5, Tier 3, `recenterOn`, `expandFrom`) now guarded with `if (!is3DRunning())`. Globe loads skip the 6+ s FA2 pass entirely; nodes use lat/lon pins. FA2 runs normally when the user is in 2D mode.
+
+Note: if the user opens in globe mode (always true in the current landing flow), 2D positions won't be pre-computed. Switching to 2D shows unordered nodes until the user clicks the "Force" layout tab. This is acceptable — the 2D path is secondary.
+
+### Fix 3 — Defer arc builds until impact fires (`web/src/render3d.ts`)
+`buildArcs` scheduling in both `start3D()` and `update3D()` is now guarded by `_currentImpactState !== null`:
+- **`start3D`**: only schedules buildArcs at rAF/100ms/600ms if an impact trace is already active (e.g., 2D→3D switch while trace is running). In idle mode, skips all three passes.
+- **`update3D`**: only schedules `__rebuildArcs` if `_currentImpactState` is non-null. When `applyImpact3D` fires, it sets `_currentImpactState` BEFORE calling `update3D`, so arc building proceeds correctly on first impact.
+
+Result: 13k TubeGeometry objects are never built during idle globe loads. They're built on-demand the first time an impact trace fires.
+
+### Combined effect
+| Phase | Before | After |
+|---|---|---|
+| Batch load `update3D()` calls | ~8 | 1 |
+| Arc builds per `update3D()` | 3 passes × 13k geoms | 0 (idle) / 3 passes (with impact) |
+| FA2 on globe load | 6+ s synchronous | 0 ms (skipped) |
+| **Total globe startup lag** | **20–30 s** | **~2–3 s** |
+
+### Files changed
+- `web/src/main.ts`: `_bulkLoadInProgress` flag; FA2 guards in Tiers 2.25/2.5/3, `recenterOn`, `expandFrom`
+- `web/src/render3d.ts`: `buildArcs` scheduling guarded in `start3D()` and `update3D()`

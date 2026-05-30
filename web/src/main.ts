@@ -40,6 +40,7 @@ import {
 import {
   applyImpact3D,
   is3DRunning,
+  resetGlobeCamera,
   resize3D,
   start3D,
   stop3D,
@@ -312,11 +313,16 @@ function refreshEdgeVisibility(): void {
 
 let _graphOverlayTimer: ReturnType<typeof setInterval> | null = null;
 
-function showGraphOverlay(): void {
+function showGraphOverlay(fixedMessage?: string): void {
   const overlay = document.getElementById("graph-overlay");
   const stageEl = document.getElementById("graph-overlay-stage");
   if (!overlay || !stageEl) return;
   overlay.style.display = "flex";
+  if (fixedMessage) {
+    // Cache-hit path: show a static message instead of the rotating API-fetch stages.
+    stageEl.textContent = fixedMessage;
+    return; // no rotating timer
+  }
   const stages = [
     "Connecting to graph database…",
     "Fetching nodes from economy network…",
@@ -443,23 +449,45 @@ async function _batchLoadGraph(
   nodes: ApiNode[],
   edges: ApiEdge[],
   onProgress?: (msg: string) => void,
+  fast = false,
 ): Promise<void> {
-  g.clear();
-  const NODE_BATCH = 150;
-  const EDGE_BATCH = 600;
-  for (let i = 0; i < nodes.length; i += NODE_BATCH) {
-    mergeFromApi(g, nodes.slice(i, i + NODE_BATCH), []);
-    onProgress?.(
-      `Loading ${Math.min(i + NODE_BATCH, nodes.length).toLocaleString()} / ${nodes.length.toLocaleString()} nodes…`,
-    );
-    await _yieldToScheduler();
-  }
-  for (let i = 0; i < edges.length; i += EDGE_BATCH) {
-    mergeFromApi(g, [], edges.slice(i, i + EDGE_BATCH));
-    onProgress?.(
-      `Loading edges… ${Math.min(i + EDGE_BATCH, edges.length).toLocaleString()} / ${edges.length.toLocaleString()}`,
-    );
-    await _yieldToScheduler();
+  // fast=true (IDB cache hit): use larger batches so the merge completes in
+  // ~3-4 yields (~2-3 s) instead of the ~67 yields (~15-20 s) needed for a
+  // cold API fetch where we want granular progress feedback.
+  //
+  // _bulkLoadInProgress blocks the per-batch update3D() that would otherwise
+  // fire between every setTimeout(0) yield. In globe mode each suppressed call
+  // would dispose + rebuild 13k TubeGeometry arcs — multiplied by ~8 batches
+  // that's the bulk of the 20-30 s lag. One final update3D() fires in the
+  // finally block once the full graph is in memory.
+  _bulkLoadInProgress = true;
+  try {
+    g.clear();
+    const NODE_BATCH = fast ? 2000 : 150;
+    const EDGE_BATCH = fast ? 4000 : 600;
+    for (let i = 0; i < nodes.length; i += NODE_BATCH) {
+      mergeFromApi(g, nodes.slice(i, i + NODE_BATCH), []);
+      if (!fast) {
+        onProgress?.(
+          `Loading ${Math.min(i + NODE_BATCH, nodes.length).toLocaleString()} / ${nodes.length.toLocaleString()} nodes…`,
+        );
+      }
+      await _yieldToScheduler();
+    }
+    for (let i = 0; i < edges.length; i += EDGE_BATCH) {
+      mergeFromApi(g, [], edges.slice(i, i + EDGE_BATCH));
+      if (!fast) {
+        onProgress?.(
+          `Loading edges… ${Math.min(i + EDGE_BATCH, edges.length).toLocaleString()} / ${edges.length.toLocaleString()}`,
+        );
+      }
+      await _yieldToScheduler();
+    }
+  } finally {
+    _bulkLoadInProgress = false;
+    // One 3D sync now the full graph is loaded. The globe was dark during
+    // batching; this single call populates the scene in one pass.
+    if (is3DRunning()) update3D(g, filters);
   }
 }
 
@@ -490,7 +518,7 @@ async function loadFullCore(skipLayout = false): Promise<void> {
   // Skip network + FA2 entirely; just restore graph state from RAM.
   if (_fvResponse && _fvCacheKey === cacheKey && _fvPositions) {
     if (skipLayout) return; // data already in g, nothing more needed
-    await _batchLoadGraph(_fvResponse.nodes, _fvResponse.edges);
+    await _batchLoadGraph(_fvResponse.nodes, _fvResponse.edges, undefined, true);
     restyleAfterMerge(g);
     // Restore FA2 positions so the graph appears instantly settled.
     _fvPositions.forEach((pos, id) => {
@@ -522,15 +550,17 @@ async function loadFullCore(skipLayout = false): Promise<void> {
     _fvInFlight = true;
     _fvInFlightPromise = (async () => {
       try {
-        showGraphOverlay();
+        showGraphOverlay("Restoring graph…");
         if (g.order === 0) {
           // Graph is empty — background prefetch only stored _fvResponse without
           // calling replaceGraph (to keep the main thread free during landing).
-          // Populate now with overlay feedback.
+          // Use fast=true: data already in memory, no API wait, so larger batches
+          // are safe and reduce visible loading time from ~15 s to ~2-3 s.
           await _batchLoadGraph(
             _fvResponse!.nodes,
             _fvResponse!.edges,
-            setGraphOverlayStage,
+            undefined,
+            true, // fast mode — in-memory cache hit
           );
           restyleAfterMerge(g);
         }
@@ -548,8 +578,10 @@ async function loadFullCore(skipLayout = false): Promise<void> {
           _fvPositions = savedPositions;
           refreshEdgeVisibility();
           renderer.refresh();
-        } else {
-          // No saved positions — run FA2 (slow first time, then saved for next load).
+        } else if (!is3DRunning()) {
+          // No saved positions, 2D mode — run FA2 then cache for next load.
+          // Globe mode skips FA2: nodes are pinned at lat/lon; the 6 s FA2
+          // pass is wasted work and is the second biggest source of startup lag.
           setGraphOverlayStage("Computing layout…");
           await applyLayout();
           if (layoutMode === "force") {
@@ -564,6 +596,7 @@ async function loadFullCore(skipLayout = false): Promise<void> {
             savePositions(cacheKey, _fvPositions); // fire-and-forget — persists for next reload
           }
         }
+        // else: globe mode with no saved positions — skip FA2 (lat/lon pins provide layout)
 
         cameraReset();
         _graphIsFullView = true;
@@ -595,11 +628,14 @@ async function loadFullCore(skipLayout = false): Promise<void> {
         _fvPositions = null;
         if (!skipLayout) {
           // Landing is gone — safe to populate the graph now.
-          showGraphOverlay();
+          // Use fast=true: data comes from IDB (no API wait), so large batches
+          // are safe and cut load time from ~15 s to ~2-3 s.
+          showGraphOverlay("Restoring graph…");
           await _batchLoadGraph(
             cached.nodes,
             cached.edges,
-            setGraphOverlayStage,
+            undefined,
+            true, // fast mode — IDB cache hit
           );
           restyleAfterMerge(g);
 
@@ -616,7 +652,9 @@ async function loadFullCore(skipLayout = false): Promise<void> {
             _fvPositions = savedPos;
             refreshEdgeVisibility();
             renderer.refresh();
-          } else {
+          } else if (!is3DRunning()) {
+            // No saved positions, 2D mode — run FA2 then cache.
+            // Globe mode skips FA2: nodes are pinned at lat/lon.
             setGraphOverlayStage("Computing layout…");
             await applyLayout();
             if (layoutMode === "force") {
@@ -631,6 +669,7 @@ async function loadFullCore(skipLayout = false): Promise<void> {
               savePositions(cacheKey, _fvPositions); // fire-and-forget
             }
           }
+          // else: globe mode with no saved positions — skip FA2 (lat/lon pins)
           cameraReset();
           hideGraphOverlay();
           _graphIsFullView = true;
@@ -666,18 +705,22 @@ async function loadFullCore(skipLayout = false): Promise<void> {
             setGraphOverlayStage,
           );
           restyleAfterMerge(g);
-          await applyLayout();
-          cameraReset();
-          if (layoutMode === "force") {
-            const snap: Map<string, { x: number; y: number }> = new Map();
-            g.forEachNode((id) => {
-              snap.set(id, {
-                x: g.getNodeAttribute(id, "x") ?? 0,
-                y: g.getNodeAttribute(id, "y") ?? 0,
+          if (!is3DRunning()) {
+            // 2D mode only: run FA2 and cache positions. Globe skips FA2
+            // (lat/lon pins provide positioning without a force simulation).
+            await applyLayout();
+            if (layoutMode === "force") {
+              const snap: Map<string, { x: number; y: number }> = new Map();
+              g.forEachNode((id) => {
+                snap.set(id, {
+                  x: g.getNodeAttribute(id, "x") ?? 0,
+                  y: g.getNodeAttribute(id, "y") ?? 0,
+                });
               });
-            });
-            _fvPositions = snap;
+              _fvPositions = snap;
+            }
           }
+          cameraReset();
           _graphIsFullView = true;
         }
         // skipLayout=true (background prefetch during landing): just store
@@ -714,7 +757,7 @@ async function recenterOn(id: string): Promise<void> {
   });
   replaceGraph(g, resp.nodes, resp.edges);
   restyleAfterMerge(g);
-  await applyLayout();
+  if (!is3DRunning()) await applyLayout();
   cameraReset();
   // Show the focused node in the inspector.
   const center = resp.nodes.find((n) => n.key === resp.center);
@@ -734,7 +777,7 @@ async function expandFrom(id: string): Promise<void> {
   const changed = mergeFromApi(g, resp.nodes, resp.edges);
   if (changed) {
     restyleAfterMerge(g);
-    await runLayout(g, 120);
+    if (!is3DRunning()) await runLayout(g, 120);
   }
   renderer.refresh();
 }
@@ -968,8 +1011,14 @@ function refreshAll() {
 // doesn't trigger 150 redundant update3D calls. A single rAF deferred call
 // wins the race and fires once per tick at most.
 let _3dUpdateScheduled = false;
+// Set during _batchLoadGraph to suppress per-batch update3D() calls. Without
+// this, the RAF-debounced listener fires between every setTimeout(0) yield and
+// triggers update3D() ~8 times per load — each call in globe mode disposes +
+// rebuilds 13k TubeGeometry arcs. One final update3D() fires in the finally
+// block once the full graph is resident.
+let _bulkLoadInProgress = false;
 function _schedule3DUpdate() {
-  if (!is3DRunning() || _3dUpdateScheduled) return;
+  if (!is3DRunning() || _3dUpdateScheduled || _bulkLoadInProgress) return;
   _3dUpdateScheduled = true;
   requestAnimationFrame(() => {
     _3dUpdateScheduled = false;
@@ -978,7 +1027,7 @@ function _schedule3DUpdate() {
 }
 g.on("nodeAdded", _schedule3DUpdate);
 g.on("edgeAdded", _schedule3DUpdate);
-g.on("cleared",   () => { if (is3DRunning()) update3D(g, filters); });
+g.on("cleared",   () => { if (is3DRunning() && !_bulkLoadInProgress) update3D(g, filters); });
 
 // Resize handling for the 3D canvas.
 const ro3d = new ResizeObserver(() => {
@@ -1515,6 +1564,14 @@ async function restoreFromArchive(entry: ArchiveEntry): Promise<void> {
   // Reset headline "added" tracking so the morning brief reflects the
   // restored state cleanly (not the previous session's added state).
   _addedHeadlines.clear();
+
+  // Clear any previously-selected node/edge so the inspector doesn't show
+  // stale data from a different trace or interaction.
+  showEmpty();
+  // Reset the globe camera to the default whole-globe view so the restored
+  // trace is visible from a sensible vantage point, not wherever the user
+  // last dragged/zoomed.
+  resetGlobeCamera();
 
   if (entry.isMulti && entry.multiResponse) {
     impactState = buildMultiImpactState(g, entry.multiResponse);

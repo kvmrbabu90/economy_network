@@ -149,6 +149,12 @@ class Provenance(BaseModel):
         "inference:co-mention",
         "inference:gics-peer",
         "wikidata",
+        # `manual:curation` -- hand-curated edges whose source is widely-known
+        #   public information (e.g. supply-chain relationships from press
+        #   releases, annual reports, or analyst coverage) rather than a
+        #   specific SEC filing. No filing/url required; snippet is the
+        #   human-readable justification.
+        "manual:curation",
     ]
 
     @field_validator("snippet")

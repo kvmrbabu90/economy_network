@@ -51,14 +51,15 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.environ.get("ECONGRAPH_LLM_MODEL", "gemma4:26b")
 MAX_HOPS = int(os.environ.get("IMPACT_MAX_HOPS", "3"))
 # Per-ring cap. Claude handles 24 candidates comfortably in one call
-# (same prompt shape, just a longer JSON array); bumped from 16 to cut
-# chunk count by ~33% on large hops.
-MAX_RING_CANDIDATES = int(os.environ.get("IMPACT_MAX_RING", "12"))
+# (same prompt shape, just a longer JSON array); 24 halves chunk count
+# vs 12, cutting subprocess launches ~50% on large hops.
+MAX_RING_CANDIDATES = int(os.environ.get("IMPACT_MAX_RING", "24"))
 LLM_TIMEOUT_SECONDS = int(os.environ.get("IMPACT_LLM_TIMEOUT", "100"))
 # How many ring chunks / refinement batches to score in parallel. Each
-# is an independent Claude CLI subprocess (~200-400 MB RSS). 3 concurrent
-# chunks stay within typical Anthropic rate limits.
-RING_PARALLELISM = int(os.environ.get("IMPACT_RING_PARALLELISM", "3"))
+# is an independent Claude CLI subprocess (~200-400 MB RSS). 8 cuts one
+# serial round off large hops vs 3, safe now that the CLAUDE.md block
+# bug is fixed (subprocesses run from tempdir).
+RING_PARALLELISM = int(os.environ.get("IMPACT_RING_PARALLELISM", "8"))
 # Hard cap on the BFS frontier per hop. Large hubs (crude oil, Nvidia,
 # Amazon) can have 200-500 direct neighbours; scoring all of them spawns
 # dozens of parallel Claude CLI subprocesses that saturate the thread

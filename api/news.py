@@ -66,15 +66,18 @@ def _claude_call(prompt: str, timeout: int = 120) -> str:
     cmd = [binary, "-p", prompt, "--output-format", "json"]
     t0 = time.time()
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                cwd=tmpdir,   # run outside repo root so CLAUDE.md doesn't block
+            )
     except subprocess.TimeoutExpired:
         log.warning("news: Claude CLI timeout after %ds", timeout)
         return ""

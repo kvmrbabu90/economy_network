@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS edges (
     prov_extracted_by TEXT NOT NULL
         CHECK (prov_extracted_by IN (
             'llm','llm:claude-cli','llm:gemma','rule','manual',
-            'inference:co-mention','inference:gics-peer','wikidata'
+            'inference:co-mention','inference:gics-peer','wikidata',
+            'manual:curation'
         )),
     -- Phase 3 may merge multiple competes_with rows onto one edge. The
     -- additional provenances (full Provenance dicts, JSON-serialized) are

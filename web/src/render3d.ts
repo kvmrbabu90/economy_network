@@ -591,12 +591,16 @@ export function start3D(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).__arcBuilt = { built, skipped };
     };
-    // First pass: positions are set as soon as 3d-force-graph copies the
-    // graphData into its internal sim. A single rAF is usually enough;
-    // a 100ms safety net catches any later resolution.
-    requestAnimationFrame(buildArcs);
-    setTimeout(buildArcs, 100);
-    setTimeout(buildArcs, 600);
+    // Only schedule initial arc builds if an impact trace is already active
+    // (e.g. the user switched 2D→3D while a trace was running). In idle mode
+    // all arcs are hidden — building 13k TubeGeometry objects at mount time is
+    // pure overhead and the dominant source of the initial globe lag.
+    // Arc builds happen the first time applyImpact3D() fires via update3D().
+    if (_currentImpactState) {
+      requestAnimationFrame(buildArcs);
+      setTimeout(buildArcs, 100);
+      setTimeout(buildArcs, 600);
+    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).__rebuildArcs = buildArcs;
   }
@@ -908,10 +912,28 @@ export function update3D(g: EconGraph, filterState?: FilterState | null): void {
   // 100 ms covers slower resolution; 600 ms is a safety net for the rare
   // case where the d3 simulation hasn't fully settled link.source / .target
   // references yet when update3D is triggered mid-session by replaceGraph.
-  if (currentLayout === "globe" && (window as any).__rebuildArcs) {
+  // Only rebuild arcs when an impact trace is active. In idle mode every arc
+  // ends up hidden (_applyLinkTint(null) sets obj.visible = false), so building
+  // 13k TubeGeometry objects on every update3D() call is pure GPU overhead.
+  // Arc builds are deferred to the first applyImpact3D() call: that function
+  // sets _currentImpactState BEFORE calling update3D, so by the time execution
+  // reaches here the flag is already non-null and arc building proceeds.
+  if (currentLayout === "globe" && (window as any).__rebuildArcs && _currentImpactState) {
     requestAnimationFrame((window as any).__rebuildArcs);
     setTimeout((window as any).__rebuildArcs, 100);
     setTimeout((window as any).__rebuildArcs, 600);
+  }
+  // graphData() replaces every link object with a fresh THREE primitive that
+  // has never been tinted. If an impact trace is active, re-apply the link
+  // tint after the new objects settle — otherwise all edges appear visible
+  // at their default colors until the next explicit applyImpact3D() call.
+  // Timing: arcs are rebuilt at rAF / 100 ms / 600 ms; tint runs AFTER
+  // each arc-build pass (150 ms / 350 ms / 750 ms) so tubes exist first.
+  if (_currentImpactState) {
+    const snap = _currentImpactState;
+    setTimeout(() => _applyLinkTint(snap), 150);
+    setTimeout(() => _applyLinkTint(snap), 350);
+    setTimeout(() => _applyLinkTint(snap), 750);
   }
 }
 
@@ -1010,6 +1032,15 @@ export function applyImpact3D(
   setTimeout(() => _applyLinkTint(_snap), 900);
 }
 
+/** Reset the globe camera to the default whole-globe view (lat=30, lon=-90). */
+export function resetGlobeCamera(): void {
+  if (!instance || currentLayout !== "globe") return;
+  const cf = latLonToXYZ(30, -90, GLOBE_RADIUS * 3);
+  instance.cameraPosition?.({ x: cf.x, y: cf.y, z: cf.z });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (instance.camera?.() as any)?.lookAt(0, 0, 0);
+}
+
 function _applyLinkTint(state: ImpactState | null): void {
   if (!instance) return;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1035,13 +1066,11 @@ function _applyLinkTint(state: ImpactState | null): void {
         obj.visible = false;
       }
     } else {
-      // Restore default link appearance.
-      if (data?.color) {
-        obj.visible = true;
-        obj.material.color.set(data.color);
-        obj.material.opacity = data.below ? 0.30 : 0.75;
-        obj.material.transparent = true;
-      }
+      // No active impact trace — hide all arcs so the idle globe isn't
+      // cluttered with 13 000+ edges. Arcs only become visible when an
+      // impact trace fires (srcFired && tgtFired path above). This keeps
+      // the globe readable at every market-filter setting.
+      obj.visible = false;
     }
     obj.material.needsUpdate = true;
   });
