@@ -5,10 +5,10 @@
 // dev servers; the Phase 5 CORS rule matches any localhost port so the only
 // thing to keep in sync is uvicorn's --port flag.
 export const API_BASE_URL: string =
-  // Use 127.0.0.1 (IPv4) not localhost — on Windows, localhost resolves to
-  // ::1 (IPv6) first, but uvicorn --host 0.0.0.0 only binds IPv4. The browser
-  // would silently connect to ::1:8101 (refused) and show "API unreachable".
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://127.0.0.1:8101";
+  // Use localhost (resolves to ::1 on Windows) to match uvicorn --host ::
+  // which binds the IPv6 wildcard. Using 127.0.0.1 (IPv4) would fail because
+  // Windows does not dual-stack the IPv6 wildcard the way Linux does.
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8101";
 
 // "full"   — fetch the whole high-confidence core on load (default).
 // "search" — start near-empty with the search box focused; switch here when
