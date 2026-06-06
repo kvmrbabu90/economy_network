@@ -5,7 +5,7 @@
 // dev servers; the Phase 5 CORS rule matches any localhost port so the only
 // thing to keep in sync is uvicorn's --port flag.
 export const API_BASE_URL: string =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8001";
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8101";
 
 // "full"   — fetch the whole high-confidence core on load (default).
 // "search" — start near-empty with the search box focused; switch here when
