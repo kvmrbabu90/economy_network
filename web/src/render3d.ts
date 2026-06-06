@@ -515,7 +515,16 @@ export function start3D(
           opacity: link.below ? 0.30 : 0.75,
         });
         return new THREE.Mesh(new THREE.BufferGeometry(), mat);
-      });
+      })
+      // CRITICAL: suppress 3d-force-graph's default link-position update.
+      // By default the library positions each link mesh at the midpoint
+      // between source and target (applying a non-identity transform).
+      // Our buildArcs() builds TubeGeometry with WORLD-SPACE coordinates,
+      // so the mesh must stay at world-origin with an identity transform;
+      // otherwise the tube vertices are offset twice (once by the mesh
+      // position, once by the geometry coordinates) and the arcs shoot far
+      // beyond the globe. Returning true tells the library "I'm handling it."
+      .linkPositionUpdate((_obj: unknown) => true);
 
     const TUBE_RADIUS_CORE = 0.6;
     const TUBE_RADIUS_AUDIT = 0.3;
