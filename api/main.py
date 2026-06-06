@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
@@ -81,6 +82,27 @@ app = FastAPI(
         "(invariant #2)."
     ),
 )
+
+
+@app.on_event("startup")
+def _warmup_news_cache() -> None:
+    """Pre-warm the daily headlines cache in a background thread.
+
+    The first call to get_daily_headlines() hits RSS feeds + Claude CLI and
+    takes 30-60 s. If the browser beats that with its 15 s fetch timeout,
+    it shows 'API offline?' even though the API is healthy. By starting the
+    warm-up immediately at server boot, the cache is ready (or nearly ready)
+    by the time the user's browser loads the page.
+    """
+    def _warm() -> None:
+        try:
+            log.info("news: pre-warming headlines cache...")
+            news_mod.get_daily_headlines()
+            log.info("news: headlines cache ready")
+        except Exception as exc:  # never crash the server
+            log.warning("news: cache warmup failed: %s", exc)
+
+    threading.Thread(target=_warm, daemon=True, name="news-warmup").start()
 
 # Phase 6's Vite frontend will run on a different localhost port. Without
 # CORS the browser silently blocks fetches and the failure looks like a
