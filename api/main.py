@@ -84,7 +84,7 @@ app = FastAPI(
 )
 
 
-_warmup_lock = threading.Lock()   # prevents concurrent warmup on --reload cycles
+_warmup_lock = threading.Lock()   # prevents duplicate warmup threads within this process
 
 
 @app.on_event("startup")
@@ -98,10 +98,9 @@ def _warmup_news_cache() -> None:
     by the time the user's browser loads the page.
 
     Guard: `_warmup_lock` prevents a second warmup thread from starting if
-    uvicorn --reload fires while the first is mid-flight (e.g. during active
-    development). Without the guard each file-save could spawn a new thread
-    running the Claude CLI subprocess, potentially leaving orphan processes
-    when the worker is killed before subprocess.run() returns.
+    _warmup_news_cache is somehow called more than once within the same process
+    (e.g. tests that reset the ASGI app). Each uvicorn --reload spawns a fresh
+    process so the lock is recreated unlocked on each restart.
     """
     def _warm() -> None:
         if not _warmup_lock.acquire(blocking=False):

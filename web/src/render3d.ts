@@ -557,8 +557,8 @@ export function start3D(
         const ex: number = typeof _tgt.fx === "number" ? _tgt.fx : _tgt.x;
         const ey: number = typeof _tgt.fy === "number" ? _tgt.fy : _tgt.y;
         const ez: number = typeof _tgt.fz === "number" ? _tgt.fz : _tgt.z;
-        if (!isFinite(sx) || !isFinite(sy) || !isFinite(sz) ||
-            !isFinite(ex) || !isFinite(ey) || !isFinite(ez)) { skipped++; return; }
+        // Number.isFinite (not global isFinite) — rejects null/undefined without coercion.
+        if (![sx, sy, sz, ex, ey, ez].every(Number.isFinite)) { skipped++; return; }
         const s = new THREE.Vector3(sx, sy, sz);
         const e = new THREE.Vector3(ex, ey, ez);
         const angle = Math.min(Math.PI, s.angleTo(e) || 0);
