@@ -1,5 +1,5 @@
 # EconGraph — Session Handoff Document
-*Last updated 2026-05-29. Covers everything built, the current codebase state, and what's next.*
+*Last updated 2026-06-07. Covers everything built, the current codebase state, and what's next.*
 
 ---
 
@@ -108,6 +108,9 @@ See §12 below for full detail.
 
 ### Phase H: Globe Load Performance (complete 2026-05-29)
 See §13 below for full detail.
+
+### Phase I: Dev Environment Stability + Globe Rendering Fixes (complete 2026-06-07)
+See §14 below for full detail.
 
 ---
 
@@ -256,12 +259,15 @@ correctly filtered to `no_effect`.
 
 ## 10. Running the Stack
 
-```bash
-# Backend (from repo root)
-uvicorn api.main:app --host 0.0.0.0 --port 8101 --reload
+**Quickest way (Windows):** double-click `dev.bat` in the repo root. It kills any stale processes on
+8101 and 5180, then opens the backend and frontend in separate `cmd` windows automatically.
 
-# Frontend (dev)
-cd web && npm run dev
+```bash
+# Backend (from repo root) — binds IPv4+IPv6 wildcard for Windows dual-stack
+python -m uvicorn api.main:app --host :: --port 8101 --reload
+
+# Frontend (dev) — http://localhost:5180
+cd web && npm run dev -- --port 5180
 
 # Frontend (production build)
 cd web && npm run build    # outputs to web/dist/
@@ -272,6 +278,10 @@ python pipeline/resolve.py
 python pipeline/build_graph.py
 # then restart uvicorn
 ```
+
+**Port note**: backend is `8101`, frontend dev-server is `5180`.
+`web/.env.development` sets `VITE_API_BASE_URL=http://localhost:8101` — Vite must be fully
+restarted (not just HMR) if this file changes.
 
 ---
 
@@ -398,3 +408,103 @@ Result: 13k TubeGeometry objects are never built during idle globe loads. They'r
 ### Files changed
 - `web/src/main.ts`: `_bulkLoadInProgress` flag; FA2 guards in Tiers 2.25/2.5/3, `recenterOn`, `expandFrom`
 - `web/src/render3d.ts`: `buildArcs` scheduling guarded in `start3D()` and `update3D()`
+
+---
+
+## 14. Phase I (Complete 2026-06-07) — Dev Environment Stability + Globe Rendering Fixes
+
+### 14.1 Root-cause fix: "API unreachable" / "Headlines unavailable"
+**Root cause**: `web/.env.development` hard-coded `VITE_API_BASE_URL=http://localhost:8001` (old port).
+The backend moved to `8101` in an earlier session but the Vite env file was never updated, so every
+API call silently failed.
+
+**Fix**: Updated `web/.env.development` to `VITE_API_BASE_URL=http://localhost:8101`.
+Also updated the fallback in `web/src/config.ts` to match.
+
+**Key lesson**: Vite `.env.development` overrides `import.meta.env.VITE_*` at build time and takes
+precedence over any runtime default. A full Vite server restart (not just HMR) is required when
+this file changes.
+
+### 14.2 Windows IPv4/IPv6 dual-stack
+`localhost` on Windows resolves to `::1` (IPv6) when the system prefers IPv6. Uvicorn's
+`--host 0.0.0.0` only binds IPv4. Fix: changed to `--host ::` (IPv6 wildcard, which also serves
+IPv4 on dual-stack systems). `config.ts` uses `http://localhost:8101` which resolves correctly.
+
+### 14.3 dev.bat — sustainable startup script
+`dev.bat` at the repo root replaces the previous fragile PowerShell `Start-Process` approach:
+- Kills stale listeners on ports 8101 and 5180 via `netstat` + `taskkill`
+- Opens backend (`python -m uvicorn ... --host :: --port 8101 --reload`) and frontend
+  (`npm run dev -- --port 5180`) in separate `cmd /k` windows that survive the launcher
+
+### 14.4 Globe arc geometry fix — world-space tubes
+**Root cause**: 3d-force-graph moves each link mesh to the midpoint of src↔tgt and rotates it to
+face the target, then TubeGeometry (already in world-space) was being double-transformed.
+
+**Fix**: `.linkPositionUpdate((_obj) => true)` suppresses the library's default mesh transform.
+The link mesh stays at world origin; TubeGeometry coordinates are absolute world-space positions.
+
+### 14.5 Arc zoom distortion fix
+Two sub-bugs caused arcs to warp when zooming:
+
+**Bug A — wrong coordinates before first d3 tick**: `src.x/y/z` are initialized to random values
+before the simulation's first tick. Globe mode sets `fx/fy/fz` immediately when node data is
+created. Fix: read `fx/fy/fz` first, fall back to `x/y/z` only if `typeof fx !== "number"`:
+```typescript
+const sx = typeof _src.fx === "number" ? _src.fx : _src.x;
+```
+
+**Bug B — `onWheel` scaled link mesh X/Y**: The wheel handler multiplied the link mesh's X and Y
+scale to keep tube thickness consistent during zoom. In globe mode (world-space geometry) this
+distorts arcs. Fix: `onWheel` link scaling now guards `currentLayout !== "globe"`.
+
+### 14.6 isFinite guard hardening (`web/src/render3d.ts`)
+Two iterations of improvement:
+
+1. **Extended guard** (commit `78566ea`): the original guard only checked `sx` and `ex`
+   (x-coordinates). NaN in `sy/sz/ey/ez` poisoned `s.angleTo(e)` silently. Fix: guard all 6
+   coordinates.
+
+2. **Number.isFinite** (commit `a17a6b8`): switched from global `isFinite` to `Number.isFinite`
+   via `.every()`. Global `isFinite(null)` returns `true` (coerces null→0), causing a null node
+   position to produce an arc at the globe center. `Number.isFinite(null)` returns `false`.
+   ```typescript
+   if (![sx, sy, sz, ex, ey, ez].every(Number.isFinite)) { skipped++; return; }
+   ```
+
+### 14.7 Morning brief reliability fixes (`web/src/news.ts` + `api/main.py`)
+**Problem**: first server startup triggers RSS fetching + Claude CLI filtering (30–60 s). If the
+browser fetched headlines before the cache was ready (15 s timeout), it showed "Headlines
+unavailable" on every cold start.
+
+Three-part fix:
+1. **Startup warmup** (`api/main.py`): `@app.on_event("startup")` fires a daemon thread that
+   pre-warms the headlines cache immediately at boot. Cache is ready (or nearly ready) before the
+   browser finishes loading.
+2. **60 s timeout** (`web/src/news.ts`): extended from 15 s — gives the Claude CLI subprocess
+   enough time to finish on a cold cache.
+3. **3× retry with exponential backoff** (`web/src/news.ts`): 8 s / 16 s / 32 s delays between
+   attempts. AbortError detection uses `err?.name === "AbortError"` (name-only check) instead of
+   `instanceof DOMException` — the latter fails in cross-realm environments (iframes, Workers,
+   undici polyfills).
+
+**Warmup race guard**: `_warmup_lock = threading.Lock()` at module level prevents duplicate warmup
+threads within the same process (e.g., test harnesses that reset the ASGI app). Each uvicorn
+`--reload` spawns a fresh process, so the lock resets cleanly on each reload.
+
+### 14.8 Commits in this session
+| Commit | Summary |
+|---|---|
+| `4516282` | fix .env.development API port 8001 → 8101 |
+| `ba9a0f6` | fix uvicorn --host :: for Windows dual-stack |
+| `5f3e022` | suppress 3d-force-graph link transform (arc world-space fix) |
+| `2015733` | eliminate cold-cache "Headlines unavailable" (warmup + retry) |
+| `db4bc3e` | globe arc stable on zoom — fx/fy/fz + skip link scaling in globe mode |
+| `78566ea` | code-review: AbortError name check + warmup lock + arc 6-coord guard |
+| `a17a6b8` | Number.isFinite via .every() + corrected warmup-lock comment |
+| `9c704d3` | add dev.bat startup script |
+
+### 14.9 Known issue flagged (not yet fixed)
+`api/impact.py` ~line 1001: when a BFS scoring chunk's LLM call returns empty JSON, the code logs
+`parse FAIL` and silently drops all nodes in that chunk — no retry. Observed in live use (~16
+hop-2 nodes lost in one run). Same silent-skip exists in the refinement path (~line 1469).
+Fix: add 1–2 retries when `ring_parsed` fails `isinstance(…, list)` check.
