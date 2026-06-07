@@ -42,7 +42,11 @@ export async function fetchHeadlines(force = false): Promise<Headline[]> {
       return data.headlines;
     } catch (err) {
       lastErr = err;
-      const isAbort = err instanceof DOMException && err.name === "AbortError";
+      // Check by name rather than `instanceof DOMException` — cross-realm fetches
+      // (iframes, Workers) and polyfills (node-fetch, undici pre-v5) throw a
+      // plain Error with name "AbortError", not a DOMException, causing the
+      // instanceof check to return false and skipping all retries.
+      const isAbort = err != null && (err as { name?: string }).name === "AbortError";
       if (isAbort && attempt < MAX_RETRIES) {
         // Timeout on a cold cache — server is still warming up. Retry silently.
         console.info(`news: attempt ${attempt + 1} timed out, retrying...`);

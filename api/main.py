@@ -84,6 +84,9 @@ app = FastAPI(
 )
 
 
+_warmup_lock = threading.Lock()   # prevents concurrent warmup on --reload cycles
+
+
 @app.on_event("startup")
 def _warmup_news_cache() -> None:
     """Pre-warm the daily headlines cache in a background thread.
@@ -93,14 +96,25 @@ def _warmup_news_cache() -> None:
     it shows 'API offline?' even though the API is healthy. By starting the
     warm-up immediately at server boot, the cache is ready (or nearly ready)
     by the time the user's browser loads the page.
+
+    Guard: `_warmup_lock` prevents a second warmup thread from starting if
+    uvicorn --reload fires while the first is mid-flight (e.g. during active
+    development). Without the guard each file-save could spawn a new thread
+    running the Claude CLI subprocess, potentially leaving orphan processes
+    when the worker is killed before subprocess.run() returns.
     """
     def _warm() -> None:
+        if not _warmup_lock.acquire(blocking=False):
+            log.debug("news: warmup already running, skipping duplicate")
+            return
         try:
             log.info("news: pre-warming headlines cache...")
             news_mod.get_daily_headlines()
             log.info("news: headlines cache ready")
         except Exception as exc:  # never crash the server
             log.warning("news: cache warmup failed: %s", exc)
+        finally:
+            _warmup_lock.release()
 
     threading.Thread(target=_warm, daemon=True, name="news-warmup").start()
 
