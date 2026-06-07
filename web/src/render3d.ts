@@ -542,12 +542,24 @@ export function start3D(
         const link = obj.__data;
         const src = link && link.source;
         const tgt = link && link.target;
-        if (!src || !tgt || typeof src.x !== "number" || typeof tgt.x !== "number") {
-          skipped++;
-          return;
-        }
-        const s = new THREE.Vector3(src.x, src.y, src.z);
-        const e = new THREE.Vector3(tgt.x, tgt.y, tgt.z);
+        if (!src || !tgt) { skipped++; return; }
+        // Prefer pinned positions (fx/fy/fz) over simulation positions (x/y/z).
+        // In globe mode all nodes have fx/fy/fz set. d3-force-3d initialises
+        // node.x/y/z to a random value and only overwrites it with fx/fy/fz on
+        // the first simulation tick, so early buildArcs passes (rAF / 100 ms)
+        // would read wrong positions if we used x/y/z. fx/fy/fz are correct
+        // from the moment the data object is created.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const _src = src as any, _tgt = tgt as any;
+        const sx: number = typeof _src.fx === "number" ? _src.fx : _src.x;
+        const sy: number = typeof _src.fy === "number" ? _src.fy : _src.y;
+        const sz: number = typeof _src.fz === "number" ? _src.fz : _src.z;
+        const ex: number = typeof _tgt.fx === "number" ? _tgt.fx : _tgt.x;
+        const ey: number = typeof _tgt.fy === "number" ? _tgt.fy : _tgt.y;
+        const ez: number = typeof _tgt.fz === "number" ? _tgt.fz : _tgt.z;
+        if (!isFinite(sx) || !isFinite(ex)) { skipped++; return; }
+        const s = new THREE.Vector3(sx, sy, sz);
+        const e = new THREE.Vector3(ex, ey, ez);
         const angle = Math.min(Math.PI, s.angleTo(e) || 0);
         let points: THREE.Vector3[];
         if (angle < MIN_ANGLE) {
@@ -658,10 +670,12 @@ export function start3D(
       if (obj.__graphObjType === "node" && obj.scale) {
         const next = clampScale(obj.scale.x * factor);
         obj.scale.set(next, next, next);
-      } else if (obj.__graphObjType === "link" && obj.scale) {
-        // Scale X/Y only -- shrinks the tube radius while keeping it
-        // attached to its endpoints (Z is the tube's length axis in
-        // 3d-force-graph's local frame).
+      } else if (obj.__graphObjType === "link" && obj.scale && currentLayout !== "globe") {
+        // Scale X/Y only (shrinks tube radius) -- valid in ball mode because
+        // 3d-force-graph owns the tube geometry in local space. In globe mode
+        // the TubeGeometry is built in WORLD space with the mesh at origin, so
+        // scaling X/Y distorts the arc path geometry. Globe arcs must not be
+        // scaled; their visual weight is fixed by the TUBE_RADIUS constants.
         const nx = clampScale(obj.scale.x * factor);
         const ny = clampScale(obj.scale.y * factor);
         obj.scale.x = nx;
@@ -694,7 +708,9 @@ export function start3D(
       if (obj.__graphObjType === "node" && obj.scale) {
         if (factor < 0) obj.scale.set(1, 1, 1);
         else obj.scale.multiplyScalar(factor);
-      } else if (obj.__graphObjType === "link" && obj.scale) {
+      } else if (obj.__graphObjType === "link" && obj.scale && currentLayout !== "globe") {
+        // Same globe-mode guard as onWheel: arc geometry lives in world space
+        // so scaling the mesh distorts it. Only scale links in ball mode.
         if (factor < 0) {
           obj.scale.set(1, 1, 1);
           if (obj.material) obj.material.opacity = obj.userData?.__origOpacity ?? obj.material.opacity;
