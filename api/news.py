@@ -128,39 +128,57 @@ INCLUDE — headline has a clear seed and describes a CAUSE, not an effect:
   export controls, import bans
 - Central bank rate decisions
 - Geopolitical events ONLY when the headline explicitly names a commodity or \
-  supply-chain impact (e.g. "Hormuz closure cuts oil flow", "port strike halts \
-  auto parts" — not just "tensions rise")
+  supply-chain impact AND states the mechanism (e.g. "Hormuz closure cuts oil \
+  flow by 20%", "port strike halts auto-parts shipments"). "Tensions rise", \
+  "ceasefire in jeopardy", "missiles fired" with no commodity named → EXCLUDE.
 
 EXCLUDE — no identifiable seed, or describes aftermath rather than a cause:
-- Political news (elections, primaries, endorsements, polling) unless the \
-  headline names a specific company or commodity directly affected by that event
+- Political news (elections, primaries, endorsements, polling, government \
+  statements, politician interviews, speeches, press conferences) unless the \
+  headline names a specific company or commodity directly affected. A politician \
+  walking out of an interview, making a statement, or commenting on past events \
+  is never a supply-chain seed.
+- Government/geopolitical events with no explicit commodity or company impact: \
+  military actions, diplomatic disputes, ceasefire negotiations, sanctions \
+  threats — unless the headline states which commodity or named company is \
+  directly disrupted.
 - Stock price or valuation milestones: "X shares rise/fall N%", "X hits $1T \
-  valuation", "X stock surges" — these are outcomes, not causes; the tool \
-  cannot act on past price moves
+  valuation", "X stock surges" — these are outcomes, not causes.
 - Index or broad market moves: "S&P 500 up/down", "Nasdaq hits high", \
   "markets mixed"
 - Earnings beats/misses with no named driver ("X tops estimates", "profits rise")
 - Celebrity, entertainment, sports, obituaries
-- Opinion, analysis, editorial, or forecast pieces
+- Opinion, analysis, editorial, explainer, or forecast pieces. Signals: \
+  "Inside the…", "What to know about…", "Why…", "How…", "explained", \
+  "everything you need to know", "what it means", "the real story behind"
+- Speculative / forward-looking pieces with no confirmed action. Signals: \
+  "may", "could", "might", "is expected to", "is likely to", "may soon", \
+  "could become" in the headline with no named entity taking a confirmed action.
+- Vague competitive posturing with no concrete action: "X wants Y's market", \
+  "X eyes Y", "X targets Y's customers" — exclude unless a deal, contract, \
+  or specific action is named.
 - Any headline where you would need to invent a company or commodity name to \
-  create a seed — if the seed is not stated, exclude it
+  create a seed — if the seed is not stated, exclude it.
 
 REWRITE RULES — apply to every headline you keep:
 - ≤15 words
 - Who + what only. Neutral verbs: announces, reports, rises, falls, cuts, \
   acquires, approves, launches, signs, halts, closes, opens, raises, reduces.
 - No loaded words: rattles, warns, fears, surges, soars, plummets, looms, \
-  threatens, roils, jolts, shocks, crisis, turmoil, chaos, sparks.
-- No judgment adjectives: massive, alarming, stunning, historic, unprecedented.
+  threatens, roils, jolts, shocks, crisis, turmoil, chaos, sparks, storms, \
+  fragile, in jeopardy, at risk, braces, reeling, scrambles, reportedly, \
+  allegedly, sources say.
+- No judgment adjectives: massive, alarming, stunning, historic, unprecedented, \
+  fragile, troubled, controversial, sweeping, dramatic.
 - Keep specific numbers (prices, %, quantities) — they are facts.
 - Do NOT invent facts not in the original headline.
 
+QUALITY BAR: if fewer than 5 headlines clearly qualify, return only those that \
+do. An empty array [] is valid if nothing qualifies. Never pad with borderline \
+items — a wrong seed misleads the tool more than a short list.
+
 Return ONLY a valid JSON array — no markdown, no other text:
 [{{"text": "<rewritten headline ≤15 words>", "source": "<outlet name>", "url": "<url>"}}]
-
-Select the top 5 by usefulness for supply-chain impact tracing. \
-Return fewer if fewer than 5 qualify — it is better to return 2 good headlines \
-than 5 where some are borderline.
 
 Raw headlines:
 {headlines}
