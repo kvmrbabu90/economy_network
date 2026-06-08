@@ -106,11 +106,11 @@ supply or demand shock — so the tool can start a propagation chain without \
 hallucinating a node.
 
 TODAY'S DATE: {today}
-RECENCY RULE — exclude anything older than 5 days:
-- If the underlying event clearly happened more than 5 days before today, \
+RECENCY RULE — exclude anything older than 2 days:
+- If the underlying event clearly happened more than 2 days before today, \
   exclude it — even if the article was published today. Signs of staleness: \
-  explicit past dates ("announced March 10"), "last week", "earlier this month", \
-  or context that makes clear the event predates the 5-day window.
+  explicit past dates ("announced June 3"), "last week", "earlier this month", \
+  or context that makes clear the event predates the 2-day window.
 - If you cannot tell when the event happened, keep it (benefit of the doubt).
 - Recap, anniversary, and retrospective articles about past events are excluded \
   regardless of publication date.
@@ -190,7 +190,9 @@ Raw headlines:
 
 
 # Articles older than this are dropped before Claude ever sees them.
-_MAX_ARTICLE_AGE_DAYS = 5
+# 2 days keeps the brief feeling fresh (5 was letting 4-day-old ADP/deal
+# stories recirculate and appear identical to previous days).
+_MAX_ARTICLE_AGE_DAYS = 2
 
 
 def _get_link_from_item(item: ET.Element) -> str:
