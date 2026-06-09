@@ -192,4 +192,7 @@ python -m pipeline.build_graph        # load SQLite, emit graph.json
 
 ## License
 
-MIT
+Source-available, personal use only. You may clone and run this project
+for evaluation purposes. Modification, redistribution, and derivative
+works require explicit written permission from the author. See
+[LICENSE](LICENSE) for the full terms.
