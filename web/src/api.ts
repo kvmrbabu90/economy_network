@@ -47,6 +47,8 @@ export interface ApiEdge {
     directed: boolean;
     confidence: number;
     weight: number | null;
+    /** Phase K: source quality tier (sec_explicit | sec_inferred | manual | wikidata | wikipedia) */
+    source_tier: string | null;
     below_threshold: boolean;
     provenance: Provenance;
     additional_provenance: Provenance[];
@@ -232,6 +234,12 @@ export interface ImpactVerdict {
   reasoning: string;
   via_parent: string | null;
   edge_type: string | null;
+  // Phase K: financial grounding metadata
+  edge_weight?: number | null;
+  edge_source_tier?: string | null;
+  /** True when no explicit financial weight exists for the inbound edge;
+   *  the LLM estimated magnitude freely rather than anchored to SEC %. */
+  is_estimated?: boolean;
   // Multi-event extensions (only present on merged verdicts from /impact/multi)
   mixed_signals?: boolean;
   event_verdicts?: ImpactEventVerdict[];

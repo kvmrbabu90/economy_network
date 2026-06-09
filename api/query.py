@@ -106,6 +106,7 @@ def _edge_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
             "directed": bool(row["directed"]),
             "confidence": row["confidence"],
             "weight": row["weight"],
+            "source_tier": row["source_tier"] if "source_tier" in row.keys() else None,
             "below_threshold": bool(row["below_threshold"]),
             "supply_geography": row["supply_geography"] if "supply_geography" in row.keys() else None,
             "provenance": {
@@ -142,6 +143,7 @@ def _derived_customer_of(supplies_row: sqlite3.Row) -> dict[str, Any]:
             "directed": True,
             "confidence": supplies_row["confidence"],
             "weight": supplies_row["weight"],
+            "source_tier": supplies_row["source_tier"] if "source_tier" in supplies_row.keys() else None,
             "below_threshold": bool(supplies_row["below_threshold"]),
             "supply_geography": supplies_row["supply_geography"] if "supply_geography" in supplies_row.keys() else None,
             "provenance": {

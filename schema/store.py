@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS edges (
     -- applicable. "US" = extracted from a 10-K (implicitly US-domestic).
     -- "global" = Wikidata / Wikipedia source (no inherent geo-scope).
     supply_geography TEXT,
+    -- Phase K: source quality tier — set by pipeline/score_confidence.py.
+    source_tier TEXT CHECK(source_tier IN (
+        'sec_explicit','sec_inferred','manual','wikidata','wikipedia'
+    )),
     FOREIGN KEY (source) REFERENCES nodes(id),
     FOREIGN KEY (target) REFERENCES nodes(id)
 );
@@ -173,8 +177,9 @@ def upsert_edge(
         """
         INSERT INTO edges (id, source, target, type, directed, confidence, weight,
                            prov_filing, prov_url, prov_snippet, prov_extracted_by,
-                           additional_provenance, below_threshold, supply_geography)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           additional_provenance, below_threshold, supply_geography,
+                           source_tier)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             source=excluded.source,
             target=excluded.target,
@@ -188,7 +193,8 @@ def upsert_edge(
             prov_extracted_by=excluded.prov_extracted_by,
             additional_provenance=excluded.additional_provenance,
             below_threshold=excluded.below_threshold,
-            supply_geography=excluded.supply_geography
+            supply_geography=excluded.supply_geography,
+            source_tier=excluded.source_tier
         """,
         (
             e.id,
@@ -205,6 +211,7 @@ def upsert_edge(
             json.dumps(extra_prov),
             1 if below_threshold else 0,
             e.supply_geography,
+            e.source_tier,
         ),
     )
     conn.commit()
@@ -256,6 +263,7 @@ def get_edge(conn: sqlite3.Connection, edge_id: str) -> Optional[Edge]:
             },
             "additional_provenance": extra,
             "supply_geography": row["supply_geography"] if "supply_geography" in row.keys() else None,
+            "source_tier": row["source_tier"] if "source_tier" in row.keys() else None,
         }
     )
 

@@ -79,7 +79,9 @@ export function buildImpactState(g: EconGraph, resp: ImpactResponse): ImpactStat
 }
 
 /** Return the discrete tier colour for a verdict (CSS string for Sigma 2D).
- *  Returns null for no_effect or below-threshold nodes (hidden in impact mode). */
+ *  Returns null for no_effect or below-threshold nodes (hidden in impact mode).
+ *  Phase K: nodes without financial grounding (is_estimated=true) are rendered
+ *  at 70% opacity so grounded nodes stand out. */
 export function tintColor(verdict: ImpactVerdict | undefined): string | null {
   if (!verdict) return null;
   const mag = Number(verdict.magnitude);
@@ -92,7 +94,9 @@ export function tintColor(verdict: ImpactVerdict | undefined): string | null {
     ? TIERS.mixed
     : verdict.direction === "positive" ? TIERS.positive : TIERS.negative;
   const c = palette[tier];
-  return `rgb(${c.r}, ${c.g}, ${c.b})`;
+  // Phase K: dim nodes with no financial weight anchor
+  const alpha = verdict.is_estimated !== false && verdict.edge_weight == null ? 0.70 : 1.0;
+  return alpha < 1 ? `rgba(${c.r}, ${c.g}, ${c.b}, ${alpha})` : `rgb(${c.r}, ${c.g}, ${c.b})`;
 }
 
 /** Same tier lookup, returning 0–1 floats for three.js material colour. */
@@ -108,6 +112,16 @@ export function tintColorRGB(verdict: ImpactVerdict | undefined): { r: number; g
     ? TIERS.mixed
     : verdict.direction === "positive" ? TIERS.positive : TIERS.negative;
   const c = palette[tier];
+  // Phase K: blend toward neutral grey for estimated (ungrounded) nodes
+  if (verdict.is_estimated !== false && verdict.edge_weight == null) {
+    const blend = 0.70;  // keep 70% of color, 30% neutral grey
+    const grey = 0.18;
+    return {
+      r: c.r / 255 * blend + grey * (1 - blend),
+      g: c.g / 255 * blend + grey * (1 - blend),
+      b: c.b / 255 * blend + grey * (1 - blend),
+    };
+  }
   return { r: c.r / 255, g: c.g / 255, b: c.b / 255 };
 }
 

@@ -1131,6 +1131,18 @@ html, body {
 .inspector .pill.provisional { background: rgba(255, 255, 255, 0.04); color: var(--text-mute); border: 1px dashed var(--n-provisional-stroke); }
 .inspector .pill.derived { background: rgba(176, 126, 224, 0.12); color: var(--c-customer_of); }
 .inspector .pill.below-threshold { background: rgba(255, 255, 255, 0.04); color: var(--text-faint); }
+/* Phase K: source-tier quality badges on edges */
+.inspector .pill.pill-sec-explicit { background: rgba(56, 189, 248, 0.18); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); }
+.inspector .pill.pill-sec-inferred { background: rgba(56, 189, 248, 0.10); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.20); }
+.inspector .pill.pill-manual { background: rgba(250, 204, 21, 0.14); color: #fde047; border: 1px solid rgba(250, 204, 21, 0.25); }
+.inspector .pill.pill-wiki { background: rgba(160, 160, 160, 0.10); color: #9ca3af; border: 1px solid rgba(160, 160, 160, 0.20); }
+/* Financial exposure row below edge pills */
+.edge-exposure {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 8px 0 4px;
+}
 
 /* Impact-verdict box -- shown when a propagation run is active. */
 .impact-box {
@@ -1172,6 +1184,36 @@ html, body {
   font-size: 11px;
   color: var(--text-faint);
   font-style: italic;
+}
+
+/* Phase K: financial grounding exposure badge */
+.impact-exposure {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 4px 0 6px 0;
+}
+.exposure-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+.exposure-badge.sec {
+  background: rgba(56, 189, 248, 0.18);
+  color: #38bdf8;           /* sky-blue: SEC-sourced data */
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+.exposure-badge.est {
+  background: rgba(160, 160, 160, 0.12);
+  color: #888;              /* grey: no SEC percentage on file */
+  border: 1px solid rgba(160, 160, 160, 0.25);
+}
+.exposure-source {
+  font-size: 10px;
+  color: var(--text-faint);
 }
 
 /* "Describe this business" -- LLM-generated summary block. */

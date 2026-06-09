@@ -212,6 +212,16 @@ class Edge(BaseModel):
     # Default empty; no impact on Phase 0-2 fixtures.
     additional_provenance: list[Provenance] = Field(default_factory=list)
     weight: Optional[float] = None
+    # Phase K: source quality tier — set by pipeline/score_confidence.py.
+    # Controls confidence floor in impact propagation and display in the UI.
+    # "sec_explicit"  -- named company + explicit % in SEC filing
+    # "sec_inferred"  -- mentioned in SEC filing, no explicit %
+    # "manual"        -- hand-curated (manual:curation extracted_by)
+    # "wikidata"      -- Wikidata SPARQL / P1830 competitor data
+    # "wikipedia"     -- Wikipedia LLM extraction
+    source_tier: Optional[Literal[
+        "sec_explicit", "sec_inferred", "manual", "wikidata", "wikipedia"
+    ]] = None
     # Phase E: geographic scope of a supply edge.  Controlled vocabulary:
     #   "US"     -- extracted from a 10-K filing (implicitly US-scoped)
     #   "global" -- Wikidata / Wikipedia source (no inherent geography)

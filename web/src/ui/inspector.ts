@@ -75,6 +75,25 @@ export function showNode(node: ApiNode, g: EconGraph, extras: NodeExtras = {}): 
       el("span", { class: "impact-mag" }, `magnitude ${v.magnitude.toFixed(2)}`),
       el("span", { class: "impact-hop" }, `hop ${v.hop}`),
     ));
+    // Phase K: financial grounding badge
+    if (v.edge_weight != null) {
+      const pct = Math.round(v.edge_weight * 100);
+      const tierLabel =
+        v.edge_source_tier === "sec_explicit" ? "SEC filing" :
+        v.edge_source_tier === "sec_inferred" ? "SEC (inferred)" :
+        v.edge_source_tier === "manual"        ? "manual" :
+        v.edge_source_tier === "wikidata"      ? "Wikidata" :
+        v.edge_source_tier === "wikipedia"     ? "Wikipedia" : "filing";
+      box.appendChild(el("div", { class: "impact-exposure" },
+        el("span", { class: "exposure-badge sec" }, `~${pct}% revenue exposure`),
+        el("span", { class: "exposure-source" }, `· ${tierLabel}`),
+      ));
+    } else if (v.is_estimated) {
+      box.appendChild(el("div", { class: "impact-exposure" },
+        el("span", { class: "exposure-badge est" }, "est."),
+        el("span", { class: "exposure-source" }, "· no SEC % on file"),
+      ));
+    }
     if (v.reasoning) {
       box.appendChild(el("p", { class: "impact-reasoning" }, v.reasoning));
     }
@@ -182,7 +201,32 @@ export function showEdge(
   if (typeof a.confidence === "number") {
     pills.appendChild(el("span", { class: "pill" }, `confidence ${a.confidence.toFixed(2)}`));
   }
+  // Phase K: source tier badge
+  if (a.source_tier) {
+    const tierLabel =
+      a.source_tier === "sec_explicit"  ? "SEC %" :
+      a.source_tier === "sec_inferred"  ? "SEC" :
+      a.source_tier === "manual"        ? "manual" :
+      a.source_tier === "wikidata"      ? "Wikidata" :
+      a.source_tier === "wikipedia"     ? "Wikipedia" : a.source_tier;
+    const tierClass =
+      a.source_tier === "sec_explicit"  ? "pill-sec-explicit" :
+      a.source_tier === "sec_inferred"  ? "pill-sec-inferred" :
+      a.source_tier === "manual"        ? "pill-manual" : "pill-wiki";
+    pills.appendChild(el("span", { class: `pill ${tierClass}` }, tierLabel));
+  }
   r.appendChild(pills);
+
+  // Phase K: financial exposure row (supplies edges with SEC %)
+  if (a.weight != null && a.type === "supplies") {
+    const pct = Math.round(a.weight * 100);
+    r.appendChild(el("div", { class: "edge-exposure" },
+      el("span", { class: "exposure-badge sec" }, `~${pct}% revenue exposure`),
+      el("span", { class: "exposure-source" },
+        a.source_tier === "sec_explicit" ? " · SEC 10-K (explicit)" :
+        a.source_tier === "sec_inferred" ? " · SEC 10-K (inferred)" : " · filing"),
+    ));
+  }
 
   if (a.derived && a.underlying_edge_id) {
     r.appendChild(el("p", { class: "hint", style: "margin: 12px 0 4px" },

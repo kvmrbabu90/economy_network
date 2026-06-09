@@ -526,12 +526,12 @@ def _neighbors(conn: sqlite3.Connection, node_ids: list[str], visited: set[str])
     rows = conn.execute(
         f"""
         SELECT DISTINCT source AS parent, target AS child, type AS edge_type,
-               supply_geography
+               supply_geography, weight, source_tier
         FROM edges
         WHERE source IN ({placeholder}) AND below_threshold = 0
         UNION
         SELECT DISTINCT target AS parent, source AS child, type AS edge_type,
-               supply_geography
+               supply_geography, weight, source_tier
         FROM edges
         WHERE target IN ({placeholder}) AND below_threshold = 0
         """,
@@ -560,6 +560,13 @@ def _neighbors(conn: sqlite3.Connection, node_ids: list[str], visited: set[str])
             summary["supply_geography"] = r["supply_geography"]
         except IndexError:
             summary["supply_geography"] = None
+        # Phase K: financial weight and source tier (nullable)
+        try:
+            summary["edge_weight"] = r["weight"]
+            summary["edge_source_tier"] = r["source_tier"]
+        except IndexError:
+            summary["edge_weight"] = None
+            summary["edge_source_tier"] = None
         out.append(summary)
     return out
 
@@ -647,8 +654,19 @@ Examples for "Chic-fil-A enters India" (India-specific):
   - Indian poultry companies (country=IN): positive (new B2B demand)
   - Consumer Market India (region): positive (new restaurant traffic)
 
+FINANCIAL GROUNDING (Phase K — use when available):
+  The "weight" column is the FRACTION of the PARENT node's revenue that flows
+  through this supply edge. It comes directly from SEC 10-K filings and anchors
+  your magnitude estimate:
+    - weight=0.21|sec_explicit → SEC named this customer at 21% of revenue.
+      Your magnitude for that node MUST stay in [parent_magnitude × 0.105,
+      min(1.0, parent_magnitude × 0.315)] — i.e. ±50% of the anchored value.
+    - weight=est → No explicit % found; estimate freely as before.
+  When weight is present, cite it in your reasoning: "21% SEC-disclosed revenue
+  exposure → magnitude ~0.XX".
+
 CANDIDATES at hop {hop_num}:
-  Format: id | type | name | sector | country | edge_geo | parent | edge_type | parent_direction
+  Format: id | type | name | sector | country | edge_geo | weight | parent | edge_type | parent_direction
 {candidates}
 
 Respond with STRICT JSON only -- a single JSON array, one object per
@@ -881,6 +899,9 @@ def run_impact(text: str, *, conn: sqlite3.Connection, provider: Optional[str] =
             "via_parent": None,
             "edge_type": None,
             "is_seed": True,
+            "edge_weight": None,
+            "edge_source_tier": None,
+            "is_estimated": True,
         }
         visited.add(nid)
         frontier.append(nid)
@@ -959,9 +980,17 @@ def run_impact(text: str, *, conn: sqlite3.Connection, provider: Optional[str] =
                 parent_v = impacts.get(nb["via_parent"], {})
                 country = nb.get("country") or "-"
                 geo = nb.get("supply_geography") or "?"
+                # Phase K: format financial weight for the prompt
+                ew = nb.get("edge_weight")
+                et = nb.get("edge_source_tier") or ""
+                if ew is not None:
+                    weight_str = f"{ew * 100:.0f}%|{et or 'sec_explicit'}"
+                else:
+                    weight_str = "est"
                 cand_lines.append(
                     f"  {nb['id']} | {nb['type']} | {nb['name']} | "
                     f"{nb.get('sector') or '-'} | country={country} | edge_geo={geo} | "
+                    f"weight={weight_str} | "
                     f"parent={nb['via_parent']} | "
                     f"edge={nb['edge_type']} | parent_dir={parent_v.get('direction', '?')}"
                 )
@@ -1020,6 +1049,7 @@ def run_impact(text: str, *, conn: sqlite3.Connection, provider: Optional[str] =
                 direction = verdict.get("direction") or "no_effect"
                 magnitude = float(verdict.get("magnitude") or 0.0)
                 reasoning = verdict.get("reasoning") or ""
+                _ew = matching.get("edge_weight")
                 impacts[nid] = {
                     "node_id": nid,
                     "name": matching["name"],
@@ -1031,6 +1061,10 @@ def run_impact(text: str, *, conn: sqlite3.Connection, provider: Optional[str] =
                     "via_parent": matching["via_parent"],
                     "edge_type": matching["edge_type"],
                     "country": matching.get("country"),  # Phase E
+                    # Phase K: financial grounding metadata
+                    "edge_weight": _ew,
+                    "edge_source_tier": matching.get("edge_source_tier"),
+                    "is_estimated": _ew is None,
                 }
                 visited.add(nid)
                 if direction in ("positive", "negative") and magnitude >= 0.15:
