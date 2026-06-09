@@ -1,11 +1,16 @@
 """Phase K-4: Sync financial weights from edges.jsonl into the live SQLite DB.
 
 After extract_weights.py updates edges.jsonl with weight and source_tier,
-this script does targeted UPDATE statements on the existing econgraph.db
+this script does targeted UPDATE + INSERT statements on the existing econgraph.db
 without needing to drop/recreate it (which would require killing the API server).
 
-Only touches rows where weight or source_tier changed — safe to run while
-the API is serving requests.
+Two operations:
+  1. UPDATE existing edges where weight or source_tier changed.
+  2. INSERT new edges that have source_tier='sec_explicit' and do not yet
+     exist in the DB — these are created by extract_weights.py when a
+     named-customer concentration is found but no graph edge existed.
+
+Safe to run while the API is serving requests (WAL mode + no DROP/CREATE).
 
 Usage:
     python -m pipeline.sync_weights_to_db [--dry-run]
@@ -61,7 +66,7 @@ def main(dry_run: bool = False) -> None:
 
     if dry_run:
         for e in to_sync[:10]:
-            log.info("[DRY] Would update %s: weight=%s tier=%s",
+            log.info("[DRY] Would sync %s: weight=%s tier=%s",
                      e.get("id"), e.get("weight"), e.get("source_tier"))
         return
 
@@ -69,8 +74,15 @@ def main(dry_run: bool = False) -> None:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")  # reduce locking conflicts
 
+    # Pre-load all existing edge IDs into a set for O(1) membership checks.
+    existing_ids: set[str] = {
+        row[0] for row in conn.execute("SELECT id FROM edges")
+    }
+    log.info("Edges already in DB: %d", len(existing_ids))
+
     n_updated = 0
-    n_missing = 0
+    n_inserted = 0
+    n_skipped = 0
     try:
         for e in to_sync:
             edge_id = e.get("id")
@@ -79,30 +91,78 @@ def main(dry_run: bool = False) -> None:
             weight = e.get("weight")
             source_tier = e.get("source_tier")
             confidence = e.get("confidence")
-            # Check if this edge exists in the DB
-            row = conn.execute("SELECT id, weight, source_tier FROM edges WHERE id = ?",
-                               (edge_id,)).fetchone()
-            if row is None:
-                log.debug("Edge not in DB: %s", edge_id)
-                n_missing += 1
-                continue
-            # Only update if values changed
-            db_weight = row["weight"]
-            db_tier = row["source_tier"]
-            if db_weight == weight and db_tier == source_tier:
-                continue  # already in sync
-            conn.execute(
-                "UPDATE edges SET weight=?, source_tier=?, confidence=? WHERE id=?",
-                (weight, source_tier, confidence, edge_id)
-            )
-            n_updated += 1
-            if n_updated % 1000 == 0:
+
+            if edge_id in existing_ids:
+                # UPDATE path: only touch rows where values changed.
+                row = conn.execute(
+                    "SELECT weight, source_tier FROM edges WHERE id = ?",
+                    (edge_id,)
+                ).fetchone()
+                if row is None:
+                    continue  # shouldn't happen, but be safe
+                if row["weight"] == weight and row["source_tier"] == source_tier:
+                    n_skipped += 1
+                    continue  # already in sync
+                conn.execute(
+                    "UPDATE edges SET weight=?, source_tier=?, confidence=? WHERE id=?",
+                    (weight, source_tier, confidence, edge_id)
+                )
+                n_updated += 1
+
+            else:
+                # INSERT path: only for new edges created by extract_weights.py
+                # (identified by source_tier='sec_explicit' — high-confidence
+                # named-customer disclosures that deserve to be in the core graph).
+                if source_tier != "sec_explicit":
+                    log.debug("Skipping insert for non-sec_explicit edge %s", edge_id)
+                    n_skipped += 1
+                    continue
+
+                prov = e.get("provenance", {})
+                additional = json.dumps(e.get("additional_provenance", []),
+                                        ensure_ascii=False)
+                directed_int = 1 if e.get("directed", True) else 0
+                below_threshold = 1 if e.get("below_threshold", False) else 0
+
+                conn.execute(
+                    """INSERT INTO edges
+                       (id, source, target, type, directed, confidence, weight,
+                        prov_filing, prov_url, prov_snippet, prov_extracted_by,
+                        additional_provenance, below_threshold,
+                        supply_geography, source_tier)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        edge_id,
+                        e["source"],
+                        e["target"],
+                        e.get("type", "supplies"),
+                        directed_int,
+                        confidence or 0.90,
+                        weight,
+                        prov.get("filing", ""),
+                        prov.get("url", ""),
+                        prov.get("snippet", ""),
+                        prov.get("extracted_by", "llm:claude-cli"),
+                        additional,
+                        below_threshold,
+                        e.get("supply_geography"),
+                        source_tier,
+                    )
+                )
+                n_inserted += 1
+                log.info("Inserted new edge: %s -> %s (weight=%.2f)",
+                         e["source"], e["target"], weight or 0)
+
+            if (n_updated + n_inserted) % 1000 == 0 and (n_updated + n_inserted) > 0:
                 conn.commit()
-                log.info("  ...%d rows updated", n_updated)
+                log.info("  ...%d updated, %d inserted so far",
+                         n_updated, n_inserted)
 
         conn.commit()
-        log.info("Sync complete: %d rows updated, %d edges not found in DB",
-                 n_updated, n_missing)
+        log.info(
+            "Sync complete: %d updated, %d inserted, %d already-in-sync",
+            n_updated, n_inserted, n_skipped,
+        )
 
     except Exception as exc:
         log.error("Sync failed: %s", exc)
@@ -113,8 +173,10 @@ def main(dry_run: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sync edge weights from edges.jsonl to SQLite")
+    parser = argparse.ArgumentParser(
+        description="Sync edge weights from edges.jsonl to SQLite (UPDATE + INSERT)"
+    )
     parser.add_argument("--dry-run", action="store_true",
-                        help="Show what would be updated without writing")
+                        help="Show what would be changed without writing")
     args = parser.parse_args()
     main(dry_run=args.dry_run)

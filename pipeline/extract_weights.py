@@ -5,9 +5,11 @@ For each hub in data/hubs.jsonl that has a CIK and a cached 10-K, this stage:
   2. Uses Claude CLI to find all explicitly named customer/supplier concentrations
   3. Matches extracted entity names to existing graph nodes via fuzzy alias lookup
   4. Writes weight, source_tier=sec_explicit, confidence=0.90 back to edges.jsonl
+  5. Creates NEW supply edges (with UUID) when a concentration is found for a
+     graph node that has no existing edge in edges.jsonl.
 
 Run AFTER score_confidence.py (which handles snippet-level extraction) and
-BEFORE build_graph.py.
+BEFORE build_graph.py (or sync_weights_to_db.py for live updates).
 
 Usage:
     python -m pipeline.extract_weights [--dry-run] [--max-hubs N]
@@ -25,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -330,6 +333,95 @@ def _update_edges_with_weights(
 
 
 # ---------------------------------------------------------------------------
+# New edge creation helpers
+# ---------------------------------------------------------------------------
+
+def _derive_edgar_url(cik_id: str, accession: str) -> str:
+    """Derive EDGAR filing index URL from a CIK node-id and an accession string.
+
+    Example:
+        cik_id="cik:0000004281", accession="0000004281-26-000012"
+        → "https://www.sec.gov/Archives/edgar/data/4281/000000428126000012/"
+    """
+    cik_int = cik_id.split(":")[-1].lstrip("0") or "0"
+    accession_nodash = accession.replace("-", "")
+    return f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_nodash}/"
+
+
+def _build_edge_pair_index(edges_path: Path) -> set[tuple[str, str]]:
+    """Return the set of (source, target) pairs already in edges.jsonl.
+
+    Includes ALL edge types so we don't create a supplies edge between nodes
+    that already have e.g. a competes_with relationship and vice-versa.
+    Actually we only suppress NEW supplies edges; we use a supplies-only set
+    so that a competes_with edge doesn't prevent a supply edge being created.
+    """
+    pairs: set[tuple[str, str]] = set()
+    if not edges_path.exists():
+        return pairs
+    with edges_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            e = json.loads(line)
+            src = e.get("source")
+            tgt = e.get("target")
+            if src and tgt:
+                pairs.add((src, tgt))
+    return pairs
+
+
+def _create_new_edge(
+    src: str,
+    tgt: str,
+    pct: float,
+    quote: str,
+    filing_accession: str,
+    filing_url: str,
+) -> dict:
+    """Build a new SEC-explicit supplies edge dict, ready for JSONL serialisation."""
+    return {
+        "id": str(uuid.uuid4()),
+        "source": src,
+        "target": tgt,
+        "type": "supplies",
+        "directed": True,
+        "confidence": 0.90,
+        "provenance": {
+            "filing": filing_accession,
+            "url": filing_url,
+            "snippet": quote,
+            "extracted_by": "llm:claude-cli",
+        },
+        "additional_provenance": [],
+        "supply_geography": "US",
+        "weight": round(pct / 100.0, 4),
+        "source_tier": "sec_explicit",
+    }
+
+
+def _append_new_edges(
+    edges_path: Path,
+    new_edges: list[dict],
+    dry_run: bool = False,
+) -> int:
+    """Append new_edges to edges.jsonl. Returns number of edges written."""
+    if not new_edges:
+        return 0
+    if dry_run:
+        for e in new_edges:
+            log.info("[DRY] Would create edge %s -> %s (%.0f%%, %s)",
+                     e["source"], e["target"],
+                     e["weight"] * 100, e["provenance"]["filing"])
+        return len(new_edges)
+    with edges_path.open("a", encoding="utf-8") as fh:
+        for e in new_edges:
+            fh.write(json.dumps(e, ensure_ascii=False) + "\n")
+    return len(new_edges)
+
+
+# ---------------------------------------------------------------------------
 # Per-hub processing
 # ---------------------------------------------------------------------------
 
@@ -343,7 +435,12 @@ def _get_filing_path(cik_digits: str) -> Optional[Path]:
 
 
 def _process_hub(hub: dict, alias_map: dict[str, str]) -> dict[tuple[str, str], dict]:
-    """Return {(src, tgt): {pct, quote}} for all extractable weights from this hub."""
+    """Return {(src, tgt): {pct, quote, filing, filing_url}} for all extractable
+    weights from this hub.
+
+    Each value also carries the filing accession and URL so that callers can
+    create new edges with correct provenance without re-deriving them.
+    """
     hub_id = hub["id"]
     results: dict[tuple[str, str], dict] = {}
 
@@ -364,6 +461,11 @@ def _process_hub(hub: dict, alias_map: dict[str, str]) -> dict[tuple[str, str], 
     except Exception as exc:
         log.warning("Could not read %s: %s", filing_path, exc)
         return results
+
+    # Derive provenance metadata from the cached filing path.
+    # filing_path.stem == "0000004281-26-000012"  (the accession number)
+    filing_accession = filing_path.stem
+    filing_url = _derive_edgar_url(hub_id, filing_accession)
 
     sections = _extract_filing_sections(text)
     if not sections:
@@ -401,7 +503,12 @@ def _process_hub(hub: dict, alias_map: dict[str, str]) -> dict[tuple[str, str], 
 
         existing = results.get((src, tgt))
         if existing is None or pct > existing["pct"]:
-            results[(src, tgt)] = {"pct": pct, "quote": quote}
+            results[(src, tgt)] = {
+                "pct": pct,
+                "quote": quote,
+                "filing": filing_accession,
+                "filing_url": filing_url,
+            }
             log.info("  Matched: %s -> %s = %.1f%% (%s)",
                      src, tgt, pct, entity_name)
 
@@ -437,9 +544,18 @@ def main(dry_run: bool = False, max_hubs: Optional[int] = None) -> None:
     alias_map = _build_alias_map(DATA_DIR / "nodes.jsonl")
     log.info("Alias map: %d entries", len(alias_map))
 
+    edges_path = DATA_DIR / "edges.jsonl"
+
+    # Build index of existing (source, target) pairs so we know which
+    # concentrations need a new edge vs. an update to an existing one.
+    existing_pairs = _build_edge_pair_index(edges_path)
+    log.info("Existing edge pairs in edges.jsonl: %d", len(existing_pairs))
+
     # Process hubs sequentially (LLM calls are the bottleneck)
     all_weights: dict[tuple[str, str], float] = {}
     all_quotes: dict[tuple[str, str], str] = {}
+    # Per-pair filing metadata for new-edge creation
+    all_filings: dict[tuple[str, str], tuple[str, str]] = {}  # (src,tgt) → (accession, url)
 
     for hub in hubs:
         hub_results = _process_hub(hub, alias_map)
@@ -448,25 +564,57 @@ def main(dry_run: bool = False, max_hubs: Optional[int] = None) -> None:
             if key not in all_weights or data["pct"] > all_weights[key]:
                 all_weights[key] = data["pct"]
                 all_quotes[key] = data["quote"]
+                all_filings[key] = (data["filing"], data["filing_url"])
 
     log.info("Total weight extractions: %d", len(all_weights))
 
-    # Update edges.jsonl
+    # Split into: update existing edges vs. create new edges.
+    update_weights: dict[tuple[str, str], float] = {}
+    update_quotes: dict[tuple[str, str], str] = {}
+    new_edges_to_create: list[dict] = []
+
+    for (src, tgt), pct in all_weights.items():
+        key = (src, tgt)
+        if key in existing_pairs:
+            update_weights[key] = pct
+            update_quotes[key] = all_quotes[key]
+        else:
+            filing_accession, filing_url = all_filings[key]
+            new_edge = _create_new_edge(
+                src=src,
+                tgt=tgt,
+                pct=pct,
+                quote=all_quotes[key],
+                filing_accession=filing_accession,
+                filing_url=filing_url,
+            )
+            new_edges_to_create.append(new_edge)
+            log.info("  NEW edge: %s -> %s (%.0f%%, %s)",
+                     src, tgt, pct, filing_accession)
+
+    log.info("Existing edges to update: %d, New edges to create: %d",
+             len(update_weights), len(new_edges_to_create))
+
+    # 1. Update existing edges
     n_updated = _update_edges_with_weights(
-        DATA_DIR / "edges.jsonl", all_weights, all_quotes, dry_run=dry_run
+        edges_path, update_weights, update_quotes, dry_run=dry_run
     )
     # Also update audit edges
     n_audit = _update_edges_with_weights(
         DATA_DIR / "edges_below_threshold.jsonl",
-        all_weights, all_quotes, dry_run=dry_run
+        update_weights, update_quotes, dry_run=dry_run
     )
 
+    # 2. Append new edges
+    n_created = _append_new_edges(edges_path, new_edges_to_create, dry_run=dry_run)
+
     if dry_run:
-        log.info("[DRY RUN] Would have updated %d core + %d audit edges",
-                 n_updated, n_audit)
+        log.info("[DRY RUN] Would have updated %d core + %d audit edges; "
+                 "created %d new edges",
+                 n_updated, n_audit, n_created)
     else:
-        log.info("Updated %d core + %d audit edges with financial weights",
-                 n_updated, n_audit)
+        log.info("Updated %d core + %d audit edges; created %d new supply edges",
+                 n_updated, n_audit, n_created)
 
 
 if __name__ == "__main__":
