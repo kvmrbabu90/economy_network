@@ -56,6 +56,7 @@ Each pipeline stage reads the previous stage's JSONL files from `data/`. Re-runn
 | H | 2026-05-29 | Globe load 20–30 s → ~2 s; `_bulkLoadInProgress` flag; deferred arc builds; skip FA2 in globe mode |
 | I | 2026-06-07 | Dev env stability; globe arc fixes; morning brief reliability; news filter hardening |
 | J | 2026-06-08 | Repo shareability (README, .env.example, requirements.txt, start.sh, GitHub Release); news freshness |
+| K | 2026-06-08 | Hub-first financial grounding: source_tier, edge weights, SEC % extraction, anchored impact magnitudes |
 
 ---
 
@@ -263,7 +264,66 @@ Ollama path was already built in `api/impact.py` (`IMPACT_LLM_PROVIDER=ollama`).
 
 ---
 
-## 12. Open Issues
+## 12. Phase K (2026-06-08) — Hub-First Financial Grounding
+
+**Goal**: make impact magnitudes non-arbitrary by anchoring them to SEC-disclosed financial exposure percentages.
+
+### Design
+
+SEC regulations require companies to name any customer/supplier >10% of revenue in 10-K Risk Factors / MD&A / concentration notes. We extract these explicit percentages and use them to constrain the LLM's magnitude estimates in the impact propagation ring prompt.
+
+**Two-pass weight population**:
+1. `pipeline/score_confidence.py` — snippet-level regex extraction (fast; catches ~34 edges already in the graph whose provenance snippets contained "accounted for X% of revenue")
+2. `pipeline/extract_weights.py` — LLM re-reads each hub's cached 10-K to find additional explicit named percentages not captured by snippet regex (~180 Claude CLI calls for 60 hubs)
+
+**Hub strategy**: target top-60 nodes by betweenness centrality (computed by `pipeline/identify_hubs.py` via NetworkX). These nodes lie on 80%+ of real impact traversal paths.
+
+### New Schema Fields
+
+| Field | Type | Source |
+|---|---|---|
+| `Edge.source_tier` | `"sec_explicit" \| "sec_inferred" \| "manual" \| "wikidata" \| "wikipedia"` | score_confidence.py |
+| `Edge.weight` | `float 0–1` (fraction of revenue) | extract_weights.py or snippet regex |
+| `ImpactVerdict.edge_weight` | float or null | API runtime (from _neighbors) |
+| `ImpactVerdict.is_estimated` | bool | True when no explicit SEC % |
+
+### Impact Engine Change
+
+Ring prompt now includes a `FINANCIAL GROUNDING` block. When `weight` is present on the inbound edge, the LLM must keep its magnitude within `[parent × weight × 0.5, min(1.0, parent × weight × 1.5)]`. The candidate line format gains a `weight` column (e.g. `"21%|sec_explicit"` or `"est"`).
+
+### Frontend Changes
+
+- **Edge inspector**: source-tier pill (blue "SEC %" / light-blue "SEC" / yellow "manual" / grey "Wikidata") + financial exposure row for supply edges with known weight
+- **Impact box**: green "~X% revenue exposure · SEC filing" badge when weight present; grey "est." badge when estimated
+- **Node tint**: estimated nodes rendered at 70% opacity (grounded nodes more prominent)
+
+### Pipeline Stages (K-1 through K-4)
+
+```bash
+python -m pipeline.score_confidence    # K-1: source_tier + snippet weight extraction
+python -m pipeline.identify_hubs       # K-2: betweenness centrality → hubs.jsonl
+python -m pipeline.extract_weights     # K-3: LLM re-reads 10-K for explicit % (~60 min)
+python -m pipeline.sync_weights_to_db  # K-4: targeted SQLite UPDATE (no full rebuild needed)
+```
+
+### Key Insight from Extraction
+
+Tech hub companies (TSMC, Apple, Nvidia) **do not name specific partners** in 10-K filings by policy — TSMC says "our largest customer accounted for 19%..." without naming Apple. The most reliably named relationships are food/CPG suppliers naming Walmart (Conagra, Campbell Soup, Hormel, etc.) and semiconductor companies naming Apple.
+
+Coverage after full K-3 run: expected ~40–60 edges with SEC-explicit financial weights, concentrated in:
+- Tech → Apple customer concentration (Skyworks 67%, others TBD)
+- Food/CPG → Walmart concentration (already captured by K-1)
+- Aerospace components → GE/RTX (Howmet, Spirit AeroSystems)
+- Specialty chemicals → major industrials
+
+### 12.1 Commits
+| Commit | Summary |
+|---|---|
+| `3a0f8d6` | Phase K: Hub-first financial grounding of supply-chain impact scores |
+
+---
+
+## 13. Open Issues
 
 ### Active
 1. **Impact BFS silent node drop** (`api/impact.py` ~line 1001): when a ring-scoring LLM call returns empty JSON, all nodes in that chunk are silently dropped with `continue` — no retry. Same pattern exists in the refinement path (~line 1469). Observed live: ~16 hop-2 nodes lost in one run. Fix: 1–2 retries when `ring_parsed` fails `isinstance(…, list)` check.
@@ -275,7 +335,7 @@ Ollama path was already built in `api/impact.py` (`IMPACT_LLM_PROVIDER=ollama`).
 
 ---
 
-## 13. Pipeline Rebuild Order
+## 14. Pipeline Rebuild Order
 
 ```bash
 python -m pipeline.commodities        # commodity + retail-market nodes
@@ -283,8 +343,14 @@ python -m pipeline.extract            # TRUNCATES edges_raw.jsonl — run FIRST
 python -m pipeline.extract_wikipedia  # APPENDs wikipedia edges
 python -m pipeline.wikidata_phase_b   # APPENDs P1830 competitor edges
 python -m pipeline.resolve
+# Phase K enrichment (run before build_graph to include weights)
+python -m pipeline.score_confidence   # source_tier + snippet weights
+python -m pipeline.identify_hubs      # betweenness centrality → hubs.jsonl
+python -m pipeline.extract_weights    # LLM extracts 10-K concentrations (~60 min)
 python -m pipeline.build_graph
 # restart uvicorn on port 8101
 ```
+
+**If the DB is locked** (API server running): use `python -m pipeline.sync_weights_to_db` instead of `build_graph.py` for weight-only updates. `sync_weights_to_db` does targeted UPDATE statements without dropping the DB.
 
 **Note**: `scripts/add_market_movers.py` persists to JSONL files — no need to re-run separately after `build_graph.py`.

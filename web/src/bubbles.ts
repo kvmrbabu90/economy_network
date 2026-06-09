@@ -136,6 +136,7 @@ export function refreshBubbleEdges(g: EconGraph): void {
         directed: v.type !== "competes_with",
         confidence: 1,
         weight: v.count,
+        source_tier: null,
         below_threshold: false,
         provenance: {
           filing: "aggregated",
