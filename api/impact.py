@@ -666,7 +666,7 @@ FINANCIAL GROUNDING (Phase K — use when available):
   exposure → magnitude ~0.XX".
 
 CANDIDATES at hop {hop_num}:
-  Format: id | type | name | sector | country | edge_geo | weight | parent | edge_type | parent_direction
+  Format: id | type | name | sector | country | edge_geo | weight | parent | edge_type | parent_direction | parent_magnitude
 {candidates}
 
 Respond with STRICT JSON only -- a single JSON array, one object per
@@ -987,12 +987,16 @@ def run_impact(text: str, *, conn: sqlite3.Connection, provider: Optional[str] =
                     weight_str = f"{ew * 100:.0f}%|{et or 'sec_explicit'}"
                 else:
                     weight_str = "est"
+                parent_mag = parent_v.get("magnitude")
+                parent_mag_str = f"{parent_mag:.2f}" if parent_mag is not None else "?"
                 cand_lines.append(
                     f"  {nb['id']} | {nb['type']} | {nb['name']} | "
                     f"{nb.get('sector') or '-'} | country={country} | edge_geo={geo} | "
                     f"weight={weight_str} | "
                     f"parent={nb['via_parent']} | "
-                    f"edge={nb['edge_type']} | parent_dir={parent_v.get('direction', '?')}"
+                    f"edge={nb['edge_type']} | "
+                    f"parent_dir={parent_v.get('direction', '?')} | "
+                    f"parent_mag={parent_mag_str}"
                 )
             chunk_prompts.append(_RING_PROMPT_TEMPLATE.format(
                 news=text,
