@@ -852,6 +852,15 @@ renderer.on("leaveNode", () => {
 });
 
 renderer.on("clickEdge", async (event) => {
+  // In impact mode, swallow edge clicks unless at least one endpoint is in
+  // the active chain (mirrors the onNodeClick and 3D onEdgeClick guards).
+  if (impactState) {
+    const src = g.hasEdge(event.edge) ? g.source(event.edge) : null;
+    const tgt = g.hasEdge(event.edge) ? g.target(event.edge) : null;
+    const srcActive = src != null && tintColor(impactState.byNode.get(src)) !== null;
+    const tgtActive = tgt != null && tintColor(impactState.byNode.get(tgt)) !== null;
+    if (!srcActive && !tgtActive) return;
+  }
   setInspectorCollapsed(false); // show details when user clicks an edge
   hideMorningBrief();
   // Edge click -> provenance panel. Source/target node attrs come from the
@@ -947,6 +956,18 @@ function setView(next: "2d" | "3d" | "globe") {
         },
         onNodeDoubleClick: (id) => recenterOn(id).catch(console.error),
         onEdgeClick: async (id) => {
+          // In impact mode, swallow edge clicks unless at least one endpoint
+          // is part of the active impact chain.  The globe's ray-caster fires
+          // onLinkClick for edges near the cursor even on background clicks,
+          // so without this guard stray clicks open the inspector for
+          // unrelated edges during an active run.
+          if (impactState) {
+            const src = g.hasEdge(id) ? g.source(id) : null;
+            const tgt = g.hasEdge(id) ? g.target(id) : null;
+            const srcActive = src != null && tintColor(impactState.byNode.get(src)) !== null;
+            const tgtActive = tgt != null && tintColor(impactState.byNode.get(tgt)) !== null;
+            if (!srcActive && !tgtActive) return;
+          }
           hideMorningBrief();
           try {
             const edge = await getEdge(id);
