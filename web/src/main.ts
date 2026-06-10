@@ -1382,6 +1382,10 @@ const _addedHeadlines = new Set<number>();
 // Keep references so re-renders can restore added state.
 let _currentHeadlines: Headline[] = [];
 
+const MB_VISIBLE_DEFAULT  = 5;
+const MB_VISIBLE_EXPANDED = 10;
+let _mbExpanded = false;
+
 function showMorningBrief(): void {
   if (mbBriefEl) mbBriefEl.hidden = false;
 }
@@ -1406,7 +1410,7 @@ function _addHeadlineToBar(h: Headline, idx: number, li: HTMLLIElement, btn: HTM
 }
 
 function renderMorningBrief(headlines: Headline[]): void {
-  if (!mbListEl) return;
+  if (!mbListEl || !mbBriefEl) return;
   _currentHeadlines = headlines;
 
   if (mbDateEl) {
@@ -1416,8 +1420,14 @@ function renderMorningBrief(headlines: Headline[]): void {
     });
   }
 
+  // Clamp expansion: if we received fewer than the expanded limit, collapse.
+  if (headlines.length <= MB_VISIBLE_DEFAULT) _mbExpanded = false;
+
+  const visible = _mbExpanded ? MB_VISIBLE_EXPANDED : MB_VISIBLE_DEFAULT;
+  const slice   = headlines.slice(0, visible);
+
   mbListEl.innerHTML = "";
-  headlines.forEach((h, idx) => {
+  slice.forEach((h, idx) => {
     const li = document.createElement("li");
     li.className = "mb-item" + (_addedHeadlines.has(idx) ? " mb-added" : "");
 
@@ -1450,6 +1460,28 @@ function renderMorningBrief(headlines: Headline[]): void {
     li.appendChild(addBtn);
     mbListEl.appendChild(li);
   });
+
+  // Remove any existing toggle button before (re)inserting.
+  mbBriefEl.querySelector(".mb-toggle-btn")?.remove();
+
+  if (headlines.length > MB_VISIBLE_DEFAULT) {
+    const toggleBtn = document.createElement("button");
+    toggleBtn.className = "mb-toggle-btn";
+    toggleBtn.type = "button";
+    if (_mbExpanded) {
+      toggleBtn.textContent = "Show less ▴";
+      toggleBtn.title = `Show only ${MB_VISIBLE_DEFAULT} headlines`;
+    } else {
+      const extra = Math.min(MB_VISIBLE_EXPANDED, headlines.length) - MB_VISIBLE_DEFAULT;
+      toggleBtn.textContent = `Show ${extra} more ▾`;
+      toggleBtn.title = `Show ${MB_VISIBLE_EXPANDED} headlines`;
+    }
+    toggleBtn.addEventListener("click", () => {
+      _mbExpanded = !_mbExpanded;
+      renderMorningBrief(_currentHeadlines);
+    });
+    mbBriefEl.appendChild(toggleBtn);
+  }
 }
 
 function initMorningBrief(): void {
