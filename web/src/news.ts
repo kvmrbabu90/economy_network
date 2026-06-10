@@ -3,9 +3,10 @@
 import { API_BASE_URL } from "./config";
 
 export interface Headline {
-  text: string;    // ≤15-word trimmed headline
-  source: string;  // e.g. "Reuters Business"
-  url: string;     // original article URL
+  text: string;       // ≤15-word trimmed headline
+  source: string;     // e.g. "Reuters Business"
+  url: string;        // original article URL
+  pub_date?: string | null;  // "YYYY-MM-DD" from RSS pubDate, or null
 }
 
 /**

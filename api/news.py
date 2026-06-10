@@ -296,15 +296,22 @@ def _filter_with_claude(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return []
     if not isinstance(parsed, list):
         return []
+    # Build a URL → pub_date lookup from the raw items so we can restore
+    # the article date on each filtered headline (the LLM doesn't return it).
+    url_to_date: dict[str, str | None] = {
+        item["url"]: item.get("pub_date") for item in raw
+    }
     result = []
     for h in parsed:
         if isinstance(h, dict) and h.get("text"):
+            url = str(h.get("url", "")).strip()
             result.append({
-                "text": str(h["text"]).strip(),
-                "source": str(h.get("source", "")).strip(),
-                "url": str(h.get("url", "")).strip(),
+                "text":     str(h["text"]).strip(),
+                "source":   str(h.get("source", "")).strip(),
+                "url":      url,
+                "pub_date": url_to_date.get(url),   # "YYYY-MM-DD" or None
             })
-    return result[:5]  # hard cap — always show exactly 5 or fewer
+    return result[:10]  # cap at 10 — frontend paginates to 5 / 10
 
 
 # ---------------------------------------------------------------------------
@@ -333,10 +340,15 @@ def get_daily_headlines(*, force: bool = False) -> list[dict[str, Any]]:
     def _raw_fallback(items: list[dict]) -> list[dict]:
         """Return raw headlines trimmed to 15 words — used when Claude fails or returns nothing."""
         result = []
-        for item in items[:5]:
+        for item in items[:10]:
             words = item["title"].split()
             text = " ".join(words[:15]) + ("…" if len(words) > 15 else "")
-            result.append({"text": text, "source": item["source"], "url": item["url"]})
+            result.append({
+                "text":     text,
+                "source":   item["source"],
+                "url":      item["url"],
+                "pub_date": item.get("pub_date"),
+            })
         return result
 
     try:

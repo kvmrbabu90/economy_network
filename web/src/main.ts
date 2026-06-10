@@ -1438,12 +1438,22 @@ function renderMorningBrief(headlines: Headline[]): void {
     headlineSpan.className = "mb-headline";
     headlineSpan.textContent = h.text;
 
-    const sourceSpan = document.createElement("span");
-    sourceSpan.className = "mb-source";
-    sourceSpan.textContent = h.source;
+    // Meta line: "Jun 8 · Reuters Business"
+    const metaSpan = document.createElement("span");
+    metaSpan.className = "mb-source";
+    let metaText = h.source;
+    if (h.pub_date) {
+      // Parse "YYYY-MM-DD" without timezone conversion (treat as local date).
+      const [y, m, d] = h.pub_date.split("-").map(Number);
+      const label = new Date(y, m - 1, d).toLocaleDateString("en-US", {
+        month: "short", day: "numeric",
+      });
+      metaText = `${label} · ${h.source}`;
+    }
+    metaSpan.textContent = metaText;
 
     content.appendChild(headlineSpan);
-    content.appendChild(sourceSpan);
+    content.appendChild(metaSpan);
 
     const addBtn = document.createElement("button");
     addBtn.className = "mb-add-btn";
