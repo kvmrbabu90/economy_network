@@ -101,9 +101,9 @@ _FILTER_PROMPT = """\
 You are filtering headlines for a supply-chain and equity impact tool. \
 The tool traces how news propagates through a graph of companies, commodities, \
 and regions. For a headline to be useful it must have an IDENTIFIABLE SEED — \
-a named company taking an action, or a named commodity/region experiencing a \
-supply or demand shock — so the tool can start a propagation chain without \
-hallucinating a node.
+a named company taking a specific action, or a named commodity/region \
+experiencing a supply or demand shock — so the tool can start a propagation \
+chain without hallucinating a node.
 
 TODAY'S DATE: {today}
 RECENCY RULE — exclude anything older than 2 days:
@@ -116,49 +116,59 @@ RECENCY RULE — exclude anything older than 2 days:
   regardless of publication date.
 
 INCLUDE — headline has a clear seed and describes a CAUSE, not an effect:
-- Named company actions: M&A, partnerships, deals, product launches, factory \
-  openings/closures, layoffs, regulatory approvals/rejections, contract wins/losses
+- Named company actions with specific detail: M&A (named acquirer + target), \
+  named partnerships/contracts, product launches (named product or service), \
+  factory openings/closures, layoffs with a stated number, regulatory \
+  approvals/rejections of a named drug/product, named contract wins/losses
 - Named company earnings ONLY when tied to a concrete driver (new product, \
   cost programme, market entry) — not just "beat estimates"
-- Commodity supply or demand events: output cuts, crop failures, new discoveries, \
-  trade route disruptions, freight rate changes, energy supply agreements
-- Macroeconomic data releases with a named sector or region: industrial output, \
-  manufacturing PMI, trade balance, inflation by category
-- Trade policy directly affecting named goods or companies: tariffs, sanctions, \
-  export controls, import bans
+- Commodity supply or demand events: output cuts, crop failures, new \
+  discoveries, trade route disruptions, freight rate changes, energy \
+  supply agreements
+- Macroeconomic data releases that name a specific driver or show a notable \
+  deviation: "wholesale prices +1.1% driven by energy", "manufacturing PMI \
+  falls to 48.2". Generic "X rose Y%" with no named driver is borderline — \
+  include only if the number is notably high/low or the release is a \
+  major one (CPI, PPI, GDP, payrolls).
 - Central bank rate decisions
+- Trade policy directly affecting named goods or companies: tariffs, \
+  sanctions, export controls, import bans
 - Geopolitical events ONLY when the headline explicitly names a commodity or \
   supply-chain impact AND states the mechanism (e.g. "Hormuz closure cuts oil \
   flow by 20%", "port strike halts auto-parts shipments"). "Tensions rise", \
   "ceasefire in jeopardy", "missiles fired" with no commodity named → EXCLUDE.
 
-EXCLUDE — no identifiable seed, or describes aftermath rather than a cause:
+EXCLUDE — no identifiable seed, describes aftermath, or lacks specifics:
+- Vague company announcements with no concrete detail: "X expands Y \
+  operations", "X grows Z business", "X moves into Y space", "X bets on Y" — \
+  include ONLY if the headline names a specific partner, deal value, geography, \
+  product, or quantity. "Amazon expands trucking" with nothing else → EXCLUDE. \
+  "Amazon signs $500M trucking contract with UPS" → INCLUDE.
 - Political news (elections, primaries, endorsements, polling, government \
   statements, politician interviews, speeches, press conferences) unless the \
-  headline names a specific company or commodity directly affected. A politician \
-  walking out of an interview, making a statement, or commenting on past events \
-  is never a supply-chain seed.
-- Government/geopolitical events with no explicit commodity or company impact: \
-  military actions, diplomatic disputes, ceasefire negotiations, sanctions \
-  threats — unless the headline states which commodity or named company is \
-  directly disrupted.
-- Stock price or valuation milestones: "X shares rise/fall N%", "X hits $1T \
-  valuation", "X stock surges" — these are outcomes, not causes.
-- Index or broad market moves: "S&P 500 up/down", "Nasdaq hits high", \
-  "markets mixed"
-- Earnings beats/misses with no named driver ("X tops estimates", "profits rise")
-- Celebrity, entertainment, sports, obituaries
+  headline names a specific company or commodity directly affected.
+- Government/geopolitical events with no explicit commodity or company impact.
+- Stock price moves as the main story: "X shares rise/fall N%", "X hits $1T \
+  valuation" — these are outcomes, not causes. Exception: include if the \
+  article headline names the concrete cause (e.g. "Oracle shares fall 11% \
+  after announcing $10B capital raise").
+- Index or broad market moves: "S&P 500 up/down", "Nasdaq hits high"
+- Earnings beats/misses with no named driver
+- IPO valuation or market-cap milestone articles (how rich investors got, \
+  what millionaires will buy, will it break the bull market) — pure finance
+- Celebrity, entertainment, sports, personal finance, obituaries
 - Opinion, analysis, editorial, explainer, or forecast pieces. Signals: \
   "Inside the…", "What to know about…", "Why…", "How…", "explained", \
-  "everything you need to know", "what it means", "the real story behind"
-- Speculative / forward-looking pieces with no confirmed action. Signals: \
-  "may", "could", "might", "is expected to", "is likely to", "may soon", \
-  "could become" in the headline with no named entity taking a confirmed action.
-- Vague competitive posturing with no concrete action: "X wants Y's market", \
-  "X eyes Y", "X targets Y's customers" — exclude unless a deal, contract, \
-  or specific action is named.
+  "what it means", "the real story behind"
+- Speculative / forward-looking pieces with no confirmed action: signals are \
+  "may", "could", "might", "is expected to", "is likely to" with no named \
+  entity taking a confirmed action.
 - Any headline where you would need to invent a company or commodity name to \
   create a seed — if the seed is not stated, exclude it.
+
+DIVERSITY RULE: if one company or story appears in many raw headlines, \
+include at most 2 of them (the most concrete/actionable). Do not let a \
+single IPO, earnings cycle, or ongoing event crowd out other qualifying news.
 
 REWRITE RULES — apply to every headline you keep:
 - ≤15 words
@@ -173,9 +183,9 @@ REWRITE RULES — apply to every headline you keep:
 - Keep specific numbers (prices, %, quantities) — they are facts.
 - Do NOT invent facts not in the original headline.
 
-QUALITY BAR: if fewer than 5 headlines clearly qualify, return only those that \
-do. An empty array [] is valid if nothing qualifies. Never pad with borderline \
-items — a wrong seed misleads the tool more than a short list.
+QUALITY BAR: aim for 5–10 headlines. Include every item that clearly \
+qualifies — do not stop at 5. Return fewer only if genuinely fewer items \
+qualify; never pad with borderline items.
 
 Return ONLY a valid JSON array — no markdown, no other text:
 [{{"text": "<rewritten headline ≤15 words>", "source": "<outlet name>", "url": "<url>"}}]
