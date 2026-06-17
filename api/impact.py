@@ -629,18 +629,31 @@ _SEED_PROMPT_TEMPLATE = """You are an economist analysing a news event. Pick the
 list below that this event hits MOST DIRECTLY, and decide whether the event
 HELPS or HURTS that node's economic position.
 
-DIRECTION SEMANTICS (read carefully):
-  "negative" = the event HURTS this node. Use for: supply shortage,
-               disrupted production, lost demand, regulatory crackdown,
-               input cost spike, contamination, ban.
-  "positive" = the event HELPS this node. Use for: demand surge,
-               favourable subsidy, competitor failure that this node
-               benefits from, supply abundance that lowers this node's
-               own input cost.
+DIRECTION SEMANTICS (read carefully — the axis DIFFERS by node type):
 
-A pest destroying sugarcane = NEGATIVE for sugar (supply is being
-destroyed, the value chain is disrupted). It would be positive only
-for a SUBSTITUTE that benefits from sugar's loss.
+For a COMPANY or REGION node:
+  "positive" = the event HELPS this node's economic value: demand surge,
+               favourable subsidy, lower input cost, a competitor's
+               failure it benefits from.
+  "negative" = the event HURTS it: lost demand, input cost spike,
+               regulatory crackdown, disrupted production, ban.
+
+For a COMMODITY node, direction = the direction of its PRICE. This is
+mandatory so the commodity stays consistent with its producers and
+consumers downstream (producers move WITH price, consumers AGAINST it):
+  "positive" = the event pushes the commodity's PRICE UP — supply
+               shortage, output cut, crop failure, trade-route CLOSURE,
+               or a demand surge. (Helps producers, hurts consumers.)
+  "negative" = the event pushes the PRICE DOWN — supply increase, new
+               output coming online, a trade route REOPENING, or
+               collapsing demand. (Hurts producers, helps consumers.)
+
+Worked examples:
+- A pest destroying sugarcane → sugar supply falls → sugar PRICE rises →
+  POSITIVE for sugar. (Negative only for sugar CONSUMERS like Coca-Cola.)
+- Reopening the Strait of Hormuz → crude supply rises → crude PRICE
+  falls → NEGATIVE for crude oil. (Positive for oil CONSUMERS like
+  airlines and chemical makers.)
 
 NEWS:
 \"\"\"
