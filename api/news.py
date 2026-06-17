@@ -105,6 +105,24 @@ a named company taking a specific action, or a named commodity/region \
 experiencing a supply or demand shock — so the tool can start a propagation \
 chain without hallucinating a node.
 
+CAUSE vs AFTERMATH (the most important rule):
+The seed must be a CAUSE that will ripple FORWARD through the graph, never a \
+measurement of ripples that already happened. A price move, index move, or \
+data print is an AFTERMATH — the market already reacted, so there is nothing \
+left to propagate.
+- If a headline reports an effect (price/index move, data print) AND names \
+  the event that caused it, the seed is the CAUSE. REWRITE the headline to \
+  lead with the causal event and DROP the measured effect — the tool computes \
+  the effect itself. Example: "U.S. crude falls below $85 as U.S. and Iran \
+  near deal to reopen Hormuz" → rewrite to "U.S. and Iran near deal to reopen \
+  Strait of Hormuz" (the deal is the seed; the price drop is what the tool \
+  derives). Example: "Wholesale prices rose 1.1% in May, driven by energy" → \
+  rewrite to "Energy costs climb, lifting U.S. wholesale prices in May" (the \
+  energy-cost rise is the forward-propagating driver).
+- If a headline reports an effect with NO named cause, it is pure aftermath — \
+  EXCLUDE it. "Crude oil falls below $85" alone, "S&P 500 closes higher", \
+  "PPI rose 1.1%" with no driver → EXCLUDE.
+
 TODAY'S DATE: {today}
 RECENCY RULE — exclude anything older than 2 days:
 - If the underlying event clearly happened more than 2 days before today, \
@@ -125,11 +143,13 @@ INCLUDE — headline has a clear seed and describes a CAUSE, not an effect:
 - Commodity supply or demand events: output cuts, crop failures, new \
   discoveries, trade route disruptions, freight rate changes, energy \
   supply agreements
-- Macroeconomic data releases that name a specific driver or show a notable \
-  deviation: "wholesale prices +1.1% driven by energy", "manufacturing PMI \
-  falls to 48.2". Generic "X rose Y%" with no named driver is borderline — \
-  include only if the number is notably high/low or the release is a \
-  major one (CPI, PPI, GDP, payrolls).
+- Macroeconomic data releases (CPI, PPI, GDP, payrolls, PMI) ONLY when the \
+  headline names the DRIVER behind the move — and then REWRITE to lead with \
+  that driver, not the data print (see CAUSE vs AFTERMATH). "Wholesale prices \
+  +1.1% driven by energy" → keep, rewritten as "Energy costs lift U.S. \
+  wholesale prices 1.1% in May". A bare print with NO named driver ("PPI rose \
+  1.1%", "GDP grew 2%", "payrolls up 150k") is aftermath → EXCLUDE, however \
+  major the release.
 - Central bank rate decisions
 - Trade policy directly affecting named goods or companies: tariffs, \
   sanctions, export controls, import bans
@@ -149,10 +169,15 @@ EXCLUDE — no identifiable seed, describes aftermath, or lacks specifics:
   headline names a specific company or commodity directly affected.
 - Government/geopolitical events with no explicit commodity or company impact.
 - Stock price moves as the main story: "X shares rise/fall N%", "X hits $1T \
-  valuation" — these are outcomes, not causes. Exception: include if the \
-  article headline names the concrete cause (e.g. "Oracle shares fall 11% \
-  after announcing $10B capital raise").
-- Index or broad market moves: "S&P 500 up/down", "Nasdaq hits high"
+  valuation" — these are outcomes, not causes. If the headline names the \
+  concrete cause, KEEP it but REWRITE to lead with the cause and drop the \
+  share-price move (e.g. "Oracle shares fall 11% after announcing $10B capital \
+  raise" → "Oracle announces $10B capital raise"). No named cause → EXCLUDE.
+- Index or broad market moves: "S&P 500 up/down", "Nasdaq hits high" — \
+  aftermath with no seed, always EXCLUDE.
+- Commodity price moves with no named cause: "crude oil falls below $85", \
+  "gold tops $2,500" — aftermath, EXCLUDE. With a named cause, reframe to the \
+  cause per the CAUSE vs AFTERMATH rule.
 - Earnings beats/misses with no named driver
 - IPO valuation or market-cap milestone articles (how rich investors got, \
   what millionaires will buy, will it break the bull market) — pure finance
