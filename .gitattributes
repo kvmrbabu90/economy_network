@@ -1,0 +1,14 @@
+# Normalize line endings: store text as LF in the repo and check out as LF.
+# Stops Windows CRLF↔LF churn from showing files as wholly-changed in diffs.
+* text=auto eol=lf
+
+# Explicit binaries — never normalize or diff as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.db binary
+*.sqlite binary
+*.woff binary
+*.woff2 binary

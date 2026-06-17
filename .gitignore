@@ -33,3 +33,18 @@ web/dist/
 .env.*
 !.env.example
 !web/.env.development
+
+# SQLite WAL / shared-memory sidecars (the .db itself is already ignored)
+*.db-shm
+*.db-wal
+
+# Logs (incl. stray redirect artifacts like `logsapi.log`, `..logsweb.log`)
+*.log
+logs/
+
+# Superpowers / agent scratch
+.superpowers/
+
+# Local scratch — ad-hoc debug scripts and impact/test dumps
+check_nio.py
+*_test.json
