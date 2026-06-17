@@ -976,6 +976,12 @@ function setView(next: "2d" | "3d" | "globe") {
             console.warn("edge fetch failed", err);
           }
         },
+        onBackgroundClick: () => {
+          // Empty-space click resets the inspector and brings back the
+          // brief — mirrors the 2D renderer's clickStage handler.
+          showEmpty();
+          showMorningBrief();
+        },
       },
       { layout: next === "globe" ? "globe" : "ball", filterState: filters },
     );

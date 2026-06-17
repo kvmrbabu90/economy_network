@@ -33,6 +33,7 @@ export interface View3DCallbacks {
   onNodeClick?: (id: string) => void;
   onNodeDoubleClick?: (id: string) => void;
   onEdgeClick?: (edgeId: string) => void;
+  onBackgroundClick?: () => void;
 }
 
 export interface View3DOptions {
@@ -775,6 +776,12 @@ export function start3D(
 
   instance.onLinkClick((link: ForceLink) => {
     cbs.onEdgeClick?.(link.edgeId);
+  });
+
+  // Click on empty space (no node/link hit) resets the inspector and
+  // brings back the morning brief — mirrors the 2D renderer's clickStage.
+  instance.onBackgroundClick(() => {
+    cbs.onBackgroundClick?.();
   });
 
   // Force-graph sizes itself off the container's bounding rect; make sure
