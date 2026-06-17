@@ -30,6 +30,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -122,31 +123,50 @@ def _claude_call(prompt: str) -> str:
     binary = _resolve_claude_binary()
     cmd = [binary, "-p", prompt, "--output-format", "json"]
     t0 = time.time()
+    # On Windows, subprocess.run(timeout=) only kills the direct process, not
+    # its children. Use Popen + communicate so we can call kill() ourselves
+    # and actually reap the process before returning.
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
+            _kw: dict = dict(
                 stdin=subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=LLM_TIMEOUT_SECONDS,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 cwd=tmpdir,
             )
-    except subprocess.TimeoutExpired:
-        log.warning("claude CLI timeout after %ds", LLM_TIMEOUT_SECONDS)
+            if sys.platform == "win32":
+                # Run in a new process group so kill() terminates the whole tree.
+                _kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            with subprocess.Popen(cmd, **_kw) as proc:
+                try:
+                    stdout_b, stderr_b = proc.communicate(timeout=LLM_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    log.warning("claude CLI timeout after %ds — killing process tree", LLM_TIMEOUT_SECONDS)
+                    if sys.platform == "win32":
+                        subprocess.call(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    else:
+                        proc.kill()
+                    proc.communicate()  # drain pipes so the process exits cleanly
+                    return ""
+                stdout_bytes = stdout_b
+                stderr_bytes = stderr_b
+                returncode = proc.returncode
+    except Exception as exc:
+        log.warning("claude CLI launch failed: %s", exc)
         return ""
+    stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+    stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
     log.info("claude CLI call (%.1fs, %d bytes prompt, exit=%d)",
-             time.time() - t0, len(prompt), proc.returncode)
-    if proc.returncode != 0:
-        log.warning("claude CLI non-zero exit: %s", (proc.stderr or "")[:300])
+             time.time() - t0, len(prompt), returncode)
+    if returncode != 0:
+        log.warning("claude CLI non-zero exit: %s", stderr[:300])
         return ""
     try:
-        envelope = json.loads(proc.stdout)
+        envelope = json.loads(stdout)
     except json.JSONDecodeError as exc:
         log.warning("claude CLI envelope parse failed: %s; head=%s",
-                    exc, (proc.stdout or "")[:300])
+                    exc, stdout[:300])
         return ""
     if envelope.get("is_error"):
         log.warning("claude CLI is_error=true: %s", envelope.get("result", ""))
@@ -514,6 +534,13 @@ def _neighbors(conn: sqlite3.Connection, node_ids: list[str], visited: set[str])
     regulated_by edges. Skips below_threshold edges so we don't chase
     the audit layer through impact propagation.
 
+    Stranded-parent fallback: if a parent node has ZERO above-threshold
+    edges (e.g. a provisional non-filer like Waymo whose competes_with
+    edges all sit at confidence 0.65), retry just that parent including
+    below-threshold edges. Otherwise a seed can be marooned on an island
+    and the whole run degenerates to scoring only the secondary seed's
+    neighbourhood — the audit layer should not silence a seed entirely.
+
     Regulators are intentionally excluded from BFS expansion. They are
     not investable and their presence in hop chains is misleading --
     Lilly -> FDA -> every pharma company FDA regulates is not a useful
@@ -537,6 +564,29 @@ def _neighbors(conn: sqlite3.Connection, node_ids: list[str], visited: set[str])
         """,
         node_ids + node_ids,
     ).fetchall()
+    # Stranded-parent fallback: parents with no above-threshold edges at all.
+    parents_with_edges = {r["parent"] for r in rows}
+    stranded = [nid for nid in node_ids if nid not in parents_with_edges]
+    if stranded:
+        s_placeholder = ",".join("?" for _ in stranded)
+        fallback_rows = conn.execute(
+            f"""
+            SELECT DISTINCT source AS parent, target AS child, type AS edge_type,
+                   supply_geography, weight, source_tier
+            FROM edges
+            WHERE source IN ({s_placeholder})
+            UNION
+            SELECT DISTINCT target AS parent, source AS child, type AS edge_type,
+                   supply_geography, weight, source_tier
+            FROM edges
+            WHERE target IN ({s_placeholder})
+            """,
+            stranded + stranded,
+        ).fetchall()
+        if fallback_rows:
+            log.info("neighbors: stranded-parent fallback for %s -> %d below-threshold edges",
+                     stranded, len(fallback_rows))
+            rows = list(rows) + list(fallback_rows)
     out: list[dict[str, Any]] = []
     seen_local: set[str] = set()
     for r in rows:
@@ -685,54 +735,59 @@ Cover every candidate id exactly once.
 # ---------------------------------------------------------------------------
 
 def _sample_frontier(ring: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
-    """Down-sample a BFS ring to at most `cap` candidates while preserving
-    diversity of node types and edge types.
+    """Down-sample a BFS ring to at most `cap` candidates.
 
-    Priority order (higher = keep first):
+    Fairness across parents comes first: candidates are grouped by the
+    frontier node that discovered them (`via_parent`) and slots are
+    filled round-robin across those groups. Without this, one
+    high-degree hub (e.g. a Crude Oil seed with 40+ refinery edges)
+    fills the entire cap and a low-degree seed's direct neighbours —
+    often the most relevant nodes of the whole run — never get scored.
+
+    Within each parent group, candidates are ordered by signal priority:
       1. Company nodes via supplies edges   — direct value-chain signal
       2. Company nodes via competes_with    — direct competitive signal
       3. Commodity / Region nodes           — macro signal
       4. Company nodes via regulated_by     — lower signal for impact
-
-    Within each bucket we shuffle randomly so repeated runs get variety.
-    This prevents systematic blind spots (e.g. always dropping the last
-    alphabetical companies in a huge hop-1 ring).
+    with a random shuffle inside each tier so repeated runs get variety
+    (no systematic blind spots from e.g. alphabetical ordering).
     """
     import random
 
     if len(ring) <= cap:
         return ring
 
-    buckets: dict[str, list[dict[str, Any]]] = {
-        "company_supply":    [],
-        "company_compete":   [],
-        "macro":             [],
-        "company_other":     [],
-    }
-    for node in ring:
+    def _priority(node: dict[str, Any]) -> int:
         t = node.get("type", "")
         e = node.get("edge_type", "") or ""
         if t == "Company" and "suppli" in e:
-            buckets["company_supply"].append(node)
-        elif t == "Company" and "competes" in e:
-            buckets["company_compete"].append(node)
-        elif t in ("Commodity", "Region"):
-            buckets["macro"].append(node)
-        else:
-            buckets["company_other"].append(node)
+            return 0
+        if t == "Company" and "competes" in e:
+            return 1
+        if t in ("Commodity", "Region"):
+            return 2
+        return 3
 
-    for b in buckets.values():
-        random.shuffle(b)
+    by_parent: dict[str, list[dict[str, Any]]] = {}
+    for node in ring:
+        by_parent.setdefault(node.get("via_parent") or "", []).append(node)
+    for group in by_parent.values():
+        random.shuffle(group)
+        group.sort(key=_priority)  # stable sort keeps the shuffle within tiers
 
-    # Fill slots from highest-priority bucket first; round-robin once
-    # each bucket is exhausted so we don't waste allocation.
-    ordered = (
-        buckets["company_supply"]
-        + buckets["company_compete"]
-        + buckets["macro"]
-        + buckets["company_other"]
-    )
-    return ordered[:cap]
+    # Round-robin one slot per parent per pass until the cap is reached.
+    out: list[dict[str, Any]] = []
+    queues = [g for g in by_parent.values() if g]
+    while len(out) < cap and queues:
+        next_queues = []
+        for q in queues:
+            if len(out) >= cap:
+                break
+            out.append(q.pop(0))
+            if q:
+                next_queues.append(q)
+        queues = next_queues
+    return out
 
 
 # ---------------------------------------------------------------------------
