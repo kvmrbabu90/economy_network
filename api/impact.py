@@ -818,10 +818,20 @@ def _build_seeds_block(all_seeds: list[dict[str, Any]]) -> str:
     return "\n".join(lines) if lines else "  (none)"
 
 
-def run_impact(text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None) -> dict[str, Any]:
+def run_impact_stream(
+    text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None
+):
+    """Streaming variant of run_impact. Yields event dicts:
+      {"event":"seeds", ...} once, then {"event":"hop", ...} per hop,
+      then {"event":"refinement", ...}, then {"event":"done","result":<full payload>}.
+    Error cases yield {"event":"error", ...} then a closing {"event":"done", ...}.
+    The `done.result` payload is identical to what the old run_impact returned."""
     text = (text or "").strip()
     if not text:
-        return {"error": "empty news text", "seed": None, "impacts": []}
+        result = {"error": "empty news text", "seed": None, "impacts": []}
+        yield {"event": "error", "message": "empty news text"}
+        yield {"event": "done", "result": result}
+        return
 
     # Set thread-local provider override so all _llm_call()s from this
     # thread (including those dispatched to the thread pool for rings)
@@ -842,329 +852,351 @@ def run_impact(text: str, *, conn: sqlite3.Connection, provider: Optional[str] =
         else:
             _thread_local.provider = prev_thread_provider
 
-    # == Step 1: Build commodity/region seed prompt (no LLM yet) ==========
-    candidates = _list_seed_candidates(conn)
-    candidate_lines = []
-    for c in candidates:
-        cat = c.get("category") or c["type"].lower()
-        candidate_lines.append(f"  {c['id']} | {c['type']} | {c['name']} | {cat}")
-    seed_prompt = _SEED_PROMPT_TEMPLATE.format(
-        news=text,
-        candidates="\n".join(candidate_lines),
-    )
-
-    # == Step 2: Run entity extraction + commodity seed selection in parallel ==
-    # Both are independent LLM calls; run them concurrently to cut latency.
-    log.info("multi-seed: entity extraction + commodity seed in parallel")
-    debug_log.append(f"seed_parallel: start (commodity candidates={len(candidate_lines)})")
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f_entities = pool.submit(_extract_named_entities, text)
-        f_seed_raw = pool.submit(_llm_call, seed_prompt)
-        named_entities = f_entities.result()
-        seed_raw = f_seed_raw.result()
-    debug_log.append(
-        f"seed_parallel: done — entity_extract returned {len(named_entities)} entities: "
-        f"{[e['company_name'] for e in named_entities]}"
-    )
-
-    # == Step 3: Resolve named entities to graph nodes (DB lookups, fast) ==
-    resolved_seeds: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for entity in named_entities:
-        node = _resolve_entity(conn, entity["company_name"])
-        if node:
-            nid = node["id"]
-            if nid not in seen_ids:
-                seen_ids.add(nid)
-                resolved_seeds.append({
-                    "node_id": nid,
-                    "name": node["name"],
-                    "type": node["type"],
-                    "direction": entity["direction"],
-                    "magnitude": entity["magnitude"],
-                    "reasoning": entity["reasoning"],
-                    "sector": node.get("sector"),
-                    "country": node.get("country"),
-                    "is_named_entity": True,
-                })
-                debug_log.append(
-                    f"entity_resolve: '{entity['company_name']}' → {nid} ({node['name']})"
-                )
-        else:
-            debug_log.append(
-                f"entity_resolve: '{entity['company_name']}' → not found in graph"
-            )
-
-    # == Step 4: Parse commodity/region seed ==============================
-    seed_obj = _parse_llm_json(seed_raw) or {}
-    commodity_seed_id = seed_obj.get("node_id")
-    commodity_seed: Optional[dict[str, Any]] = None
-    if commodity_seed_id and commodity_seed_id not in seen_ids:
-        commodity_summary = _node_summary(conn, commodity_seed_id)
-        if commodity_summary:
-            raw_mag = seed_obj.get("magnitude")
-            commodity_seed = {
-                "node_id": commodity_seed_id,
-                "name": commodity_summary["name"],
-                "type": commodity_summary["type"],
-                "direction": seed_obj.get("direction") or "negative",
-                "magnitude": float(raw_mag) if raw_mag is not None else 0.9,
-                "reasoning": seed_obj.get("reasoning") or "",
-                "sector": commodity_summary.get("sector"),
-                "country": commodity_summary.get("country"),
-                "is_named_entity": False,
-            }
-            seen_ids.add(commodity_seed_id)
-            debug_log.append(
-                f"commodity_seed: {commodity_seed_id} ({commodity_summary['name']}) "
-                f"{commodity_seed['direction']} ({commodity_seed['magnitude']:.2f})"
-            )
-        else:
-            debug_log.append(f"commodity_seed: LLM picked unknown id {commodity_seed_id}")
-    elif commodity_seed_id and commodity_seed_id in seen_ids:
-        debug_log.append(
-            f"commodity_seed: {commodity_seed_id} already in named seeds — skipping duplicate"
-        )
-    else:
-        debug_log.append("commodity_seed: LLM returned no seed node")
-
-    # == Step 5: Combine all seeds ========================================
-    # Named entity seeds first (more specific); commodity/region seed appended.
-    all_seeds: list[dict[str, Any]] = list(resolved_seeds)
-    if commodity_seed:
-        all_seeds.append(commodity_seed)
-
-    if not all_seeds:
-        return {
-            "error": "Could not identify any seed nodes from the news text",
-            "seed": None,
-            "impacts": [],
-            "debug": debug_log,
-        }
-
-    debug_log.append(
-        f"seeds: {len(all_seeds)} total — "
-        + ", ".join(f"{s['node_id']} ({s['name']}, {s['direction']})" for s in all_seeds)
-    )
-
-    # Build the seeds_block string used in all subsequent prompts.
-    seeds_block = _build_seeds_block(all_seeds)
-
-    # == Step 6: Initialize BFS from all seeds at hop 0 ===================
-    impacts: dict[str, dict[str, Any]] = {}
-    visited: set[str] = set()
-    frontier: list[str] = []
-    for s in all_seeds:
-        nid = s["node_id"]
-        impacts[nid] = {
-            "node_id": nid,
-            "name": s["name"],
-            "type": s["type"],
-            "direction": s["direction"],
-            "magnitude": s["magnitude"],
-            "hop": 0,
-            "reasoning": s["reasoning"],
-            "via_parent": None,
-            "edge_type": None,
-            "is_seed": True,
-            "edge_weight": None,
-            "edge_source_tier": None,
-            "is_estimated": True,
-        }
-        visited.add(nid)
-        frontier.append(nid)
-
-    # Primary seed: first named entity (if any); else commodity/region seed.
-    # Used in the API response's `seed` field for backward compatibility.
-    primary_seed_id = all_seeds[0]["node_id"]
-
-    # -- Step 7: BFS ring by ring ----------------------------------------
-    for hop in range(1, MAX_HOPS + 1):
-        full_ring = _neighbors(conn, frontier, visited)
-        log.info("hop %d: frontier=%d, ring=%d", hop, len(frontier), len(full_ring))
-        debug_log.append(f"hop {hop}: frontier={len(frontier)}, raw_neighbors={len(full_ring)}")
-        if not full_ring:
-            debug_log.append(f"hop {hop}: no new neighbors -> stop")
-            # P0 fix: if we stop on hop 1 with only seeds in impacts, the seed
-            # node(s) have no graph connections — return a helpful error immediately
-            # rather than timing out or returning a trivial single-node result.
-            if hop == 1 and len(impacts) == len(all_seeds):
-                seed_names = ", ".join(s["name"] for s in all_seeds)
-                suggestion = (
-                    "Try searching for a directly connected company (e.g. Apple, "
-                    "Nvidia, AMD for TSMC; ExxonMobil, Chevron for crude oil)."
-                )
-                _restore_thread_local()
-                return {
-                    "error": (
-                        f"The identified seed node(s) — {seed_names} — exist in the graph "
-                        f"but have no recorded supply chain connections yet. {suggestion}"
-                    ),
-                    "seed": impacts.get(primary_seed_id),
-                    "seeds": [impacts[s["node_id"]] for s in all_seeds if s["node_id"] in impacts],
-                    "impacts": list(impacts.values()),
-                    "provider": effective_provider,
-                    "model": "claude-code-cli" if effective_provider == "claude" else OLLAMA_MODEL,
-                    "max_hops": MAX_HOPS,
-                    "debug": debug_log,
-                    "refinement": {"considered": 0, "rescored": 0, "applied": 0},
-                    "no_neighbors": True,
-                }
-            break
-        # Cap the ring before chunking. Large hubs (crude oil, Nvidia, Amazon)
-        # can have 200-500 neighbours; without a cap each hop spawns dozens of
-        # parallel Claude CLI subprocesses that saturate the thread pool.
-        # _sample_frontier prioritises Company-supply > Company-compete >
-        # Commodity/Region > other, with random shuffle within each bucket for
-        # variety across runs.
-        if len(full_ring) > MAX_FRONTIER:
-            sampled = _sample_frontier(full_ring, MAX_FRONTIER)
-            debug_log.append(
-                f"hop {hop}: frontier capped {len(full_ring)} -> {len(sampled)} "
-                f"(MAX_FRONTIER={MAX_FRONTIER})"
-            )
-            full_ring = sampled
-        # Chunk the ring into MAX_RING_CANDIDATES-sized batches so every
-        # neighbour gets scored. Each chunk is one LLM call.
-        chunks = [
-            full_ring[i:i + MAX_RING_CANDIDATES]
-            for i in range(0, len(full_ring), MAX_RING_CANDIDATES)
-        ]
-        debug_log.append(
-            f"hop {hop}: scoring in {len(chunks)} chunk(s) of <= "
-            f"{MAX_RING_CANDIDATES} (parallelism={min(RING_PARALLELISM, len(chunks))})"
-        )
-
-        # Build all chunk prompts up front, then run them through a
-        # bounded ThreadPoolExecutor. Each _llm_call is an independent
-        # subprocess; parallelizing cuts wall time roughly linearly with
-        # parallelism. On a typical war-shock scenario the worst ring
-        # (hop 3, ~200 candidates / 13 chunks) drops from ~6 minutes
-        # serial to ~1 minute at parallelism=6.
-        chunk_prompts: list[str] = []
-        for ring in chunks:
-            cand_lines = []
-            for nb in ring:
-                parent_v = impacts.get(nb["via_parent"], {})
-                country = nb.get("country") or "-"
-                geo = nb.get("supply_geography") or "?"
-                # Phase K: format financial weight for the prompt
-                ew = nb.get("edge_weight")
-                et = nb.get("edge_source_tier") or ""
-                if ew is not None:
-                    weight_str = f"{ew * 100:.0f}%|{et or 'sec_explicit'}"
-                else:
-                    weight_str = "est"
-                parent_mag = parent_v.get("magnitude")
-                parent_mag_str = f"{parent_mag:.2f}" if parent_mag is not None else "?"
-                cand_lines.append(
-                    f"  {nb['id']} | {nb['type']} | {nb['name']} | "
-                    f"{nb.get('sector') or '-'} | country={country} | edge_geo={geo} | "
-                    f"weight={weight_str} | "
-                    f"parent={nb['via_parent']} | "
-                    f"edge={nb['edge_type']} | "
-                    f"parent_dir={parent_v.get('direction', '?')} | "
-                    f"parent_mag={parent_mag_str}"
-                )
-            chunk_prompts.append(_RING_PROMPT_TEMPLATE.format(
-                news=text,
-                seeds_block=seeds_block,
-                hop_num=hop,
-                candidates="\n".join(cand_lines),
-            ))
-
-        t_hop = time.time()
-        workers = min(RING_PARALLELISM, len(chunks))
-        try:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                chunk_raws = list(pool.map(_llm_call, chunk_prompts))
-        except Exception as exc:
-            # _ollama_call can raise RuntimeError on network failure. Treat the
-            # entire hop as failed rather than letting the exception propagate
-            # past the thread-local restoration finally block.
-            log.warning("hop %d: LLM pool raised %s — treating as failed hop", hop, exc)
-            chunk_raws = [""] * len(chunk_prompts)
-        debug_log.append(
-            f"hop {hop}: {len(chunks)} chunks done in {time.time() - t_hop:.1f}s"
-        )
-
-        new_frontier: list[str] = []
-        chunk_failed = False
-        for chunk_idx, (ring, ring_raw) in enumerate(zip(chunks, chunk_raws)):
-            debug_log.append(
-                f"hop {hop} chunk {chunk_idx + 1}/{len(chunks)}: "
-                f"LLM raw_len={len(ring_raw)}"
-            )
-            ring_parsed = _parse_llm_json(ring_raw)
-            if isinstance(ring_parsed, dict) and "results" in ring_parsed:
-                ring_parsed = ring_parsed.get("results")
-            if not isinstance(ring_parsed, list):
-                log.warning("hop %d chunk %d: parse FAIL", hop, chunk_idx + 1)
-                debug_log.append(
-                    f"hop {hop} chunk {chunk_idx + 1}: parse FAIL "
-                    f"type={type(ring_parsed).__name__}, tail={(ring_raw or '')[-200:]!r}"
-                )
-                chunk_failed = True
-                continue
-            debug_log.append(
-                f"hop {hop} chunk {chunk_idx + 1}: scored {len(ring_parsed)} verdicts"
-            )
-            for verdict in ring_parsed:
-                if not isinstance(verdict, dict):
-                    continue
-                nid = verdict.get("node_id")
-                if not nid or nid in impacts:
-                    continue
-                matching = next((nb for nb in ring if nb["id"] == nid), None)
-                if not matching:
-                    continue
-                direction = verdict.get("direction") or "no_effect"
-                magnitude = float(verdict.get("magnitude") or 0.0)
-                reasoning = verdict.get("reasoning") or ""
-                _ew = matching.get("edge_weight")
-                impacts[nid] = {
-                    "node_id": nid,
-                    "name": matching["name"],
-                    "type": matching["type"],
-                    "direction": direction,
-                    "magnitude": magnitude,
-                    "hop": hop,
-                    "reasoning": reasoning,
-                    "via_parent": matching["via_parent"],
-                    "edge_type": matching["edge_type"],
-                    "country": matching.get("country"),  # Phase E
-                    # Phase K: financial grounding metadata
-                    "edge_weight": _ew,
-                    "edge_source_tier": matching.get("edge_source_tier"),
-                    "is_estimated": _ew is None,
-                }
-                visited.add(nid)
-                if direction in ("positive", "negative") and magnitude >= 0.15:
-                    new_frontier.append(nid)
-        if chunk_failed and not new_frontier:
-            # If every chunk failed we bail out of the BFS to avoid an
-            # infinite-looking wait on empty rings.
-            break
-        if not new_frontier:
-            break
-        frontier = new_frontier
-
-    # -- Step N+1: refinement pass -----------------------------------------
-    # The hop-by-hop BFS is myopic: each node is scored ONCE, against ONE
-    # parent's verdict, even when many other impacted neighbours connect
-    # to it. Canonical failure mode is "India under Ukraine war" -- India
-    # gets scored at hop 2 via the wheat path ("self-sufficient in wheat;
-    # no effect") and the model never sees that sunflower-oil (also at
-    # hop 2, scored in parallel) is also negative and feeds the same
-    # node via different companies.
-    #
-    # The fix: find every node currently no_effect / low-magnitude that
-    # has TWO OR MORE impacted neighbours, then re-score those nodes
-    # with the full set of neighbour verdicts shown to the LLM at once.
-    # Only apply the new verdict if it strengthens (higher magnitude or
-    # flipped direction from no_effect to a definite call) -- never
-    # downgrade an already-strong verdict.
     try:
+        # == Step 1: Build commodity/region seed prompt (no LLM yet) ==========
+        candidates = _list_seed_candidates(conn)
+        candidate_lines = []
+        for c in candidates:
+            cat = c.get("category") or c["type"].lower()
+            candidate_lines.append(f"  {c['id']} | {c['type']} | {c['name']} | {cat}")
+        seed_prompt = _SEED_PROMPT_TEMPLATE.format(
+            news=text,
+            candidates="\n".join(candidate_lines),
+        )
+
+        # == Step 2: Run entity extraction + commodity seed selection in parallel ==
+        # Both are independent LLM calls; run them concurrently to cut latency.
+        log.info("multi-seed: entity extraction + commodity seed in parallel")
+        debug_log.append(f"seed_parallel: start (commodity candidates={len(candidate_lines)})")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_entities = pool.submit(_extract_named_entities, text)
+            f_seed_raw = pool.submit(_llm_call, seed_prompt)
+            named_entities = f_entities.result()
+            seed_raw = f_seed_raw.result()
+        debug_log.append(
+            f"seed_parallel: done — entity_extract returned {len(named_entities)} entities: "
+            f"{[e['company_name'] for e in named_entities]}"
+        )
+
+        # == Step 3: Resolve named entities to graph nodes (DB lookups, fast) ==
+        resolved_seeds: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for entity in named_entities:
+            node = _resolve_entity(conn, entity["company_name"])
+            if node:
+                nid = node["id"]
+                if nid not in seen_ids:
+                    seen_ids.add(nid)
+                    resolved_seeds.append({
+                        "node_id": nid,
+                        "name": node["name"],
+                        "type": node["type"],
+                        "direction": entity["direction"],
+                        "magnitude": entity["magnitude"],
+                        "reasoning": entity["reasoning"],
+                        "sector": node.get("sector"),
+                        "country": node.get("country"),
+                        "is_named_entity": True,
+                    })
+                    debug_log.append(
+                        f"entity_resolve: '{entity['company_name']}' → {nid} ({node['name']})"
+                    )
+            else:
+                debug_log.append(
+                    f"entity_resolve: '{entity['company_name']}' → not found in graph"
+                )
+
+        # == Step 4: Parse commodity/region seed ==============================
+        seed_obj = _parse_llm_json(seed_raw) or {}
+        commodity_seed_id = seed_obj.get("node_id")
+        commodity_seed: Optional[dict[str, Any]] = None
+        if commodity_seed_id and commodity_seed_id not in seen_ids:
+            commodity_summary = _node_summary(conn, commodity_seed_id)
+            if commodity_summary:
+                raw_mag = seed_obj.get("magnitude")
+                commodity_seed = {
+                    "node_id": commodity_seed_id,
+                    "name": commodity_summary["name"],
+                    "type": commodity_summary["type"],
+                    "direction": seed_obj.get("direction") or "negative",
+                    "magnitude": float(raw_mag) if raw_mag is not None else 0.9,
+                    "reasoning": seed_obj.get("reasoning") or "",
+                    "sector": commodity_summary.get("sector"),
+                    "country": commodity_summary.get("country"),
+                    "is_named_entity": False,
+                }
+                seen_ids.add(commodity_seed_id)
+                debug_log.append(
+                    f"commodity_seed: {commodity_seed_id} ({commodity_summary['name']}) "
+                    f"{commodity_seed['direction']} ({commodity_seed['magnitude']:.2f})"
+                )
+            else:
+                debug_log.append(f"commodity_seed: LLM picked unknown id {commodity_seed_id}")
+        elif commodity_seed_id and commodity_seed_id in seen_ids:
+            debug_log.append(
+                f"commodity_seed: {commodity_seed_id} already in named seeds — skipping duplicate"
+            )
+        else:
+            debug_log.append("commodity_seed: LLM returned no seed node")
+
+        # == Step 5: Combine all seeds ========================================
+        # Named entity seeds first (more specific); commodity/region seed appended.
+        all_seeds: list[dict[str, Any]] = list(resolved_seeds)
+        if commodity_seed:
+            all_seeds.append(commodity_seed)
+
+        if not all_seeds:
+            yield {"event": "error", "message": "Could not identify any seed nodes from the news text"}
+            yield {"event": "done", "result": {
+                "error": "Could not identify any seed nodes from the news text",
+                "seed": None, "impacts": [], "debug": debug_log}}
+            return
+
+        debug_log.append(
+            f"seeds: {len(all_seeds)} total — "
+            + ", ".join(f"{s['node_id']} ({s['name']}, {s['direction']})" for s in all_seeds)
+        )
+
+        # Build the seeds_block string used in all subsequent prompts.
+        seeds_block = _build_seeds_block(all_seeds)
+
+        # == Step 6: Initialize BFS from all seeds at hop 0 ===================
+        impacts: dict[str, dict[str, Any]] = {}
+        visited: set[str] = set()
+        frontier: list[str] = []
+        for s in all_seeds:
+            nid = s["node_id"]
+            impacts[nid] = {
+                "node_id": nid,
+                "name": s["name"],
+                "type": s["type"],
+                "direction": s["direction"],
+                "magnitude": s["magnitude"],
+                "hop": 0,
+                "reasoning": s["reasoning"],
+                "via_parent": None,
+                "edge_type": None,
+                "is_seed": True,
+                "edge_weight": None,
+                "edge_source_tier": None,
+                "is_estimated": True,
+            }
+            visited.add(nid)
+            frontier.append(nid)
+
+        # Primary seed: first named entity (if any); else commodity/region seed.
+        # Used in the API response's `seed` field for backward compatibility.
+        primary_seed_id = all_seeds[0]["node_id"]
+
+        # === NEW: emit the seeds event right after hop-0 init ===
+        yield {
+            "event": "seeds",
+            "seeds": [impacts[s["node_id"]] for s in all_seeds if s["node_id"] in impacts],
+            "primary_seed_id": primary_seed_id,
+        }
+
+        # -- Step 7: BFS ring by ring ----------------------------------------
+        for hop in range(1, MAX_HOPS + 1):
+            full_ring = _neighbors(conn, frontier, visited)
+            log.info("hop %d: frontier=%d, ring=%d", hop, len(frontier), len(full_ring))
+            debug_log.append(f"hop {hop}: frontier={len(frontier)}, raw_neighbors={len(full_ring)}")
+            if not full_ring:
+                debug_log.append(f"hop {hop}: no new neighbors -> stop")
+                # P0 fix: if we stop on hop 1 with only seeds in impacts, the seed
+                # node(s) have no graph connections — return a helpful error immediately
+                # rather than timing out or returning a trivial single-node result.
+                if hop == 1 and len(impacts) == len(all_seeds):
+                    seed_names = ", ".join(s["name"] for s in all_seeds)
+                    suggestion = (
+                        "Try searching for a directly connected company (e.g. Apple, "
+                        "Nvidia, AMD for TSMC; ExxonMobil, Chevron for crude oil)."
+                    )
+                    result = {
+                        "error": (
+                            f"The identified seed node(s) — {seed_names} — exist in the graph "
+                            f"but have no recorded supply chain connections yet. {suggestion}"
+                        ),
+                        "seed": impacts.get(primary_seed_id),
+                        "seeds": [impacts[s["node_id"]] for s in all_seeds if s["node_id"] in impacts],
+                        "impacts": list(impacts.values()),
+                        "provider": effective_provider,
+                        "model": "claude-code-cli" if effective_provider == "claude" else OLLAMA_MODEL,
+                        "max_hops": MAX_HOPS,
+                        "debug": debug_log,
+                        "refinement": {"considered": 0, "rescored": 0, "applied": 0},
+                        "no_neighbors": True,
+                    }
+                    yield {"event": "error", "message": result["error"], "no_neighbors": True}
+                    yield {"event": "done", "result": result}
+                    return
+                break
+            sampled_flag = len(full_ring) > MAX_FRONTIER
+            # Cap the ring before chunking. Large hubs (crude oil, Nvidia, Amazon)
+            # can have 200-500 neighbours; without a cap each hop spawns dozens of
+            # parallel Claude CLI subprocesses that saturate the thread pool.
+            # _sample_frontier prioritises Company-supply > Company-compete >
+            # Commodity/Region > other, with random shuffle within each bucket for
+            # variety across runs.
+            if len(full_ring) > MAX_FRONTIER:
+                sampled = _sample_frontier(full_ring, MAX_FRONTIER)
+                debug_log.append(
+                    f"hop {hop}: frontier capped {len(full_ring)} -> {len(sampled)} "
+                    f"(MAX_FRONTIER={MAX_FRONTIER})"
+                )
+                full_ring = sampled
+            # Chunk the ring into MAX_RING_CANDIDATES-sized batches so every
+            # neighbour gets scored. Each chunk is one LLM call.
+            chunks = [
+                full_ring[i:i + MAX_RING_CANDIDATES]
+                for i in range(0, len(full_ring), MAX_RING_CANDIDATES)
+            ]
+            debug_log.append(
+                f"hop {hop}: scoring in {len(chunks)} chunk(s) of <= "
+                f"{MAX_RING_CANDIDATES} (parallelism={min(RING_PARALLELISM, len(chunks))})"
+            )
+
+            # Build all chunk prompts up front, then run them through a
+            # bounded ThreadPoolExecutor. Each _llm_call is an independent
+            # subprocess; parallelizing cuts wall time roughly linearly with
+            # parallelism. On a typical war-shock scenario the worst ring
+            # (hop 3, ~200 candidates / 13 chunks) drops from ~6 minutes
+            # serial to ~1 minute at parallelism=6.
+            chunk_prompts: list[str] = []
+            for ring in chunks:
+                cand_lines = []
+                for nb in ring:
+                    parent_v = impacts.get(nb["via_parent"], {})
+                    country = nb.get("country") or "-"
+                    geo = nb.get("supply_geography") or "?"
+                    # Phase K: format financial weight for the prompt
+                    ew = nb.get("edge_weight")
+                    et = nb.get("edge_source_tier") or ""
+                    if ew is not None:
+                        weight_str = f"{ew * 100:.0f}%|{et or 'sec_explicit'}"
+                    else:
+                        weight_str = "est"
+                    parent_mag = parent_v.get("magnitude")
+                    parent_mag_str = f"{parent_mag:.2f}" if parent_mag is not None else "?"
+                    cand_lines.append(
+                        f"  {nb['id']} | {nb['type']} | {nb['name']} | "
+                        f"{nb.get('sector') or '-'} | country={country} | edge_geo={geo} | "
+                        f"weight={weight_str} | "
+                        f"parent={nb['via_parent']} | "
+                        f"edge={nb['edge_type']} | "
+                        f"parent_dir={parent_v.get('direction', '?')} | "
+                        f"parent_mag={parent_mag_str}"
+                    )
+                chunk_prompts.append(_RING_PROMPT_TEMPLATE.format(
+                    news=text,
+                    seeds_block=seeds_block,
+                    hop_num=hop,
+                    candidates="\n".join(cand_lines),
+                ))
+
+            t_hop = time.time()
+            workers = min(RING_PARALLELISM, len(chunks))
+            try:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    chunk_raws = list(pool.map(_llm_call, chunk_prompts))
+            except Exception as exc:
+                # _ollama_call can raise RuntimeError on network failure. Treat the
+                # entire hop as failed rather than letting the exception propagate
+                # past the thread-local restoration finally block.
+                log.warning("hop %d: LLM pool raised %s — treating as failed hop", hop, exc)
+                chunk_raws = [""] * len(chunk_prompts)
+            debug_log.append(
+                f"hop {hop}: {len(chunks)} chunks done in {time.time() - t_hop:.1f}s"
+            )
+
+            new_frontier: list[str] = []
+            chunk_failed = False
+            hop_new_ids: list[str] = []
+            for chunk_idx, (ring, ring_raw) in enumerate(zip(chunks, chunk_raws)):
+                debug_log.append(
+                    f"hop {hop} chunk {chunk_idx + 1}/{len(chunks)}: "
+                    f"LLM raw_len={len(ring_raw)}"
+                )
+                ring_parsed = _parse_llm_json(ring_raw)
+                if isinstance(ring_parsed, dict) and "results" in ring_parsed:
+                    ring_parsed = ring_parsed.get("results")
+                if not isinstance(ring_parsed, list):
+                    log.warning("hop %d chunk %d: parse FAIL", hop, chunk_idx + 1)
+                    debug_log.append(
+                        f"hop {hop} chunk {chunk_idx + 1}: parse FAIL "
+                        f"type={type(ring_parsed).__name__}, tail={(ring_raw or '')[-200:]!r}"
+                    )
+                    chunk_failed = True
+                    continue
+                debug_log.append(
+                    f"hop {hop} chunk {chunk_idx + 1}: scored {len(ring_parsed)} verdicts"
+                )
+                for verdict in ring_parsed:
+                    if not isinstance(verdict, dict):
+                        continue
+                    nid = verdict.get("node_id")
+                    if not nid or nid in impacts:
+                        continue
+                    matching = next((nb for nb in ring if nb["id"] == nid), None)
+                    if not matching:
+                        continue
+                    direction = verdict.get("direction") or "no_effect"
+                    magnitude = float(verdict.get("magnitude") or 0.0)
+                    reasoning = verdict.get("reasoning") or ""
+                    _ew = matching.get("edge_weight")
+                    impacts[nid] = {
+                        "node_id": nid,
+                        "name": matching["name"],
+                        "type": matching["type"],
+                        "direction": direction,
+                        "magnitude": magnitude,
+                        "hop": hop,
+                        "reasoning": reasoning,
+                        "via_parent": matching["via_parent"],
+                        "edge_type": matching["edge_type"],
+                        "country": matching.get("country"),  # Phase E
+                        # Phase K: financial grounding metadata
+                        "edge_weight": _ew,
+                        "edge_source_tier": matching.get("edge_source_tier"),
+                        "is_estimated": _ew is None,
+                    }
+                    hop_new_ids.append(nid)
+                    visited.add(nid)
+                    if direction in ("positive", "negative") and magnitude >= 0.15:
+                        new_frontier.append(nid)
+
+            # === NEW: emit the hop event ===
+            yield {
+                "event": "hop",
+                "hop": hop,
+                "new_impacts": [impacts[nid] for nid in hop_new_ids],
+                "frontier_size": len(frontier),
+                "ring_size": len(full_ring),
+                "sampled": sampled_flag,
+            }
+
+            if chunk_failed and not new_frontier:
+                # If every chunk failed we bail out of the BFS to avoid an
+                # infinite-looking wait on empty rings.
+                break
+            if not new_frontier:
+                break
+            frontier = new_frontier
+
+        # -- Step N+1: refinement pass -----------------------------------------
+        # The hop-by-hop BFS is myopic: each node is scored ONCE, against ONE
+        # parent's verdict, even when many other impacted neighbours connect
+        # to it. Canonical failure mode is "India under Ukraine war" -- India
+        # gets scored at hop 2 via the wheat path ("self-sufficient in wheat;
+        # no effect") and the model never sees that sunflower-oil (also at
+        # hop 2, scored in parallel) is also negative and feeds the same
+        # node via different companies.
+        #
+        # The fix: find every node currently no_effect / low-magnitude that
+        # has TWO OR MORE impacted neighbours, then re-score those nodes
+        # with the full set of neighbour verdicts shown to the LLM at once.
+        # Only apply the new verdict if it strengthens (higher magnitude or
+        # flipped direction from no_effect to a definite call) -- never
+        # downgrade an already-strong verdict.
         refinement_summary = _refinement_pass(
             text=text,
             impacts=impacts,
@@ -1172,24 +1204,44 @@ def run_impact(text: str, *, conn: sqlite3.Connection, provider: Optional[str] =
             conn=conn,
             debug_log=debug_log,
         )
+        # _refinement_pass sets impacts[nid]["refined"] = True on every applied node.
+        yield {
+            "event": "refinement",
+            "updated": [v for v in impacts.values() if v.get("refined")],
+            "summary": refinement_summary,
+        }
+
+        # === Done ===
+        # `seed` field: first named-entity seed, or commodity/region if no
+        # named entities resolved. Kept for backward-compat with older frontends.
+        seeds_response = [impacts[s["node_id"]] for s in all_seeds if s["node_id"] in impacts]
+        result = {
+            "seed": impacts.get(primary_seed_id),
+            "seeds": seeds_response,
+            "impacts": list(impacts.values()),
+            "provider": effective_provider,
+            "model": "claude-code-cli" if effective_provider == "claude" else OLLAMA_MODEL,
+            "max_hops": MAX_HOPS,
+            "debug": debug_log,
+            "refinement": refinement_summary,
+        }
+        yield {"event": "done", "result": result}
     finally:
-        # Restore thread-local provider to prior state even if refinement raises.
-        # Important when threads are pooled and reused across requests.
+        # Restore thread-local provider to prior state even if refinement raises
+        # or the consumer stops iterating early (matters for /impact/stream
+        # cancellation). Important when threads are pooled and reused across requests.
         _restore_thread_local()
 
-    # `seed` field: first named-entity seed, or commodity/region if no
-    # named entities resolved. Kept for backward-compat with older frontends.
-    seeds_response = [impacts[s["node_id"]] for s in all_seeds if s["node_id"] in impacts]
-    return {
-        "seed": impacts.get(primary_seed_id),
-        "seeds": seeds_response,
-        "impacts": list(impacts.values()),
-        "provider": effective_provider,
-        "model": "claude-code-cli" if effective_provider == "claude" else OLLAMA_MODEL,
-        "max_hops": MAX_HOPS,
-        "debug": debug_log,
-        "refinement": refinement_summary,
-    }
+
+def run_impact(
+    text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None
+) -> dict[str, Any]:
+    """Non-streaming wrapper: drain run_impact_stream, return the done payload."""
+    final: dict[str, Any] = {}
+    for ev in run_impact_stream(text, conn=conn, provider=provider):
+        if ev["event"] == "done":
+            final = ev["result"]
+    return final
 
 
 # ---------------------------------------------------------------------------
