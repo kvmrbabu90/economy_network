@@ -38,9 +38,13 @@ def _fake_llm(prompt: str) -> str:
         m = re.search(r"^\s*(\S+)\s*\|", prompt, re.MULTILINE)
         nid = m.group(1) if m else None
         return json.dumps({"node_id": nid, "direction": "negative", "magnitude": 0.9, "reasoning": "t"})
-    # Ring scoring: one verdict per candidate id (first column of each "  id | ..." line).
+    # Ring scoring: one verdict per candidate id (first column of each "  id | ..."
+    # line). Scope the scan to the CANDIDATES section so the seed lines embedded
+    # higher in the prompt (same "  id | ..." shape) are NOT echoed back — that
+    # would mask a regression in the engine's seed-skip logic.
     if "propagating a news shock" in prompt:
-        ids = re.findall(r"^\s{2}(\S+)\s*\|", prompt, re.MULTILINE)
+        cand_section = prompt.split("CANDIDATES at hop", 1)[-1]
+        ids = re.findall(r"^\s{2}(\S+)\s*\|", cand_section, re.MULTILINE)
         return json.dumps([
             {"node_id": i, "direction": "negative", "magnitude": 0.5, "reasoning": "t"}
             for i in ids

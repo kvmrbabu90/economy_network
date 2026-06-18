@@ -1165,6 +1165,10 @@ def run_impact_stream(
                         new_frontier.append(nid)
 
             # === NEW: emit the hop event ===
+            # frontier_size = the input frontier scored into this hop.
+            # ring_size = candidates actually scored (post-cap; equals the raw
+            #   neighbour count unless `sampled` is True, in which case the ring
+            #   was down-sampled to MAX_FRONTIER before scoring).
             yield {
                 "event": "hop",
                 "hop": hop,
