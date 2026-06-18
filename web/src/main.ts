@@ -1292,9 +1292,9 @@ async function handleImpactRun(): Promise<void> {
         return;
       }
 
-      // Reconcile to the canonical payload: done.result.impacts is the source
-      // of truth and may differ from the streamed accumulator (backend
-      // regulator-filtering, dropped/re-scored nodes). reapply(true) is also
+      // Reconcile to the canonical payload so the final render is driven by
+      // done.result rather than the locally-accumulated stream — defensive
+      // against any future divergence between the two. reapply(true) is also
       // where the single globe tint happens in 3D mode.
       acc.clear();
       resp.impacts.forEach((v) => acc.set(v.node_id, v));
