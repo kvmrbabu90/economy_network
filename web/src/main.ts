@@ -50,7 +50,7 @@ import { wireFilters, countryInMarkets, type FilterState } from "./ui/filters";
 import { showEdge, showEmpty, showNode, type NodeExtras } from "./ui/inspector";
 import { wireSearch } from "./ui/search";
 import { startStatusPolling } from "./ui/status";
-import { describeNode, runImpact, runMultiImpact, type ImpactResponse, type MultiImpactResponse } from "./api";
+import { describeNode, runImpact, runImpactStream, runMultiImpact, type ImpactResponse, type ImpactVerdict, type MultiImpactResponse } from "./api";
 import { fetchHeadlines, type Headline } from "./news";
 import {
   buildImpactState,
@@ -1044,6 +1044,10 @@ let _3dUpdateScheduled = false;
 // rebuilds 13k TubeGeometry arcs. One final update3D() fires in the finally
 // block once the full graph is resident.
 let _bulkLoadInProgress = false;
+// True while a per-hop streaming impact run is applying events. Used to keep
+// the expensive globe arc work to the final `done` event (per-hop globe
+// re-tints are skipped; 2D Sigma re-tints every hop).
+let _impactStreaming = false;
 function _schedule3DUpdate() {
   if (!is3DRunning() || _3dUpdateScheduled || _bulkLoadInProgress) return;
   _3dUpdateScheduled = true;
@@ -1236,42 +1240,71 @@ async function handleImpactRun(): Promise<void> {
 
   try {
     if (texts.length === 1) {
-      // Single event — existing /impact path
-      const resp: ImpactResponse = await runImpact(texts[0], { provider, signal: _impactAbortController.signal });
-      // Success requires at least one seed — either the commodity/region seed OR
-      // one or more named-entity seeds resolved from the text. M&A / company-
-      // centric news has no commodity seed but can still propagate via entity seeds.
+      // Single event — streaming /impact/stream path with per-hop reveal.
+      // Load the full graph up front so seed/hop nodes exist to tint as
+      // events arrive (the old blocking path loaded it after the await).
+      if (g.order === 0) {
+        hideImpactOverlay();
+        await loadFullCore();
+        showImpactOverlay(provider);
+      }
+
+      const acc = new Map<string, ImpactVerdict>();
+      const reapply = (isFinal: boolean) => {
+        impactState = buildImpactState(g, { impacts: [...acc.values()] } as ImpactResponse);
+        refreshEdgeVisibility();                 // 2D Sigma tint + renderer.refresh()
+        // Globe: arc recolour is comparatively heavy; do it once at the end.
+        // 2D-only sessions never enter is3DRunning(), so they tint every hop above.
+        if (is3DRunning() && isFinal) applyImpact3D(g, impactState, filters);
+      };
+
+      _impactStreaming = true;
+      let resp: ImpactResponse;
+      try {
+        resp = await runImpactStream(texts[0], {
+          provider,
+          signal: _impactAbortController.signal,
+          onEvent: (ev) => {
+            if (ev.event === "seeds") {
+              ev.seeds.forEach((v) => acc.set(v.node_id, v));
+              reapply(false);
+            } else if (ev.event === "hop") {
+              ev.new_impacts.forEach((v) => acc.set(v.node_id, v));
+              reapply(false);
+              setImpactStatus(`[${niceProvider}] hop ${ev.hop} → ${acc.size} nodes…`);
+            } else if (ev.event === "refinement") {
+              ev.updated.forEach((v) => acc.set(v.node_id, v));
+              reapply(false);
+            } else if (ev.event === "error") {
+              setImpactStatus(ev.message, true);
+            }
+          },
+        });
+      } finally {
+        _impactStreaming = false;
+      }
+
+      // Finalize from the canonical `done` payload — identical to the old path.
       const hasAnySeeds = resp.seed != null || (Array.isArray(resp.seeds) && resp.seeds.length > 0);
-      if (resp.error && !hasAnySeeds) {
-        // No seeds at all — complete failure.
-        setImpactStatus(`Failed: ${resp.error}`, true);
+      if ((resp as any).no_neighbors) {
+        setImpactStatus(resp.error || "Seed node has no recorded supply chain connections.", true);
         return;
       }
-      if ((resp as any).no_neighbors) {
-        // Seed found but has no graph connections — show helpful error.
-        setImpactStatus(resp.error || "Seed node has no recorded supply chain connections.", true);
+      if (resp.error && !hasAnySeeds) {
+        setImpactStatus(`Failed: ${resp.error}`, true);
         return;
       }
       if (!hasAnySeeds) {
         setImpactStatus(`No seed identified — try a more specific entity name.`, true);
         return;
       }
-      // If the graph hasn't been loaded yet (search-mode start or impact run
-      // straight from the morning brief), load the full graph now so the
-      // impacted nodes are actually present in `g` for the reducer to tint.
-      if (g.order === 0) {
-        hideImpactOverlay();   // graph overlay takes over while loading
-        await loadFullCore();
-      }
-      impactState = buildImpactState(g, resp);
-      refreshEdgeVisibility();
-      // applyImpact3D sets _currentImpactState and triggers a kapsule re-digest
-      // so nodeColor/nodeVisibility closures re-evaluate with tint colours.
-      // The delay retries inside applyImpact3D handle arc-settle timing.
-      applyImpact3D(g, impactState, filters);
+
+      acc.clear();
+      resp.impacts.forEach((v) => acc.set(v.node_id, v));
+      reapply(true);                              // final globe tint
       if (impactClearBtn) impactClearBtn.hidden = false;
       const seedNames = resp.seeds && resp.seeds.length > 0
-        ? resp.seeds.map(s => `${s.name} (${s.direction})`).join(", ")
+        ? resp.seeds.map((s) => `${s.name} (${s.direction})`).join(", ")
         : resp.seed ? `${resp.seed.name} (${resp.seed.direction})` : "unknown";
       setImpactStatus(
         `[${niceProvider}] Seeds: ${seedNames} → ${resp.impacts.length} nodes across ${resp.max_hops || 3} hops`,
