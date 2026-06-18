@@ -1044,10 +1044,6 @@ let _3dUpdateScheduled = false;
 // rebuilds 13k TubeGeometry arcs. One final update3D() fires in the finally
 // block once the full graph is resident.
 let _bulkLoadInProgress = false;
-// True while a per-hop streaming impact run is applying events. Used to keep
-// the expensive globe arc work to the final `done` event (per-hop globe
-// re-tints are skipped; 2D Sigma re-tints every hop).
-let _impactStreaming = false;
 function _schedule3DUpdate() {
   if (!is3DRunning() || _3dUpdateScheduled || _bulkLoadInProgress) return;
   _3dUpdateScheduled = true;
@@ -1258,31 +1254,28 @@ async function handleImpactRun(): Promise<void> {
         if (is3DRunning() && isFinal) applyImpact3D(g, impactState, filters);
       };
 
-      _impactStreaming = true;
-      let resp: ImpactResponse;
-      try {
-        resp = await runImpactStream(texts[0], {
-          provider,
-          signal: _impactAbortController.signal,
-          onEvent: (ev) => {
-            if (ev.event === "seeds") {
-              ev.seeds.forEach((v) => acc.set(v.node_id, v));
-              reapply(false);
-            } else if (ev.event === "hop") {
-              ev.new_impacts.forEach((v) => acc.set(v.node_id, v));
-              reapply(false);
-              setImpactStatus(`[${niceProvider}] hop ${ev.hop} → ${acc.size} nodes…`);
-            } else if (ev.event === "refinement") {
-              ev.updated.forEach((v) => acc.set(v.node_id, v));
-              reapply(false);
-            } else if (ev.event === "error") {
-              setImpactStatus(ev.message, true);
-            }
-          },
-        });
-      } finally {
-        _impactStreaming = false;
-      }
+      const resp: ImpactResponse = await runImpactStream(texts[0], {
+        provider,
+        signal: _impactAbortController.signal,
+        onEvent: (ev) => {
+          if (ev.event === "seeds") {
+            ev.seeds.forEach((v) => acc.set(v.node_id, v));
+            reapply(false);
+          } else if (ev.event === "hop") {
+            ev.new_impacts.forEach((v) => acc.set(v.node_id, v));
+            reapply(false);
+            setImpactStatus(`[${niceProvider}] hop ${ev.hop} → ${acc.size} nodes…`);
+          } else if (ev.event === "refinement") {
+            ev.updated.forEach((v) => acc.set(v.node_id, v));
+            reapply(false);
+          }
+          // No mid-stream `error` handling: the backend always emits `error`
+          // immediately before an authoritative `done` (no-seeds, no_neighbors,
+          // or a mid-flight failure), and the finalize guards below set the
+          // final status from that `done`. Painting it here would only flash a
+          // misleading message for one tick before `done` overwrites it.
+        },
+      });
 
       // Finalize from the canonical `done` payload — identical to the old path.
       const hasAnySeeds = resp.seed != null || (Array.isArray(resp.seeds) && resp.seeds.length > 0);
@@ -1299,9 +1292,13 @@ async function handleImpactRun(): Promise<void> {
         return;
       }
 
+      // Reconcile to the canonical payload: done.result.impacts is the source
+      // of truth and may differ from the streamed accumulator (backend
+      // regulator-filtering, dropped/re-scored nodes). reapply(true) is also
+      // where the single globe tint happens in 3D mode.
       acc.clear();
       resp.impacts.forEach((v) => acc.set(v.node_id, v));
-      reapply(true);                              // final globe tint
+      reapply(true);
       if (impactClearBtn) impactClearBtn.hidden = false;
       const seedNames = resp.seeds && resp.seeds.length > 0
         ? resp.seeds.map((s) => `${s.name} (${s.direction})`).join(", ")
