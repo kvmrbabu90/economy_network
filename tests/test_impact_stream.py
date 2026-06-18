@@ -107,3 +107,20 @@ def test_empty_text_emits_error_then_done(conn):
     events = list(impact_mod.run_impact_stream("   ", conn=conn))
     assert [e["event"] for e in events] == ["error", "done"]
     assert events[-1]["result"]["impacts"] == []
+
+
+def test_midstream_failure_emits_terminal_error_then_done(conn, monkeypatch):
+    # An unexpected failure AFTER the seeds event (here: _neighbors raising
+    # during BFS) must still terminate the stream with error + done so the
+    # client never hangs waiting for a `done` frame.
+    def boom(*args, **kwargs):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(impact_mod, "_neighbors", boom)
+    events = list(impact_mod.run_impact_stream("global crude oil supply shock", conn=conn))
+    kinds = [e["event"] for e in events]
+    assert kinds[0] == "seeds"          # seeds were emitted before the failure
+    assert "error" in kinds
+    assert kinds[-1] == "done"          # stream still closes cleanly
+    err = next(e for e in events if e["event"] == "error")
+    assert "kaboom" in err["message"]

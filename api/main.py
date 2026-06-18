@@ -13,6 +13,7 @@ another port) can call this without surprise CORS-blocked fetches.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import threading
@@ -20,7 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -309,7 +310,7 @@ def post_impact(
 
 
 @app.post("/impact/stream")
-def post_impact_stream(payload: dict = Body(...), request: Request = None):
+def post_impact_stream(payload: dict = Body(...)):
     """Streaming variant of /impact. Returns newline-delimited JSON (NDJSON):
     one event per line — seeds, then hop(s), then refinement, then done. The
     final `done` event's `result` is identical to /impact's response, so the
@@ -324,8 +325,6 @@ def post_impact_stream(payload: dict = Body(...), request: Request = None):
             detail=f"unknown provider {provider_override!r}; use 'claude' or 'ollama'",
         )
 
-    import json as _json
-
     def gen():
         # Open the SQLite connection INSIDE the generator (not via
         # Depends(get_conn)): StreamingResponse runs gen() after this handler
@@ -333,7 +332,7 @@ def post_impact_stream(payload: dict = Body(...), request: Request = None):
         conn = connect(_DB_PATH)
         try:
             for ev in impact_mod.run_impact_stream(text, conn=conn, provider=provider_override):
-                yield _json.dumps(ev, separators=(",", ":")) + "\n"
+                yield json.dumps(ev, separators=(",", ":")) + "\n"
         finally:
             conn.close()
 

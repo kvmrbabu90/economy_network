@@ -1230,6 +1230,22 @@ def run_impact_stream(
             "refinement": refinement_summary,
         }
         yield {"event": "done", "result": result}
+    except Exception as exc:  # noqa: BLE001 — stream must always close cleanly
+        # An unexpected failure AFTER streaming began (e.g. a sqlite error in
+        # _neighbors, or an LLM error not caught by the ring/refinement guards)
+        # would otherwise truncate the NDJSON stream with no terminal frame,
+        # leaving the client — which keys off `done` — hanging. Emit a terminal
+        # error + done so the contract ("error then done") always holds.
+        log.exception("run_impact_stream failed mid-flight")
+        partial = list(impacts.values()) if "impacts" in locals() else []
+        yield {"event": "error", "message": str(exc)}
+        yield {"event": "done", "result": {
+            "error": str(exc),
+            "seed": None,
+            "seeds": [],
+            "impacts": partial,
+            "debug": debug_log,
+        }}
     finally:
         # Restore thread-local provider to prior state even if refinement raises
         # or the consumer stops iterating early (matters for /impact/stream
