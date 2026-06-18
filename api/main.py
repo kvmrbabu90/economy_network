@@ -20,8 +20,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from schema.store import connect
 
@@ -305,6 +306,42 @@ def post_impact(
         return impact_mod.run_impact(text, conn=conn, provider=provider_override)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.post("/impact/stream")
+def post_impact_stream(payload: dict = Body(...), request: Request = None):
+    """Streaming variant of /impact. Returns newline-delimited JSON (NDJSON):
+    one event per line — seeds, then hop(s), then refinement, then done. The
+    final `done` event's `result` is identical to /impact's response, so the
+    frontend archive consumes it unchanged."""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="`text` is required")
+    provider_override = (payload.get("provider") or "").strip().lower() or None
+    if provider_override and provider_override not in ("claude", "ollama"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown provider {provider_override!r}; use 'claude' or 'ollama'",
+        )
+
+    import json as _json
+
+    def gen():
+        # Open the SQLite connection INSIDE the generator (not via
+        # Depends(get_conn)): StreamingResponse runs gen() after this handler
+        # returns, so a Depends-managed connection would already be closed.
+        conn = connect(_DB_PATH)
+        try:
+            for ev in impact_mod.run_impact_stream(text, conn=conn, provider=provider_override):
+                yield _json.dumps(ev, separators=(",", ":")) + "\n"
+        finally:
+            conn.close()
+
+    return StreamingResponse(
+        gen(),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/news/headlines")

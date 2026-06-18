@@ -319,3 +319,68 @@ def test_cors_header_present_for_localhost_origin(client):
     assert r.headers.get("access-control-allow-origin") in (
         "http://localhost:5173", "*",
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /impact/stream (NDJSON)
+# ---------------------------------------------------------------------------
+import re as _re
+
+
+def _fake_llm_for_stream(prompt: str) -> str:
+    """Deterministic fake LLM: echo verdicts derived from the prompt.
+
+    Emits VALID JSON (json.dumps) — the engine's strict json.loads rejects
+    single-quoted strings, so Python `!r` formatting must NOT be used here.
+    """
+    if "Extract ONLY investable companies" in prompt:
+        return "[]"
+    if "Pick the ONE node" in prompt:
+        m = _re.search(r"^\s*(\S+)\s*\|", prompt, _re.MULTILINE)
+        nid = m.group(1) if m else None
+        return json.dumps(
+            {"node_id": nid, "direction": "negative", "magnitude": 0.9, "reasoning": "t"}
+        )
+    if "propagating a news shock" in prompt:
+        # Scope the id scan to the candidate section so we don't echo seed lines.
+        cand_section = prompt.split("CANDIDATES at hop", 1)[-1]
+        ids = _re.findall(r"^\s{2}(\S+)\s*\|", cand_section, _re.MULTILINE)
+        return json.dumps(
+            [
+                {"node_id": i, "direction": "negative", "magnitude": 0.5, "reasoning": "t"}
+                for i in ids
+            ]
+        )
+    if "refining impact assessments" in prompt:
+        ids = _re.findall(r"^NODE:\s*(\S+)\s*\(", prompt, _re.MULTILINE)
+        return json.dumps(
+            [
+                {"node_id": i, "direction": "negative", "magnitude": 0.9, "reasoning": "t"}
+                for i in ids
+            ]
+        )
+    return ""
+
+
+def test_impact_stream_ndjson(client, monkeypatch):
+    from api import impact as impact_mod
+    monkeypatch.setattr(impact_mod, "_llm_call", _fake_llm_for_stream)
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    r = client.post("/impact/stream", json={"text": "global crude oil supply shock"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/x-ndjson")
+    lines = [ln for ln in r.text.splitlines() if ln.strip()]
+    events = [json.loads(ln) for ln in lines]
+    assert events[0]["event"] == "seeds"
+    assert events[-1]["event"] == "done"
+    assert "impacts" in events[-1]["result"]
+
+
+def test_impact_stream_requires_text(client):
+    r = client.post("/impact/stream", json={"text": "   "})
+    assert r.status_code == 400
+
+
+def test_impact_stream_rejects_bad_provider(client):
+    r = client.post("/impact/stream", json={"text": "oil", "provider": "gpt4"})
+    assert r.status_code == 400
