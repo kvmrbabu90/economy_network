@@ -381,3 +381,71 @@ export async function runImpact(
     notifyLoading();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Streaming impact (NDJSON over a POST body) — per-hop live reveal.
+// ---------------------------------------------------------------------------
+
+export type ImpactStreamEvent =
+  | { event: "seeds"; seeds: ImpactVerdict[]; primary_seed_id: string | null }
+  | { event: "hop"; hop: number; new_impacts: ImpactVerdict[]; frontier_size: number; ring_size: number; sampled: boolean }
+  | { event: "refinement"; updated: ImpactVerdict[]; summary: Record<string, unknown> }
+  | { event: "error"; message: string; no_neighbors?: boolean }
+  | { event: "done"; result: ImpactResponse };
+
+/** POST /impact/stream and apply each NDJSON event via onEvent.
+ *  Resolves to the final `done` event's result (same shape as runImpact). */
+export async function runImpactStream(
+  text: string,
+  opts: { provider?: ImpactProvider; signal?: AbortSignal; onEvent: (ev: ImpactStreamEvent) => void },
+): Promise<ImpactResponse> {
+  const url = new URL("/impact/stream", API_BASE_URL);
+  inflight += 1;
+  notifyLoading();
+  try {
+    const body: Record<string, string> = { text };
+    if (opts.provider) body.provider = opts.provider;
+    const resp = await fetch(url.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+    if (!resp.ok) {
+      const respBody = await resp.text().catch(() => "");
+      throw new ApiError(resp.status, `${resp.statusText} - ${respBody.slice(0, 200)}`);
+    }
+    if (!resp.body) throw new Error("/impact/stream: no response body to stream");
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let doneResult: ImpactResponse | null = null;
+
+    const handleLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const ev = JSON.parse(trimmed) as ImpactStreamEvent;
+      opts.onEvent(ev);
+      if (ev.event === "done") doneResult = ev.result;
+    };
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        handleLine(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+      }
+    }
+    if (buffer.trim()) handleLine(buffer);   // flush any trailing partial line
+
+    if (!doneResult) throw new Error("/impact/stream: stream ended without a done event");
+    return doneResult;
+  } finally {
+    inflight -= 1;
+    notifyLoading();
+  }
+}
