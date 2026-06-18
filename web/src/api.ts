@@ -430,17 +430,30 @@ export async function runImpactStream(
       if (ev.event === "done") doneResult = ev.result;
     };
 
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = buffer.indexOf("\n")) >= 0) {
-        handleLine(buffer.slice(0, nl));
-        buffer = buffer.slice(nl + 1);
+    try {
+      for (;;) {
+        // Honor mid-stream cancellation. fetch(signal) already errors the body
+        // stream on abort (rejecting reader.read() with AbortError), but this
+        // top-of-loop check also covers a signal aborted before the first read
+        // and guarantees we stop promptly. Throwing an AbortError keeps the
+        // caller's `err.name === "AbortError"` cancellation path intact.
+        if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) >= 0) {
+          handleLine(buffer.slice(0, nl));
+          buffer = buffer.slice(nl + 1);
+        }
       }
+      if (buffer.trim()) handleLine(buffer);   // flush any trailing partial line
+    } finally {
+      // Release the reader lock and tell the server to stop (closes the
+      // connection → server's GeneratorExit stops the BFS, saving LLM credits).
+      // Harmless no-op once the stream has already ended normally.
+      reader.cancel().catch(() => {});
     }
-    if (buffer.trim()) handleLine(buffer);   // flush any trailing partial line
 
     if (!doneResult) throw new Error("/impact/stream: stream ended without a done event");
     return doneResult;
