@@ -87,6 +87,21 @@ describe("runImpactStream", () => {
     ).rejects.toMatchObject({ name: "AbortError" });
   });
 
+  it("applies a verification event that downgrades a node, then resolves on done", async () => {
+    const chunks = [
+      '{"event":"seeds","seeds":[{"node_id":"a"}],"primary_seed_id":"a"}\n',
+      '{"event":"hop","hop":1,"new_impacts":[{"node_id":"b","direction":"positive","magnitude":0.8}],"frontier_size":1,"ring_size":1,"sampled":false,"recovered":0,"unscored":0}\n',
+      '{"event":"refinement","updated":[],"summary":{}}\n',
+      '{"event":"verification","updated":[{"node_id":"b","direction":"no_effect","magnitude":0,"verified":true,"verification":{"verdict":"refuted","confidence":0.8,"reasoning":"x"}}],"summary":{"checked":1,"upheld":0,"weakened":0,"refuted":1}}\n',
+      '{"event":"done","result":{"impacts":[{"node_id":"a"},{"node_id":"b"}],"verification":{"checked":1,"upheld":0,"weakened":0,"refuted":1}}}\n',
+    ];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(readerFrom(chunks)));
+    const seen: string[] = [];
+    const result = await runImpactStream("oil", { onEvent: (e) => seen.push(e.event) });
+    expect(seen).toEqual(["seeds", "hop", "refinement", "verification", "done"]);
+    expect(result.verification?.refuted).toBe(1);
+  });
+
   it("throws ApiError (with status) on non-OK", async () => {
     vi.stubGlobal(
       "fetch",

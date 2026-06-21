@@ -240,6 +240,10 @@ export interface ImpactVerdict {
   /** True when no explicit financial weight exists for the inbound edge;
    *  the LLM estimated magnitude freely rather than anchored to SEC %. */
   is_estimated?: boolean;
+  /** Stream 2.2: present once the adversarial verifier has adjudicated this verdict. */
+  verified?: boolean;
+  confidence?: number;
+  verification?: { verdict: "upheld" | "weakened" | "refuted"; confidence: number; reasoning: string };
   // Multi-event extensions (only present on merged verdicts from /impact/multi)
   mixed_signals?: boolean;
   event_verdicts?: ImpactEventVerdict[];
@@ -265,6 +269,8 @@ export interface ImpactResponse {
     unscored: number;
     unscored_node_ids: string[];
   };
+  /** Stream 2.2: adversarial verification summary (counts of adjudicated verdicts). */
+  verification?: { checked: number; upheld: number; weakened: number; refuted: number };
 }
 
 export type ImpactProvider = "claude" | "ollama";
@@ -398,6 +404,7 @@ export type ImpactStreamEvent =
   | { event: "seeds"; seeds: ImpactVerdict[]; primary_seed_id: string | null }
   | { event: "hop"; hop: number; new_impacts: ImpactVerdict[]; frontier_size: number; ring_size: number; sampled: boolean; recovered: number; unscored: number }
   | { event: "refinement"; updated: ImpactVerdict[]; summary: Record<string, unknown> }
+  | { event: "verification"; updated: ImpactVerdict[]; summary: { checked: number; upheld: number; weakened: number; refuted: number } }
   | { event: "error"; message: string; no_neighbors?: boolean }
   | { event: "done"; result: ImpactResponse };
 

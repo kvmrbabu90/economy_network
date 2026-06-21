@@ -1268,6 +1268,9 @@ async function handleImpactRun(): Promise<void> {
           } else if (ev.event === "refinement") {
             ev.updated.forEach((v) => acc.set(v.node_id, v));
             reapply(false);
+          } else if (ev.event === "verification") {
+            ev.updated.forEach((v) => acc.set(v.node_id, v));
+            reapply(false);
           }
           // No mid-stream `error` handling: the backend always emits `error`
           // immediately before an authoritative `done` (no-seeds, no_neighbors,
@@ -1306,8 +1309,11 @@ async function handleImpactRun(): Promise<void> {
       const unscoredNote = resp.scoring && resp.scoring.unscored > 0
         ? ` · ${resp.scoring.unscored} unscored`
         : "";
+      const refutedNote = resp.verification && resp.verification.refuted > 0
+        ? ` · ${resp.verification.refuted} refuted`
+        : "";
       setImpactStatus(
-        `[${niceProvider}] Seeds: ${seedNames} → ${resp.impacts.length} nodes across ${resp.max_hops || 3} hops${unscoredNote}`,
+        `[${niceProvider}] Seeds: ${seedNames} → ${resp.impacts.length} nodes across ${resp.max_hops || 3} hops${unscoredNote}${refutedNote}`,
       );
       renderTop5(resp.impacts);
       saveToArchive(texts[0], provider, resp);
