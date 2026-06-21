@@ -808,6 +808,29 @@ def _collect_verdicts(prompts: list[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _impact_row(nb: dict[str, Any], hop: int, direction: str,
+                magnitude: float, reasoning: str) -> dict[str, Any]:
+    """Build one impacts[] entry for a scored or unscored ring candidate.
+    Centralised so the scored and unscored branches can never drift in their
+    field set (the exact regression class this coverage work guards against)."""
+    ew = nb.get("edge_weight")
+    return {
+        "node_id": nb["id"],
+        "name": nb["name"],
+        "type": nb["type"],
+        "direction": direction,
+        "magnitude": magnitude,
+        "hop": hop,
+        "reasoning": reasoning,
+        "via_parent": nb["via_parent"],
+        "edge_type": nb["edge_type"],
+        "country": nb.get("country"),          # Phase E
+        "edge_weight": ew,                      # Phase K
+        "edge_source_tier": nb.get("edge_source_tier"),
+        "is_estimated": ew is None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Frontier sampling — keeps large hops tractable
 # ---------------------------------------------------------------------------
@@ -1163,25 +1186,16 @@ def run_impact_stream(
             unscored_this_hop = 0
             for nb in full_ring:
                 nid = nb["id"]
+                # Belt-and-suspenders: _neighbors already excludes visited ids, so
+                # full_ring can't contain an already-scored node — but guard anyway.
                 if nid in impacts:
                     continue
                 verdict = verdict_by_id.get(nid)
                 if not isinstance(verdict, dict):
-                    impacts[nid] = {
-                        "node_id": nid,
-                        "name": nb["name"],
-                        "type": nb["type"],
-                        "direction": "unscored",
-                        "magnitude": 0.0,
-                        "hop": hop,
-                        "reasoning": f"Could not be scored after {RING_SCORE_RETRIES + 1} attempts",
-                        "via_parent": nb["via_parent"],
-                        "edge_type": nb["edge_type"],
-                        "country": nb.get("country"),
-                        "edge_weight": nb.get("edge_weight"),
-                        "edge_source_tier": nb.get("edge_source_tier"),
-                        "is_estimated": nb.get("edge_weight") is None,
-                    }
+                    impacts[nid] = _impact_row(
+                        nb, hop, "unscored", 0.0,
+                        f"Could not be scored after {RING_SCORE_RETRIES + 1} attempt(s)",
+                    )
                     visited.add(nid)
                     hop_new_ids.append(nid)
                     unscored_this_hop += 1
@@ -1189,22 +1203,7 @@ def run_impact_stream(
                 direction = verdict.get("direction") or "no_effect"
                 magnitude = float(verdict.get("magnitude") or 0.0)
                 reasoning = verdict.get("reasoning") or ""
-                _ew = nb.get("edge_weight")
-                impacts[nid] = {
-                    "node_id": nid,
-                    "name": nb["name"],
-                    "type": nb["type"],
-                    "direction": direction,
-                    "magnitude": magnitude,
-                    "hop": hop,
-                    "reasoning": reasoning,
-                    "via_parent": nb["via_parent"],
-                    "edge_type": nb["edge_type"],
-                    "country": nb.get("country"),
-                    "edge_weight": _ew,
-                    "edge_source_tier": nb.get("edge_source_tier"),
-                    "is_estimated": _ew is None,
-                }
+                impacts[nid] = _impact_row(nb, hop, direction, magnitude, reasoning)
                 hop_new_ids.append(nid)
                 visited.add(nid)
                 if direction in ("positive", "negative") and magnitude >= 0.15:
