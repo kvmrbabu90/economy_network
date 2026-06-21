@@ -37,4 +37,30 @@ describe("unscored tint", () => {
     expect(state.byNode.has("u1")).toBe(true);
     expect(state.byNode.get("u1")?.direction).toBe("unscored");
   });
+
+  it("tintColor alpha rises with confidence", () => {
+    const low = tintColor(v({ direction: "negative", magnitude: 0.6, hop: 1, confidence: 0.2 }))!;
+    const high = tintColor(v({ direction: "negative", magnitude: 0.6, hop: 1, confidence: 0.95 }))!;
+    expect(low.startsWith("rgba(")).toBe(true);            // faded
+    // crude alpha extraction
+    const lowA = parseFloat(low.slice(low.lastIndexOf(",") + 1));
+    expect(lowA).toBeLessThan(0.6);
+    // high confidence → effectively opaque (rgb or alpha ~1)
+    const highOpaque = high.startsWith("rgb(") ||
+      parseFloat(high.slice(high.lastIndexOf(",") + 1)) > 0.9;
+    expect(highOpaque).toBe(true);
+  });
+
+  it("tintColor falls back to legacy is_estimated alpha when confidence absent", () => {
+    const c = tintColor(v({ direction: "negative", magnitude: 0.6, hop: 1,
+                            is_estimated: true, edge_weight: null }));
+    expect(c).not.toBeNull();   // no crash; legacy 0.70 alpha path
+  });
+
+  it("tintColorRGB is greyer for low confidence than high", () => {
+    const lo = tintColorRGB(v({ direction: "negative", magnitude: 0.6, confidence: 0.1 }))!;
+    const hi = tintColorRGB(v({ direction: "negative", magnitude: 0.6, confidence: 0.95 }))!;
+    // low-confidence blends toward grey → higher blue channel for the red palette
+    expect(lo.b).toBeGreaterThan(hi.b);
+  });
 });

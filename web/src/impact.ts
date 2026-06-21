@@ -103,8 +103,13 @@ export function tintColor(verdict: ImpactVerdict | undefined): string | null {
     ? TIERS.mixed
     : verdict.direction === "positive" ? TIERS.positive : TIERS.negative;
   const c = palette[tier];
-  // Phase K: dim nodes with no financial weight anchor
-  const alpha = verdict.is_estimated !== false && verdict.edge_weight == null ? 0.70 : 1.0;
+  // Confidence ramp: low confidence → more transparent (0.4 floor so nothing
+  // disappears). Falls back to the legacy is_estimated 0.70 alpha when an
+  // archived run has no confidence field.
+  const conf = typeof verdict.confidence === "number" ? verdict.confidence : null;
+  const alpha = conf !== null
+    ? 0.4 + 0.6 * Math.max(0, Math.min(1, conf))     // conf 0→0.4 faint, 1→opaque
+    : (verdict.is_estimated !== false && verdict.edge_weight == null ? 0.70 : 1.0);
   return alpha < 1 ? `rgba(${c.r}, ${c.g}, ${c.b}, ${alpha})` : `rgb(${c.r}, ${c.g}, ${c.b})`;
 }
 
@@ -124,9 +129,13 @@ export function tintColorRGB(verdict: ImpactVerdict | undefined): { r: number; g
     ? TIERS.mixed
     : verdict.direction === "positive" ? TIERS.positive : TIERS.negative;
   const c = palette[tier];
-  // Phase K: blend toward neutral grey for estimated (ungrounded) nodes
-  if (verdict.is_estimated !== false && verdict.edge_weight == null) {
-    const blend = 0.70;  // keep 70% of color, 30% neutral grey
+  // Confidence ramp: low confidence → blended toward neutral grey (0.4 floor).
+  // Falls back to the legacy is_estimated 0.70 blend when confidence is absent.
+  const conf = typeof verdict.confidence === "number" ? verdict.confidence : null;
+  const blend = conf !== null
+    ? 0.4 + 0.6 * Math.max(0, Math.min(1, conf))
+    : (verdict.is_estimated !== false && verdict.edge_weight == null ? 0.70 : 1.0);
+  if (blend < 1) {
     const grey = 0.18;
     return {
       r: c.r / 255 * blend + grey * (1 - blend),
