@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { tintColor, tintColorRGB, buildImpactState } from "../impact";
+import { tintColor, tintColorRGB } from "../impact";
 import type { ImpactVerdict } from "../api";
 
 function v(partial: Partial<ImpactVerdict>): ImpactVerdict {
