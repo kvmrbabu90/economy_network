@@ -1257,6 +1257,18 @@ def run_impact_stream(
             "summary": refinement_summary,
         }
 
+        verification_summary = (
+            _verification_pass(text=text, impacts=impacts, seeds_block=seeds_block,
+                               conn=conn, debug_log=debug_log)
+            if VERIFY_ENABLED
+            else {"checked": 0, "upheld": 0, "weakened": 0, "refuted": 0}
+        )
+        yield {
+            "event": "verification",
+            "updated": [v for v in impacts.values() if v.get("verified")],
+            "summary": verification_summary,
+        }
+
         # === Done ===
         # `seed` field: first named-entity seed, or commodity/region if no
         # named entities resolved. Kept for backward-compat with older frontends.
@@ -1279,6 +1291,7 @@ def run_impact_stream(
             "debug": debug_log,
             "refinement": refinement_summary,
             "scoring": scoring_summary,
+            "verification": verification_summary,
         }
         yield {"event": "done", "result": result}
     except Exception as exc:  # noqa: BLE001 — stream must always close cleanly
@@ -1531,6 +1544,48 @@ Cover every node_id exactly once.
 """
 
 
+# --- Verdict verification (stream 2.2): adversarial refutation of strong verdicts ---
+VERIFY_ENABLED = os.environ.get("IMPACT_VERIFY", "1") not in ("0", "false", "False", "")
+VERIFY_MAG_THRESHOLD = float(os.environ.get("IMPACT_VERIFY_MAG", "0.45"))
+VERIFY_MAX_NODES = int(os.environ.get("IMPACT_VERIFY_MAX", "24"))
+VERIFY_BATCH_SIZE = int(os.environ.get("IMPACT_VERIFY_BATCH", "6"))
+
+_VERIFY_BATCH_PROMPT_TEMPLATE = """You are a SKEPTICAL economist stress-testing impact claims. For EACH node below,
+TRY TO REFUTE the claimed impact of this news event on that node.
+
+NEWS:
+\"\"\"
+{news}
+\"\"\"
+
+SEEDS (the original shocks, hop 0):
+{seeds_block}
+
+Each node shows its claimed verdict and the impacted neighbours linking it to the
+shock. Judge ONLY whether the claimed direction is defensible:
+  "upheld"   = a concrete, plausible causal path exists from the shock to this node
+               in the claimed direction.
+  "weakened" = a real but OVERSTATED effect — the path is indirect, partial, or small
+               relative to the claimed magnitude.
+  "refuted"  = speculative, geographically implausible, double-counted, or no concrete
+               mechanism. Default to this when in doubt.
+
+Be adversarial — do not rubber-stamp. A confident-sounding verdict with no concrete
+mechanism is "refuted".
+
+{node_blocks}
+
+Respond with STRICT JSON only -- a single array, one object per node_id in the SAME
+ORDER as above. Keep each reasoning under 20 words.
+
+[
+  {{"node_id": "<id>", "verdict": "upheld" | "weakened" | "refuted", "confidence": 0.0 to 1.0, "reasoning": "<short>"}}
+]
+
+Cover every node_id exactly once.
+"""
+
+
 def _build_refine_node_block(
     nid: str,
     v: dict,
@@ -1757,6 +1812,136 @@ def _refinement_pass(
         "applied": applied,
         "candidates": [nid for nid, _, _ in node_blocks_list],
     }
+
+
+def _verification_pass(
+    *,
+    text: str,
+    impacts: dict[str, dict[str, Any]],
+    seeds_block: str,
+    conn: sqlite3.Connection,
+    debug_log: list[str],
+) -> dict[str, Any]:
+    """Adversarially refute high-impact verdicts; downgrade those that don't hold.
+    Mirrors _refinement_pass. Only downgrades/annotates — never upgrades. Fail-open:
+    a verdict the verifier didn't adjudicate is left unchanged."""
+    eligible = [
+        (nid, float(v.get("magnitude", 0.0)))
+        for nid, v in impacts.items()
+        if not v.get("is_seed")
+        and v.get("direction") in ("positive", "negative")
+        and float(v.get("magnitude", 0.0)) >= VERIFY_MAG_THRESHOLD
+    ]
+    eligible.sort(key=lambda x: -x[1])
+    eligible = eligible[:VERIFY_MAX_NODES]
+    debug_log.append(f"verify: {len(eligible)} eligible (mag >= {VERIFY_MAG_THRESHOLD})")
+    if not eligible:
+        return {"checked": 0, "upheld": 0, "weakened": 0, "refuted": 0}
+
+    impacted_ids = list(impacts.keys())
+    placeholders = ",".join("?" for _ in impacted_ids)
+    edge_rows = conn.execute(
+        f"""
+        SELECT source, target, type FROM edges
+        WHERE below_threshold = 0
+          AND source IN ({placeholders})
+          AND target IN ({placeholders})
+        """,
+        impacted_ids + impacted_ids,
+    ).fetchall()
+    neighbours: dict[str, list[tuple[str, str]]] = {}
+    for src, tgt, etype in edge_rows:
+        neighbours.setdefault(src, []).append((tgt, etype))
+        neighbours.setdefault(tgt, []).append((src, etype))
+
+    node_blocks_list: list[tuple[str, str, dict]] = []
+    for nid, _mag in eligible:
+        v = impacts[nid]
+        nb_lines: list[tuple[float, str]] = []
+        for other, etype in neighbours.get(nid, []):
+            ov = impacts.get(other)
+            if not ov:
+                continue
+            d = ov.get("direction", "no_effect")
+            m = float(ov.get("magnitude", 0.0))
+            if d == "no_effect" or m < 0.15:
+                continue
+            nb_lines.append((
+                m,
+                f"{other} | {ov.get('name', '')[:40]} | {d} mag={m:.2f} | "
+                f"edge={etype} | country={ov.get('country') or '-'} | "
+                f"{ov.get('reasoning', '')[:80]}",
+            ))
+        nb_lines.sort(key=lambda x: -x[0])
+        node_row = conn.execute(
+            "SELECT sector, country FROM nodes WHERE id = ?", (nid,)
+        ).fetchone()
+        node_sector = (node_row["sector"] if node_row else None) or v.get("type", "")
+        node_country = (node_row["country"] if node_row else None) or v.get("country") or "-"
+        block = _build_refine_node_block(nid, v, node_sector, node_country, nb_lines)
+        node_blocks_list.append((nid, block, v))
+
+    batches = [
+        node_blocks_list[i:i + VERIFY_BATCH_SIZE]
+        for i in range(0, len(node_blocks_list), VERIFY_BATCH_SIZE)
+    ]
+    prompts = [
+        _VERIFY_BATCH_PROMPT_TEMPLATE.format(
+            news=text, seeds_block=seeds_block,
+            node_blocks="\n\n".join(b for _, b, _ in batch),
+        )
+        for batch in batches
+    ]
+    workers = min(RING_PARALLELISM, len(prompts))
+    t0 = time.time()
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            raws = list(pool.map(_llm_call, prompts))
+    except Exception as exc:
+        log.warning("verify: LLM pool raised %s — skipping verification", exc)
+        debug_log.append(f"verify: LLM pool error: {exc}")
+        return {"checked": 0, "upheld": 0, "weakened": 0, "refuted": 0, "error": str(exc)}
+    debug_log.append(f"verify: {len(prompts)} batch calls in {time.time() - t0:.1f}s")
+
+    verdict_by_nid: dict[str, dict] = {}
+    for raw in raws:
+        parsed = _parse_llm_json(raw)
+        if isinstance(parsed, dict) and "results" in parsed:
+            parsed = parsed["results"]
+        if not isinstance(parsed, list):
+            continue
+        for vd in parsed:
+            if isinstance(vd, dict) and vd.get("node_id"):
+                verdict_by_nid[vd["node_id"]] = vd
+
+    counts = {"checked": 0, "upheld": 0, "weakened": 0, "refuted": 0}
+    for nid, _block, _prev in node_blocks_list:
+        vd = verdict_by_nid.get(nid)
+        if not isinstance(vd, dict):
+            continue  # fail-open: leave an unadjudicated verdict unchanged
+        verdict = vd.get("verdict")
+        if verdict not in ("upheld", "weakened", "refuted"):
+            continue
+        try:
+            conf = max(0.0, min(1.0, float(vd.get("confidence", 0.5))))
+        except (TypeError, ValueError):
+            conf = 0.5
+        reasoning = (vd.get("reasoning") or "")[:200]
+        counts["checked"] += 1
+        counts[verdict] += 1
+        impacts[nid]["verified"] = True
+        impacts[nid]["confidence"] = conf
+        impacts[nid]["verification"] = {"verdict": verdict, "confidence": conf, "reasoning": reasoning}
+        if verdict == "refuted":
+            impacts[nid]["direction"] = "no_effect"
+            impacts[nid]["magnitude"] = 0.0
+        elif verdict == "weakened":
+            impacts[nid]["magnitude"] = float(impacts[nid].get("magnitude", 0.0)) * 0.5
+    debug_log.append(
+        f"verify: checked={counts['checked']} upheld={counts['upheld']} "
+        f"weakened={counts['weakened']} refuted={counts['refuted']}"
+    )
+    return counts
 
 
 # ---------------------------------------------------------------------------

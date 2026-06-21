@@ -262,3 +262,101 @@ def test_zero_retries_degrades_cleanly(conn, monkeypatch):
     for ev in events:
         if ev["event"] == "hop":
             assert len(ev["new_impacts"]) == ev["ring_size"]
+
+
+def _verify_fake(decision: str):
+    """Wrap _fake_llm: answer the verify prompt with `decision` for the first
+    NODE and 'upheld' for the rest; delegate seeds/ring/refine to _fake_llm."""
+    def fake(prompt: str) -> str:
+        if "TRY TO REFUTE" in prompt:
+            ids = re.findall(r"^NODE:\s*(\S+)\s*\(", prompt, re.MULTILINE)
+            out = [{"node_id": i, "verdict": (decision if idx == 0 else "upheld"),
+                    "confidence": 0.8, "reasoning": "t"} for idx, i in enumerate(ids)]
+            return json.dumps(out)
+        return _fake_llm(prompt)
+    return fake
+
+
+def _run_done(conn):
+    return next(e for e in impact_mod.run_impact_stream(
+        "global crude oil supply shock", conn=conn) if e["event"] == "done")["result"]
+
+
+def test_refute_downgrades_to_no_effect(conn, monkeypatch):
+    monkeypatch.setattr(impact_mod, "_llm_call", _verify_fake("refuted"))
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    monkeypatch.setattr(impact_mod, "VERIFY_MAG_THRESHOLD", 0.45)
+    r = _run_done(conn)
+    refuted = [v for v in r["impacts"] if v.get("verification", {}).get("verdict") == "refuted"]
+    assert refuted, "expected at least one refuted node"
+    for v in refuted:
+        assert v["direction"] == "no_effect" and v["magnitude"] == 0.0
+        assert v["verified"] is True
+    assert r["verification"]["refuted"] >= 1
+
+
+def test_weaken_halves_magnitude(conn, monkeypatch):
+    monkeypatch.setattr(impact_mod, "_llm_call", _verify_fake("weakened"))
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    monkeypatch.setattr(impact_mod, "VERIFY_MAG_THRESHOLD", 0.45)
+    r = _run_done(conn)
+    weakened = [v for v in r["impacts"] if v.get("verification", {}).get("verdict") == "weakened"]
+    assert weakened
+    # Ring fake scores candidates at magnitude 0.5 → weakened halves to 0.25.
+    for v in weakened:
+        assert abs(v["magnitude"] - 0.25) < 1e-9
+    assert r["verification"]["weakened"] >= 1
+
+
+def test_upheld_unchanged_but_annotated(conn, monkeypatch):
+    monkeypatch.setattr(impact_mod, "_llm_call", _verify_fake("upheld"))
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    monkeypatch.setattr(impact_mod, "VERIFY_MAG_THRESHOLD", 0.45)
+    r = _run_done(conn)
+    upheld = [v for v in r["impacts"] if v.get("verification", {}).get("verdict") == "upheld"]
+    assert upheld
+    for v in upheld:
+        assert v["direction"] in ("positive", "negative")  # unchanged
+        assert v["verified"] is True and 0.0 <= v["confidence"] <= 1.0
+
+
+def test_only_strong_verdicts_checked(conn, monkeypatch):
+    monkeypatch.setattr(impact_mod, "_llm_call", _verify_fake("refuted"))
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    monkeypatch.setattr(impact_mod, "VERIFY_MAG_THRESHOLD", 0.99)  # nothing qualifies
+    r = _run_done(conn)
+    assert r["verification"] == {"checked": 0, "upheld": 0, "weakened": 0, "refuted": 0}
+    assert not any(v.get("verified") for v in r["impacts"])
+
+
+def test_verify_fail_open_leaves_verdicts_unchanged(conn, monkeypatch):
+    # autouse _fake_llm returns "" for the verify prompt → no adjudication.
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    monkeypatch.setattr(impact_mod, "VERIFY_MAG_THRESHOLD", 0.45)
+    r = _run_done(conn)
+    assert r["verification"]["checked"] == 0
+    assert not any(v.get("verified") for v in r["impacts"])
+    # Strong verdicts retained (not downgraded by an unparseable verifier).
+    assert any(v["direction"] in ("positive", "negative") and v["magnitude"] >= 0.45
+               for v in r["impacts"] if not v.get("is_seed"))
+
+
+def test_verification_disabled(conn, monkeypatch):
+    monkeypatch.setattr(impact_mod, "_llm_call", _verify_fake("refuted"))
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    monkeypatch.setattr(impact_mod, "VERIFY_ENABLED", False)
+    events = list(impact_mod.run_impact_stream("global crude oil supply shock", conn=conn))
+    vevent = next(e for e in events if e["event"] == "verification")
+    assert vevent["summary"] == {"checked": 0, "upheld": 0, "weakened": 0, "refuted": 0}
+    done = next(e for e in events if e["event"] == "done")["result"]
+    assert not any(v.get("verified") for v in done["impacts"])
+
+
+def test_event_ordering_includes_verification(conn):
+    kinds = [e["event"] for e in impact_mod.run_impact_stream(
+        "global crude oil supply shock", conn=conn)]
+    assert kinds[0] == "seeds" and kinds[-1] == "done"
+    assert "verification" in kinds
+    # verification comes after the (single) refinement event, before done.
+    assert kinds.index("verification") > kinds.index("refinement")
+    assert kinds.index("verification") < kinds.index("done")
