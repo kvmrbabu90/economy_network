@@ -218,7 +218,7 @@ export function search(q: string, limit = 10): Promise<SearchResponse> {
 export interface ImpactEventVerdict {
   event_idx: number;
   event_text: string;
-  direction: "positive" | "negative" | "no_effect";
+  direction: "positive" | "negative" | "no_effect" | "unscored";
   magnitude: number;
   hop: number;
   reasoning: string;
@@ -228,7 +228,7 @@ export interface ImpactVerdict {
   node_id: string;
   name: string;
   type: string;
-  direction: "positive" | "negative" | "no_effect";
+  direction: "positive" | "negative" | "no_effect" | "unscored";
   magnitude: number;
   hop: number;
   reasoning: string;
@@ -257,6 +257,14 @@ export interface ImpactResponse {
   max_hops?: number;
   debug?: string[];
   error?: string;
+  /** Coverage accounting (stream 2): how many ring candidates were scored,
+   *  recovered via retry, or left unscorable and surfaced as `unscored`. */
+  scoring?: {
+    scored: number;
+    recovered: number;
+    unscored: number;
+    unscored_node_ids: string[];
+  };
 }
 
 export type ImpactProvider = "claude" | "ollama";
@@ -388,7 +396,7 @@ export async function runImpact(
 
 export type ImpactStreamEvent =
   | { event: "seeds"; seeds: ImpactVerdict[]; primary_seed_id: string | null }
-  | { event: "hop"; hop: number; new_impacts: ImpactVerdict[]; frontier_size: number; ring_size: number; sampled: boolean }
+  | { event: "hop"; hop: number; new_impacts: ImpactVerdict[]; frontier_size: number; ring_size: number; sampled: boolean; recovered: number; unscored: number }
   | { event: "refinement"; updated: ImpactVerdict[]; summary: Record<string, unknown> }
   | { event: "error"; message: string; no_neighbors?: boolean }
   | { event: "done"; result: ImpactResponse };
