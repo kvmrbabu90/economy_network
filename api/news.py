@@ -25,13 +25,25 @@ log = logging.getLogger(__name__)
 # RSS feed catalogue
 # ---------------------------------------------------------------------------
 
-_RSS_FEEDS: list[tuple[str, str]] = [
-    ("Reuters Business",    "https://feeds.reuters.com/reuters/businessNews"),
-    ("Reuters Technology",  "https://feeds.reuters.com/reuters/technologyNews"),
-    ("CNBC Top News",       "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
-    ("CNBC Economy",        "https://www.cnbc.com/id/20910258/device/rss/rss.html"),
-    ("MarketWatch",         "https://feeds.marketwatch.com/marketwatch/topstories/"),
-    ("Yahoo Finance",       "https://finance.yahoo.com/news/rssindex"),
+# (name, url, max_age_days). High-churn news feeds use the tight 2-day window so
+# the brief stays fresh; low-frequency primary sources (SEC/Fed publish every few
+# days) get a 7-day window or they'd never clear the recency cutoff.
+_RSS_FEEDS: list[tuple[str, str, int]] = [
+    # General business / markets.
+    ("CNBC Top News",       "https://www.cnbc.com/id/100003114/device/rss/rss.html", 2),
+    ("CNBC Economy",        "https://www.cnbc.com/id/20910258/device/rss/rss.html", 2),
+    ("CNBC Earnings",       "https://www.cnbc.com/id/15839135/device/rss/rss.html", 3),
+    ("CNBC Technology",     "https://www.cnbc.com/id/19854910/device/rss/rss.html", 2),
+    ("MarketWatch",         "https://feeds.marketwatch.com/marketwatch/topstories/", 2),
+    ("Yahoo Finance",       "https://finance.yahoo.com/news/rssindex", 2),
+    ("Investing.com",       "https://www.investing.com/rss/news.rss", 2),
+    # Primary-source actions — the richest "named entity taking a specific
+    # action" seeds: regulatory moves and central-bank decisions. Longer window
+    # because these publish infrequently.
+    ("SEC Press Releases",  "https://www.sec.gov/news/pressreleases.rss", 7),
+    ("Federal Reserve",     "https://www.federalreserve.gov/feeds/press_all.xml", 7),
+    # NOTE: the old feeds.reuters.com Business/Technology feeds were removed —
+    # Reuters discontinued public RSS, so those URLs were dead (0 items).
 ]
 
 _HEADERS = {"User-Agent": "EconGraph/0.1 kondaru.mk@gmail.com"}
@@ -262,43 +274,67 @@ def _parse_pub_date(item: ET.Element) -> datetime | None:
         return None
 
 
-def _fetch_raw(max_items: int = 40) -> list[dict[str, Any]]:
-    """Pull headlines from RSS feeds published within the last 5 days.
+# Per-feed and overall caps. We sample up to _PER_FEED items from EACH feed and
+# round-robin them into the final list, so a single high-volume feed (Yahoo) can't
+# crowd out the high-signal seeded feeds (SEC/Fed/Investing) — the old sequential
+# "fill to 40 then break" let later feeds never be reached.
+_PER_FEED = int(os.environ.get("NEWS_PER_FEED", "8"))
+_MAX_ITEMS = int(os.environ.get("NEWS_MAX_ITEMS", "60"))
 
-    Articles whose <pubDate> is older than _MAX_ARTICLE_AGE_DAYS are dropped
-    at the feed layer so Claude never sees stale items. Articles with no
-    parseable pubDate are kept (benefit of the doubt — most are same-day).
+
+def _fetch_raw(max_items: int = _MAX_ITEMS) -> list[dict[str, Any]]:
+    """Pull headlines from every RSS feed, up to _PER_FEED each, then round-robin
+    them into a diverse list capped at max_items.
+
+    Articles whose <pubDate> is older than _MAX_ARTICLE_AGE_DAYS are dropped at the
+    feed layer so Claude never sees stale items. Articles with no parseable pubDate
+    are kept (benefit of the doubt — most are same-day). URLs are de-duped across
+    feeds so the same wire story doesn't appear twice.
     """
-    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=_MAX_ARTICLE_AGE_DAYS)
-    items: list[dict[str, Any]] = []
-    for source, url in _RSS_FEEDS:
-        if len(items) >= max_items:
-            break
+    now = datetime.now(tz=timezone.utc)
+    per_feed: list[list[dict[str, Any]]] = []
+    for source, url, max_age_days in _RSS_FEEDS:
+        cutoff = now - timedelta(days=max_age_days)
+        feed_items: list[dict[str, Any]] = []
         try:
             r = requests.get(url, timeout=8, headers=_HEADERS)
             r.raise_for_status()
             root = ET.fromstring(r.content)
             for elem in root.iter("item"):
+                if len(feed_items) >= _PER_FEED:
+                    break
                 title = (elem.findtext("title") or "").strip()
                 link = _get_link_from_item(elem)
                 if not title or not link:
                     continue
-                # Drop articles older than the cutoff. Items with no pubDate
-                # are kept — most are same-day and better to include than skip.
                 pub_dt = _parse_pub_date(elem)
                 if pub_dt is not None and pub_dt < cutoff:
                     log.debug("news: skipping stale item (%s): %s", pub_dt.date(), title[:60])
                     continue
-                items.append({
+                feed_items.append({
                     "title": title,
                     "source": source,
                     "url": link,
                     "pub_date": pub_dt.strftime("%Y-%m-%d") if pub_dt else None,
                 })
-                if len(items) >= max_items:
-                    break
         except Exception as exc:
             log.debug("news: feed %s failed: %s", source, exc)
+        per_feed.append(feed_items)
+
+    # Round-robin interleave so every feed is represented even if we hit max_items.
+    items: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    depth = 0
+    while len(items) < max_items and any(depth < len(f) for f in per_feed):
+        for feed_items in per_feed:
+            if depth < len(feed_items) and len(items) < max_items:
+                it = feed_items[depth]
+                if it["url"] in seen_urls:
+                    continue
+                seen_urls.add(it["url"])
+                items.append(it)
+        depth += 1
+    log.info("news: fetched %d raw items from %d feeds", len(items), len(_RSS_FEEDS))
     return items
 
 
@@ -312,7 +348,9 @@ def _filter_with_claude(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
     today_str = date.today().strftime("%Y-%m-%d")
     prompt = _FILTER_PROMPT.format(headlines=headlines_block, today=today_str)
-    text = _claude_call(prompt)
+    # Generous timeout: with ~40+ raw items the filter call runs ~90s; the old
+    # 120s default risked timing out (→ empty → raw fallback) as volume grew.
+    text = _claude_call(prompt, timeout=180)
     if not text:
         return []
     # Claude frequently wraps the JSON array in conversational prose ("Most of
