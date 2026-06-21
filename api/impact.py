@@ -73,6 +73,11 @@ MAX_FRONTIER = int(os.environ.get("IMPACT_MAX_FRONTIER", "36"))
 # that to 10 calls → 2 rounds -- ~5x faster with identical quality since
 # Claude already multi-scores ring chunks of 24.
 REFINEMENT_BATCH_SIZE = int(os.environ.get("IMPACT_REFINE_BATCH", "6"))
+# How many extra rounds to re-ask the LLM for candidates that came back with
+# no parseable verdict (a failed chunk OR an omitted id). Each round re-asks
+# ONLY the still-missing ids. After these rounds, any remaining id is surfaced
+# as an explicit `unscored` node rather than silently dropped.
+RING_SCORE_RETRIES = int(os.environ.get("IMPACT_SCORE_RETRIES", "1"))
 
 # Thread-local storage for per-request LLM provider override, eliminating
 # the race condition on the module-level LLM_PROVIDER global.
@@ -776,6 +781,33 @@ def _build_ring_prompt(news: str, seeds_block: str, hop: int,
     )
 
 
+def _collect_verdicts(prompts: list[str]) -> dict[str, dict[str, Any]]:
+    """Run scoring prompts in parallel and return {node_id: verdict} for every
+    dict verdict carrying a node_id. Unparseable chunks and malformed verdicts
+    simply don't populate the map — which is how the caller detects what to
+    retry. Last writer wins on duplicate ids."""
+    if not prompts:
+        return {}
+    workers = min(RING_PARALLELISM, len(prompts))
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            raws = list(pool.map(_llm_call, prompts))
+    except Exception as exc:  # _ollama_call can raise on network failure
+        log.warning("_collect_verdicts: LLM pool raised %s", exc)
+        raws = [""] * len(prompts)
+    out: dict[str, dict[str, Any]] = {}
+    for raw in raws:
+        parsed = _parse_llm_json(raw)
+        if isinstance(parsed, dict) and "results" in parsed:
+            parsed = parsed.get("results")
+        if not isinstance(parsed, list):
+            continue
+        for verdict in parsed:
+            if isinstance(verdict, dict) and verdict.get("node_id"):
+                out[verdict["node_id"]] = verdict
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Frontier sampling — keeps large hops tractable
 # ---------------------------------------------------------------------------
@@ -1029,6 +1061,7 @@ def run_impact_stream(
         }
 
         # -- Step 7: BFS ring by ring ----------------------------------------
+        total_recovered = 0   # nodes filled by retry across all hops (for `scoring`)
         for hop in range(1, MAX_HOPS + 1):
             full_ring = _neighbors(conn, frontier, visited)
             log.info("hop %d: frontier=%d, ring=%d", hop, len(frontier), len(full_ring))
@@ -1057,6 +1090,7 @@ def run_impact_stream(
                         "max_hops": MAX_HOPS,
                         "debug": debug_log,
                         "refinement": {"considered": 0, "rescored": 0, "applied": 0},
+                        "scoring": {"scored": 0, "recovered": 0, "unscored": 0, "unscored_node_ids": []},
                         "no_neighbors": True,
                     }
                     yield {"event": "error", "message": result["error"], "no_neighbors": True}
@@ -1088,91 +1122,98 @@ def run_impact_stream(
                 f"{MAX_RING_CANDIDATES} (parallelism={min(RING_PARALLELISM, len(chunks))})"
             )
 
-            # Build all chunk prompts up front, then run them through a
-            # bounded ThreadPoolExecutor. Each _llm_call is an independent
-            # subprocess; parallelizing cuts wall time roughly linearly with
-            # parallelism. On a typical war-shock scenario the worst ring
-            # (hop 3, ~200 candidates / 13 chunks) drops from ~6 minutes
-            # serial to ~1 minute at parallelism=6.
             chunk_prompts = [_build_ring_prompt(text, seeds_block, hop, ring, impacts)
                              for ring in chunks]
-
-            t_hop = time.time()
-            workers = min(RING_PARALLELISM, len(chunks))
-            try:
-                with ThreadPoolExecutor(max_workers=workers) as pool:
-                    chunk_raws = list(pool.map(_llm_call, chunk_prompts))
-            except Exception as exc:
-                # _ollama_call can raise RuntimeError on network failure. Treat the
-                # entire hop as failed rather than letting the exception propagate
-                # past the thread-local restoration finally block.
-                log.warning("hop %d: LLM pool raised %s — treating as failed hop", hop, exc)
-                chunk_raws = [""] * len(chunk_prompts)
             debug_log.append(
-                f"hop {hop}: {len(chunks)} chunks done in {time.time() - t_hop:.1f}s"
+                f"hop {hop}: scoring {len(full_ring)} candidates in {len(chunks)} chunk(s)"
             )
 
+            t_hop = time.time()
+            verdict_by_id = _collect_verdicts(chunk_prompts)
+            first_pass_ids = set(verdict_by_id)
+
+            # Ensure-coverage: re-ask ONLY the still-missing ids, up to N rounds.
+            attempts = 0
+            while attempts < RING_SCORE_RETRIES:
+                missing = [nb for nb in full_ring if nb["id"] not in verdict_by_id]
+                if not missing:
+                    break
+                attempts += 1
+                retry_prompts = [
+                    _build_ring_prompt(text, seeds_block, hop,
+                                       missing[i:i + MAX_RING_CANDIDATES], impacts)
+                    for i in range(0, len(missing), MAX_RING_CANDIDATES)
+                ]
+                before = len(verdict_by_id)
+                verdict_by_id.update(_collect_verdicts(retry_prompts))
+                debug_log.append(
+                    f"hop {hop}: retry {attempts} — {len(missing)} missing, "
+                    f"{len(verdict_by_id) - before} recovered"
+                )
+            debug_log.append(f"hop {hop}: scoring done in {time.time() - t_hop:.1f}s")
+
+            ring_ids = {nb["id"] for nb in full_ring}
+            recovered_this_hop = len((set(verdict_by_id) & ring_ids) - first_pass_ids)
+            total_recovered += recovered_this_hop
+
+            # Apply by iterating CANDIDATES (not verdicts): every candidate gets a
+            # verdict or an explicit `unscored` marker — nothing is dropped.
             new_frontier: list[str] = []
-            chunk_failed = False
             hop_new_ids: list[str] = []
-            for chunk_idx, (ring, ring_raw) in enumerate(zip(chunks, chunk_raws)):
-                debug_log.append(
-                    f"hop {hop} chunk {chunk_idx + 1}/{len(chunks)}: "
-                    f"LLM raw_len={len(ring_raw)}"
-                )
-                ring_parsed = _parse_llm_json(ring_raw)
-                if isinstance(ring_parsed, dict) and "results" in ring_parsed:
-                    ring_parsed = ring_parsed.get("results")
-                if not isinstance(ring_parsed, list):
-                    log.warning("hop %d chunk %d: parse FAIL", hop, chunk_idx + 1)
-                    debug_log.append(
-                        f"hop {hop} chunk {chunk_idx + 1}: parse FAIL "
-                        f"type={type(ring_parsed).__name__}, tail={(ring_raw or '')[-200:]!r}"
-                    )
-                    chunk_failed = True
+            unscored_this_hop = 0
+            for nb in full_ring:
+                nid = nb["id"]
+                if nid in impacts:
                     continue
-                debug_log.append(
-                    f"hop {hop} chunk {chunk_idx + 1}: scored {len(ring_parsed)} verdicts"
-                )
-                for verdict in ring_parsed:
-                    if not isinstance(verdict, dict):
-                        continue
-                    nid = verdict.get("node_id")
-                    if not nid or nid in impacts:
-                        continue
-                    matching = next((nb for nb in ring if nb["id"] == nid), None)
-                    if not matching:
-                        continue
-                    direction = verdict.get("direction") or "no_effect"
-                    magnitude = float(verdict.get("magnitude") or 0.0)
-                    reasoning = verdict.get("reasoning") or ""
-                    _ew = matching.get("edge_weight")
+                verdict = verdict_by_id.get(nid)
+                if not isinstance(verdict, dict):
                     impacts[nid] = {
                         "node_id": nid,
-                        "name": matching["name"],
-                        "type": matching["type"],
-                        "direction": direction,
-                        "magnitude": magnitude,
+                        "name": nb["name"],
+                        "type": nb["type"],
+                        "direction": "unscored",
+                        "magnitude": 0.0,
                         "hop": hop,
-                        "reasoning": reasoning,
-                        "via_parent": matching["via_parent"],
-                        "edge_type": matching["edge_type"],
-                        "country": matching.get("country"),  # Phase E
-                        # Phase K: financial grounding metadata
-                        "edge_weight": _ew,
-                        "edge_source_tier": matching.get("edge_source_tier"),
-                        "is_estimated": _ew is None,
+                        "reasoning": f"Could not be scored after {RING_SCORE_RETRIES + 1} attempts",
+                        "via_parent": nb["via_parent"],
+                        "edge_type": nb["edge_type"],
+                        "country": nb.get("country"),
+                        "edge_weight": nb.get("edge_weight"),
+                        "edge_source_tier": nb.get("edge_source_tier"),
+                        "is_estimated": nb.get("edge_weight") is None,
                     }
-                    hop_new_ids.append(nid)
                     visited.add(nid)
-                    if direction in ("positive", "negative") and magnitude >= 0.15:
-                        new_frontier.append(nid)
+                    hop_new_ids.append(nid)
+                    unscored_this_hop += 1
+                    continue
+                direction = verdict.get("direction") or "no_effect"
+                magnitude = float(verdict.get("magnitude") or 0.0)
+                reasoning = verdict.get("reasoning") or ""
+                _ew = nb.get("edge_weight")
+                impacts[nid] = {
+                    "node_id": nid,
+                    "name": nb["name"],
+                    "type": nb["type"],
+                    "direction": direction,
+                    "magnitude": magnitude,
+                    "hop": hop,
+                    "reasoning": reasoning,
+                    "via_parent": nb["via_parent"],
+                    "edge_type": nb["edge_type"],
+                    "country": nb.get("country"),
+                    "edge_weight": _ew,
+                    "edge_source_tier": nb.get("edge_source_tier"),
+                    "is_estimated": _ew is None,
+                }
+                hop_new_ids.append(nid)
+                visited.add(nid)
+                if direction in ("positive", "negative") and magnitude >= 0.15:
+                    new_frontier.append(nid)
 
-            # === NEW: emit the hop event ===
+            # === emit the hop event ===
             # frontier_size = the input frontier scored into this hop.
-            # ring_size = candidates actually scored (post-cap; equals the raw
-            #   neighbour count unless `sampled` is True, in which case the ring
-            #   was down-sampled to MAX_FRONTIER before scoring).
+            # ring_size = candidates actually scored (post-cap).
+            # recovered = ids filled by retry; unscored = ids surfaced unscorable.
             yield {
                 "event": "hop",
                 "hop": hop,
@@ -1180,12 +1221,10 @@ def run_impact_stream(
                 "frontier_size": len(frontier),
                 "ring_size": len(full_ring),
                 "sampled": sampled_flag,
+                "recovered": recovered_this_hop,
+                "unscored": unscored_this_hop,
             }
 
-            if chunk_failed and not new_frontier:
-                # If every chunk failed we bail out of the BFS to avoid an
-                # infinite-looking wait on empty rings.
-                break
             if not new_frontier:
                 break
             frontier = new_frontier
@@ -1223,6 +1262,14 @@ def run_impact_stream(
         # `seed` field: first named-entity seed, or commodity/region if no
         # named entities resolved. Kept for backward-compat with older frontends.
         seeds_response = [impacts[s["node_id"]] for s in all_seeds if s["node_id"] in impacts]
+        _non_seed = [v for v in impacts.values() if not v.get("is_seed")]
+        _unscored_ids = [v["node_id"] for v in _non_seed if v.get("direction") == "unscored"]
+        scoring_summary = {
+            "scored": len(_non_seed) - len(_unscored_ids),
+            "recovered": total_recovered,
+            "unscored": len(_unscored_ids),
+            "unscored_node_ids": _unscored_ids,
+        }
         result = {
             "seed": impacts.get(primary_seed_id),
             "seeds": seeds_response,
@@ -1232,6 +1279,7 @@ def run_impact_stream(
             "max_hops": MAX_HOPS,
             "debug": debug_log,
             "refinement": refinement_summary,
+            "scoring": scoring_summary,
         }
         yield {"event": "done", "result": result}
     except Exception as exc:  # noqa: BLE001 — stream must always close cleanly
@@ -1548,6 +1596,12 @@ def _refinement_pass(
         if v.get("is_seed"):
             continue
         direction = v.get("direction", "no_effect")
+        # `unscored` nodes are terminal: the engine could NOT get a verdict for
+        # them after retries. Refinement re-scores nodes that DID get a (weak)
+        # verdict; clobbering an unscored node here would silently undo the
+        # coverage surfacing it exists to provide. Leave them surfaced.
+        if direction == "unscored":
+            continue
         magnitude = float(v.get("magnitude", 0.0))
         is_weak = (
             direction == "no_effect"
