@@ -90,6 +90,40 @@ def _majority_impacts(runs_impacts: list[list[dict]]) -> dict:
     return out
 
 
+def resolve_entity_any(conn, name: str) -> Optional[str]:
+    """Resolve an entity name to a node id across ALL node types.
+
+    api.impact._resolve_entity is Company-only (it filters type='Company'), so
+    commodities/regions never match there. We try it first (it handles filer
+    tickers/aliases), then fall back to a general name/alias match across every
+    node type — essential since many backtest expectations are commodities."""
+    from api.impact import _resolve_entity
+    node = _resolve_entity(conn, name)
+    if node:
+        return node["id"]
+    q = (name or "").lower().strip()
+    if not q:
+        return None
+    row = conn.execute("SELECT id FROM nodes WHERE LOWER(name) = ? LIMIT 1", (q,)).fetchone()
+    if row:
+        return row["id"]
+    row = conn.execute(
+        "SELECT n.id FROM aliases a JOIN nodes n ON n.id = a.node_id "
+        "WHERE a.alias_normalized = ? LIMIT 1",
+        (q,),
+    ).fetchone()
+    if row:
+        return row["id"]
+    row = conn.execute("SELECT id FROM nodes WHERE LOWER(name) LIKE ? LIMIT 1", (q + "%",)).fetchone()
+    if row:
+        return row["id"]
+    if len(q) >= 5:
+        row = conn.execute("SELECT id FROM nodes WHERE LOWER(name) LIKE ? LIMIT 1", (f"%{q}%",)).fetchone()
+        if row:
+            return row["id"]
+    return None
+
+
 def run_backtest(cases, *, conn, provider, runs, resolve):
     from api.impact import run_impact
     results = []
@@ -148,12 +182,10 @@ def main() -> int:
         return 2
 
     from schema.store import connect
-    from api.impact import _resolve_entity
     conn = connect(DB)
 
     def resolve(name: str) -> Optional[str]:
-        node = _resolve_entity(conn, name)
-        return node["id"] if node else None
+        return resolve_entity_any(conn, name)
 
     try:
         results = run_backtest(cases, conn=conn, provider=args.provider, runs=args.runs, resolve=resolve)
