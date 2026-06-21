@@ -397,3 +397,51 @@ def test_verifier_confidence_overwrites_heuristic(conn, monkeypatch):
     r = _run_done(conn)
     verified = [v for v in r["impacts"] if v.get("verified")]
     assert verified and all(abs(v["confidence"] - 0.33) < 1e-9 for v in verified)
+
+
+# --- Seed directness audit (A+B): reject speculative commodity seeds ----------
+
+def _seed_audit_fake(decision: str):
+    """Route the seed-directness audit prompt to `decision`; delegate the rest
+    (entity extraction, seed pick, ring, refine) to _fake_llm."""
+    def fake(prompt: str) -> str:
+        if "auditing a seed choice" in prompt:
+            return json.dumps({"verdict": decision, "reasoning": "t"})
+        return _fake_llm(prompt)
+    return fake
+
+
+def test_indirect_seed_is_dropped(conn, monkeypatch):
+    # _fake_llm picks the first commodity candidate as the seed and names no
+    # company. If the audit calls that seed "indirect", it must be dropped — and
+    # with no other seed, the run reports "no seed" rather than propagating from
+    # a speculative anchor.
+    monkeypatch.setattr(impact_mod, "_llm_call", _seed_audit_fake("indirect"))
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    events = list(impact_mod.run_impact_stream(
+        "US Commerce Department freezes advanced AI chip exports", conn=conn))
+    done = next(e for e in events if e["event"] == "done")["result"]
+    assert done.get("seed") is None
+    assert any(e["event"] == "error" and "seed" in e["message"].lower() for e in events)
+
+
+def test_direct_seed_is_kept(conn, monkeypatch):
+    # Same flow, but the audit says "direct" → the commodity seed survives and the
+    # run propagates normally.
+    monkeypatch.setattr(impact_mod, "_llm_call", _seed_audit_fake("direct"))
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    done = next(e for e in impact_mod.run_impact_stream(
+        "global crude oil supply shock", conn=conn) if e["event"] == "done")["result"]
+    assert done.get("seed") is not None
+    assert done["impacts"]                      # propagation happened
+
+
+def test_seed_audit_skipped_when_verify_disabled(conn, monkeypatch):
+    # With VERIFY_ENABLED off, the audit never runs and the seed is kept even if a
+    # stray "indirect" would be returned.
+    monkeypatch.setattr(impact_mod, "_llm_call", _seed_audit_fake("indirect"))
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    monkeypatch.setattr(impact_mod, "VERIFY_ENABLED", False)
+    done = next(e for e in impact_mod.run_impact_stream(
+        "global crude oil supply shock", conn=conn) if e["event"] == "done")["result"]
+    assert done.get("seed") is not None

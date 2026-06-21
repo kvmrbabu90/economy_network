@@ -660,6 +660,20 @@ Worked examples:
   falls → NEGATIVE for crude oil. (Positive for oil CONSUMERS like
   airlines and chemical makers.)
 
+DIRECTNESS RULE (critical — do NOT reach):
+Pick a node ONLY if the news is DIRECTLY about it — the commodity/region is
+explicitly named, or the event is unambiguously about ITS own supply, demand,
+price, or trade. Do NOT reach via a multi-step inference: do not pick an input
+material because the finished product isn't in the list, and do not assume
+retaliation, substitution, or downstream knock-on effects to justify a pick.
+If NO node is a direct subject of the news, return null for node_id — that is
+the CORRECT answer, not a loosely-related guess. A wrong seed is worse than none.
+
+Counter-example (DO NOT do this): "U.S. freezes advanced AI chip exports" — the
+subject is AI chips, which are not in the list. Gallium / indium / silicon are
+chip INPUTS, reachable only by ASSUMING China retaliates on those materials. That
+is a speculative reach. Correct answer here: node_id = null.
+
 NEWS:
 \"\"\"
 {news}
@@ -671,6 +685,45 @@ CANDIDATE NODES (id | type | name | category):
 Respond with STRICT JSON, nothing else. Keep reasoning under 25 words:
 {{"node_id": "<one id from the list, or null>", "direction": "positive" or "negative", "magnitude": 0.0 to 1.0, "reasoning": "<one short clause>"}}
 """
+
+
+_SEED_VERIFY_PROMPT = """You are a skeptical economist auditing a seed choice for a news-impact tool.
+
+NEWS:
+\"\"\"
+{news}
+\"\"\"
+
+A model picked this single node as the MOST DIRECTLY affected starting point:
+  {name}  ({type})
+
+Is {name} a DIRECT subject of this news — explicitly named, or unambiguously the
+good/region whose OWN supply, demand, price, or trade the news is about?
+
+Answer "direct" ONLY if no speculative leap is needed. Answer "indirect" if reaching
+{name} requires assuming a downstream reaction, retaliation, substitution, or that an
+unmentioned input/material is implicated (e.g. a chip-export story → some chip input
+metal). When unsure, answer "indirect".
+
+Respond STRICT JSON, nothing else:
+{{"verdict": "direct" | "indirect", "reasoning": "<short>"}}
+"""
+
+
+def _verify_seed_directness(news: str, name: str, ntype: str, debug_log: list[str]) -> bool:
+    """Adversarially check that the commodity/region seed is a DIRECT subject of the
+    news, not a speculative reach (e.g. AI-chip news → gallium). Returns True to KEEP
+    the seed, False to DROP it. Fail-open (keep) when the check can't be parsed — the
+    seed prompt's DIRECTNESS rule is the primary guard; this is a backstop, and a
+    verifier hiccup should not kill an otherwise-valid run."""
+    raw = _llm_call(_SEED_VERIFY_PROMPT.format(news=news, name=name, type=ntype))
+    parsed = _parse_llm_json(raw)
+    if not isinstance(parsed, dict):
+        debug_log.append(f"seed_verify: unparseable for {name!r}; keeping (fail-open)")
+        return True
+    keep = parsed.get("verdict") != "indirect"
+    debug_log.append(f"seed_verify: {name!r} -> {parsed.get('verdict')} ({'keep' if keep else 'DROP'})")
+    return keep
 
 
 _RING_PROMPT_TEMPLATE = """You are propagating a news shock through a value-chain graph.
@@ -1017,7 +1070,18 @@ def run_impact_stream(
         commodity_seed: Optional[dict[str, Any]] = None
         if commodity_seed_id and commodity_seed_id not in seen_ids:
             commodity_summary = _node_summary(conn, commodity_seed_id)
-            if commodity_summary:
+            if commodity_summary and VERIFY_ENABLED and not _verify_seed_directness(
+                text, commodity_summary["name"], commodity_summary["type"], debug_log
+            ):
+                # B: the picked commodity/region failed the adversarial directness
+                # audit (a speculative reach, e.g. an AI-chip story seeding on
+                # gallium). Drop it — better no commodity seed than a fabricated
+                # propagation chain. Named-entity seeds (if any) still anchor.
+                debug_log.append(
+                    f"commodity_seed: {commodity_seed_id} ({commodity_summary['name']}) "
+                    f"REJECTED as indirect — dropped"
+                )
+            elif commodity_summary:
                 raw_mag = seed_obj.get("magnitude")
                 commodity_seed = {
                     "node_id": commodity_seed_id,
