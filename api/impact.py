@@ -808,12 +808,28 @@ def _collect_verdicts(prompts: list[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _heuristic_confidence(hop: int, is_estimated: bool) -> float:
+    """Rough confidence proxy for a verdict the adversarial verifier did NOT
+    adjudicate: deeper hops are less certain; an SEC-grounded inbound edge lifts
+    it. Capped at 0.90 — an unverified heuristic must never read as near-certain."""
+    base = {1: 0.70, 2: 0.55, 3: 0.45}.get(hop, 0.35)
+    if not is_estimated:
+        base += 0.15
+    return round(min(0.90, base), 2)
+
+
 def _impact_row(nb: dict[str, Any], hop: int, direction: str,
                 magnitude: float, reasoning: str) -> dict[str, Any]:
     """Build one impacts[] entry for a scored or unscored ring candidate.
     Centralised so the scored and unscored branches can never drift in their
     field set (the exact regression class this coverage work guards against)."""
     ew = nb.get("edge_weight")
+    if direction == "unscored":
+        confidence: Optional[float] = 0.0
+    elif direction in ("positive", "negative"):
+        confidence = _heuristic_confidence(hop, ew is None)
+    else:  # no_effect — not displayed, no confidence
+        confidence = None
     return {
         "node_id": nb["id"],
         "name": nb["name"],
@@ -828,6 +844,7 @@ def _impact_row(nb: dict[str, Any], hop: int, direction: str,
         "edge_weight": ew,                      # Phase K
         "edge_source_tier": nb.get("edge_source_tier"),
         "is_estimated": ew is None,
+        "confidence": confidence,
     }
 
 
@@ -1068,6 +1085,7 @@ def run_impact_stream(
                 "edge_weight": None,
                 "edge_source_tier": None,
                 "is_estimated": True,
+                "confidence": 1.0,
             }
             visited.add(nid)
             frontier.append(nid)

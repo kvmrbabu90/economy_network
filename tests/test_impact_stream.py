@@ -360,3 +360,40 @@ def test_event_ordering_includes_verification(conn):
     # verification comes after the (single) refinement event, before done.
     assert kinds.index("verification") > kinds.index("refinement")
     assert kinds.index("verification") < kinds.index("done")
+
+
+def test_heuristic_confidence_values():
+    assert impact_mod._heuristic_confidence(1, True) == 0.70
+    assert impact_mod._heuristic_confidence(1, False) == 0.85
+    assert impact_mod._heuristic_confidence(3, True) == 0.45
+    assert impact_mod._heuristic_confidence(3, False) == 0.60
+    # never reads as near-certain for an unverified heuristic
+    assert impact_mod._heuristic_confidence(1, False) <= 0.90
+
+
+def test_every_verdict_has_confidence(conn):
+    r = _run_done(conn)  # autouse echo fake; no verifier adjudication
+    for v in r["impacts"]:
+        if v.get("is_seed"):
+            assert v["confidence"] == 1.0
+        elif v["direction"] in ("positive", "negative"):
+            assert isinstance(v["confidence"], (int, float)) and 0.0 < v["confidence"] <= 1.0
+        elif v["direction"] == "unscored":
+            assert v["confidence"] == 0.0
+        else:  # no_effect
+            assert v.get("confidence") is None
+
+
+def test_verifier_confidence_overwrites_heuristic(conn, monkeypatch):
+    def fake(prompt):
+        if "TRY TO REFUTE" in prompt:
+            ids = re.findall(r"^NODE:\s*(\S+)\s*\(", prompt, re.MULTILINE)
+            return json.dumps([{"node_id": i, "verdict": "upheld",
+                                "confidence": 0.33, "reasoning": "t"} for i in ids])
+        return _fake_llm(prompt)
+    monkeypatch.setattr(impact_mod, "_llm_call", fake)
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    monkeypatch.setattr(impact_mod, "VERIFY_MAG_THRESHOLD", 0.45)
+    r = _run_done(conn)
+    verified = [v for v in r["impacts"] if v.get("verified")]
+    assert verified and all(abs(v["confidence"] - 0.33) < 1e-9 for v in verified)
