@@ -1303,8 +1303,11 @@ async function handleImpactRun(): Promise<void> {
       const seedNames = resp.seeds && resp.seeds.length > 0
         ? resp.seeds.map((s) => `${s.name} (${s.direction})`).join(", ")
         : resp.seed ? `${resp.seed.name} (${resp.seed.direction})` : "unknown";
+      const unscoredNote = resp.scoring && resp.scoring.unscored > 0
+        ? ` · ${resp.scoring.unscored} unscored`
+        : "";
       setImpactStatus(
-        `[${niceProvider}] Seeds: ${seedNames} → ${resp.impacts.length} nodes across ${resp.max_hops || 3} hops`,
+        `[${niceProvider}] Seeds: ${seedNames} → ${resp.impacts.length} nodes across ${resp.max_hops || 3} hops${unscoredNote}`,
       );
       renderTop5(resp.impacts);
       saveToArchive(texts[0], provider, resp);
