@@ -245,3 +245,20 @@ def test_scoring_summary_is_consistent(conn, monkeypatch):
     assert set(scoring) == {"scored", "recovered", "unscored", "unscored_node_ids"}
     non_seed = [v for v in r["impacts"] if not v.get("is_seed")]
     assert scoring["scored"] + scoring["unscored"] == len(non_seed)
+
+
+def test_zero_retries_degrades_cleanly(conn, monkeypatch):
+    # With retries disabled, missing ids are NOT recovered — they go straight to
+    # `unscored`. Coverage must still hold (every candidate accounted for).
+    monkeypatch.setattr(impact_mod, "_llm_call", _always_omit_first_fake)
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    monkeypatch.setattr(impact_mod, "RING_SCORE_RETRIES", 0)
+    events = list(impact_mod.run_impact_stream("global crude oil supply shock", conn=conn))
+    done = next(e for e in events if e["event"] == "done")
+    scoring = done["result"]["scoring"]
+    assert scoring["recovered"] == 0          # no retry rounds ran
+    assert scoring["unscored"] >= 1           # omitted ids surface as unscored
+    # Coverage invariant still holds per hop.
+    for ev in events:
+        if ev["event"] == "hop":
+            assert len(ev["new_impacts"]) == ev["ring_size"]

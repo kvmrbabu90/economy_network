@@ -1,6 +1,7 @@
+import Graph from "graphology";
 import { describe, expect, it } from "vitest";
-import { tintColor, tintColorRGB } from "../impact";
-import type { ImpactVerdict } from "../api";
+import { tintColor, tintColorRGB, buildImpactState } from "../impact";
+import type { ImpactResponse, ImpactVerdict } from "../api";
 
 function v(partial: Partial<ImpactVerdict>): ImpactVerdict {
   return {
@@ -26,5 +27,14 @@ describe("unscored tint", () => {
   it("tintColorRGB returns rgb for unscored, null for no_effect", () => {
     expect(tintColorRGB(v({ direction: "unscored", magnitude: 0 }))).not.toBeNull();
     expect(tintColorRGB(v({ direction: "no_effect", magnitude: 0 }))).toBeNull();
+  });
+
+  it("buildImpactState includes an unscored node in byNode", () => {
+    const g = new Graph() as any;
+    g.addNode("u1", { apiNode: { attributes: { type: "Company" } } });
+    const resp = { impacts: [v({ node_id: "u1", direction: "unscored", magnitude: 0 })] } as ImpactResponse;
+    const state = buildImpactState(g, resp);
+    expect(state.byNode.has("u1")).toBe(true);
+    expect(state.byNode.get("u1")?.direction).toBe("unscored");
   });
 });
