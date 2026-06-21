@@ -1177,6 +1177,7 @@ html, body {
 .impact-box.impact-pos { border-left-color: #40c86e; background: rgba(64, 200, 110, 0.08); }
 .impact-box.impact-neg { border-left-color: #e25454; background: rgba(226, 84, 84, 0.08); }
 .impact-box.impact-neutral { border-left-color: #6e6a62; }
+.impact-box.impact-unscored { border-left-color: #7c8696; background: rgba(124, 134, 150, 0.08); }
 .impact-header {
   display: flex;
   gap: 10px;
@@ -1191,6 +1192,7 @@ html, body {
 .impact-box.impact-pos .impact-dir { color: #40c86e; }
 .impact-box.impact-neg .impact-dir { color: #e25454; }
 .impact-box.impact-neutral .impact-dir { color: var(--text-mute); }
+.impact-box.impact-unscored .impact-dir { color: #aab4c2; }
 .impact-mag, .impact-hop {
   font-size: 11px;
   color: var(--text-mute);
