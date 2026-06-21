@@ -309,6 +309,12 @@ export interface DescribeResponse {
 // Timeout for LLM-backed calls (describe, impact). The LLM can take 1-3 min.
 const LLM_TIMEOUT_MS = 180_000;
 
+// Max silence between bytes on the impact stream before we treat the connection
+// as dead. A live run emits an event each hop/refinement/verification, with gaps
+// well under this; a longer silence means a severed/half-open connection, so we
+// bail rather than pin the loading spinner forever.
+const STREAM_IDLE_TIMEOUT_MS = 240_000;
+
 export async function describeNode(nodeId: string): Promise<DescribeResponse> {
   const url = new URL(`/describe/${encodeURI(nodeId)}`, API_BASE_URL);
   inflight += 1;
@@ -453,7 +459,21 @@ export async function runImpactStream(
         // and guarantees we stop promptly. Throwing an AbortError keeps the
         // caller's `err.name === "AbortError"` cancellation path intact.
         if (opts.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        const { done, value } = await reader.read();
+        // Idle watchdog: a severed/half-open connection can leave reader.read()
+        // pending forever, which would pin the global loading counter (the
+        // "loading…" spinner) with no recovery. A live run emits an event per
+        // hop well within STREAM_IDLE_TIMEOUT_MS, so a longer silence means the
+        // stream is dead — reject so the finally blocks run and the counter frees.
+        let idleTimer: ReturnType<typeof setTimeout> | undefined;
+        const { done, value } = await new Promise<ReadableStreamReadResult<Uint8Array>>(
+          (resolve, reject) => {
+            idleTimer = setTimeout(
+              () => reject(new Error("/impact/stream: idle timeout — no data received")),
+              STREAM_IDLE_TIMEOUT_MS,
+            );
+            reader.read().then(resolve, reject).finally(() => clearTimeout(idleTimer));
+          },
+        );
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         let nl: number;

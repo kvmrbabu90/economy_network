@@ -1312,8 +1312,15 @@ async function handleImpactRun(): Promise<void> {
       const refutedNote = resp.verification && resp.verification.refuted > 0
         ? ` · ${resp.verification.refuted} refuted`
         : "";
+      // "scored" counts every node the engine judged (incl. no_effect); only the
+      // positive/negative ones actually light up. Report both so the count isn't
+      // mistaken for the number of visible nodes. (On the globe, fewer still show
+      // — commodity/region/market nodes have no coordinates to pin.)
+      const affected = resp.impacts.filter(
+        (v) => v.direction === "positive" || v.direction === "negative",
+      ).length;
       setImpactStatus(
-        `[${niceProvider}] Seeds: ${seedNames} → ${resp.impacts.length} nodes across ${resp.max_hops || 3} hops${unscoredNote}${refutedNote}`,
+        `[${niceProvider}] Seeds: ${seedNames} → ${affected} affected · ${resp.impacts.length} scored across ${resp.max_hops || 3} hops${unscoredNote}${refutedNote}`,
       );
       renderTop5(resp.impacts);
       saveToArchive(texts[0], provider, resp);
