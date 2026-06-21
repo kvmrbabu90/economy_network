@@ -743,6 +743,39 @@ Cover every candidate id exactly once.
 """
 
 
+def _format_candidate_line(nb: dict[str, Any], impacts: dict[str, Any]) -> str:
+    """One ring-candidate line for the scoring prompt. Mirrors the columns the
+    _RING_PROMPT_TEMPLATE documents: id | type | name | sector | country |
+    edge_geo | weight | parent | edge | parent_dir | parent_mag."""
+    parent_v = impacts.get(nb["via_parent"], {})
+    country = nb.get("country") or "-"
+    geo = nb.get("supply_geography") or "?"
+    ew = nb.get("edge_weight")
+    et = nb.get("edge_source_tier") or ""
+    weight_str = f"{ew * 100:.0f}%|{et or 'sec_explicit'}" if ew is not None else "est"
+    parent_mag = parent_v.get("magnitude")
+    parent_mag_str = f"{parent_mag:.2f}" if parent_mag is not None else "?"
+    return (
+        f"  {nb['id']} | {nb['type']} | {nb['name']} | "
+        f"{nb.get('sector') or '-'} | country={country} | edge_geo={geo} | "
+        f"weight={weight_str} | "
+        f"parent={nb['via_parent']} | "
+        f"edge={nb['edge_type']} | "
+        f"parent_dir={parent_v.get('direction', '?')} | "
+        f"parent_mag={parent_mag_str}"
+    )
+
+
+def _build_ring_prompt(news: str, seeds_block: str, hop: int,
+                       ring: list[dict[str, Any]], impacts: dict[str, Any]) -> str:
+    """Full scoring prompt for one chunk of ring candidates."""
+    cand_lines = [_format_candidate_line(nb, impacts) for nb in ring]
+    return _RING_PROMPT_TEMPLATE.format(
+        news=news, seeds_block=seeds_block, hop_num=hop,
+        candidates="\n".join(cand_lines),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Frontier sampling — keeps large hops tractable
 # ---------------------------------------------------------------------------
@@ -1061,37 +1094,8 @@ def run_impact_stream(
             # parallelism. On a typical war-shock scenario the worst ring
             # (hop 3, ~200 candidates / 13 chunks) drops from ~6 minutes
             # serial to ~1 minute at parallelism=6.
-            chunk_prompts: list[str] = []
-            for ring in chunks:
-                cand_lines = []
-                for nb in ring:
-                    parent_v = impacts.get(nb["via_parent"], {})
-                    country = nb.get("country") or "-"
-                    geo = nb.get("supply_geography") or "?"
-                    # Phase K: format financial weight for the prompt
-                    ew = nb.get("edge_weight")
-                    et = nb.get("edge_source_tier") or ""
-                    if ew is not None:
-                        weight_str = f"{ew * 100:.0f}%|{et or 'sec_explicit'}"
-                    else:
-                        weight_str = "est"
-                    parent_mag = parent_v.get("magnitude")
-                    parent_mag_str = f"{parent_mag:.2f}" if parent_mag is not None else "?"
-                    cand_lines.append(
-                        f"  {nb['id']} | {nb['type']} | {nb['name']} | "
-                        f"{nb.get('sector') or '-'} | country={country} | edge_geo={geo} | "
-                        f"weight={weight_str} | "
-                        f"parent={nb['via_parent']} | "
-                        f"edge={nb['edge_type']} | "
-                        f"parent_dir={parent_v.get('direction', '?')} | "
-                        f"parent_mag={parent_mag_str}"
-                    )
-                chunk_prompts.append(_RING_PROMPT_TEMPLATE.format(
-                    news=text,
-                    seeds_block=seeds_block,
-                    hop_num=hop,
-                    candidates="\n".join(cand_lines),
-                ))
+            chunk_prompts = [_build_ring_prompt(text, seeds_block, hop, ring, impacts)
+                             for ring in chunks]
 
             t_hop = time.time()
             workers = min(RING_PARALLELISM, len(chunks))
