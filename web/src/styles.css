@@ -1238,6 +1238,31 @@ html, body {
   color: var(--text-faint);
 }
 
+.impact-confidence {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 2px 0 6px 0;
+}
+.conf-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(124, 134, 150, 0.16);
+  color: #aab4c2;
+  border: 1px solid rgba(124, 134, 150, 0.3);
+}
+.conf-source { font-size: 10px; color: var(--text-faint); }
+.impact-verify {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin: 2px 0 6px 0;
+  font-style: italic;
+}
+
 /* "Describe this business" -- LLM-generated summary block. */
 .about-box {
   margin: 12px 0;

@@ -66,15 +66,27 @@ export function showNode(node: ApiNode, g: EconGraph, extras: NodeExtras = {}): 
   if (extras.impact) {
     const v = extras.impact;
     const dirClass = v.direction === "positive" ? "impact-pos"
-      : v.direction === "negative" ? "impact-neg" : "impact-neutral";
+      : v.direction === "negative" ? "impact-neg"
+      : v.direction === "unscored" ? "impact-unscored" : "impact-neutral";
     const dirLabel = v.direction === "positive" ? "POSITIVE"
-      : v.direction === "negative" ? "NEGATIVE" : "NO EFFECT";
+      : v.direction === "negative" ? "NEGATIVE"
+      : v.direction === "unscored" ? "UNSCORED" : "NO EFFECT";
     const box = el("div", { class: `impact-box ${dirClass}` });
     box.appendChild(el("div", { class: "impact-header" },
       el("span", { class: "impact-dir" }, dirLabel),
       el("span", { class: "impact-mag" }, `magnitude ${v.magnitude.toFixed(2)}`),
       el("span", { class: "impact-hop" }, `hop ${v.hop}`),
     ));
+    if (typeof v.confidence === "number") {
+      box.appendChild(el("div", { class: "impact-confidence" },
+        el("span", { class: "conf-badge" }, `confidence ${Math.round(v.confidence * 100)}%`),
+        el("span", { class: "conf-source" }, v.verified ? "· verified" : "· est."),
+      ));
+    }
+    if (v.verification) {
+      box.appendChild(el("p", { class: "impact-verify" },
+        `Verifier: ${v.verification.verdict} — ${v.verification.reasoning}`));
+    }
     // Phase K: financial grounding badge
     if (v.edge_weight != null) {
       const pct = Math.round(v.edge_weight * 100);
