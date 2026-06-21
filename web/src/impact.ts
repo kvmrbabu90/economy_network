@@ -48,6 +48,11 @@ function pickTier(intensity: number): "high" | "medHi" | "medLo" | "low" {
 
 const COLOR_NEUTRAL = { r: 24, g: 28, b: 34 };      // dim grey (outside chain)
 
+// Unscored: the engine reached this node but could not get a verdict for it
+// (stream 2). Distinct from both the red/green impact tiers and the near-black
+// dim of non-impacted nodes — a muted slate that reads as "reached, unknown".
+const COLOR_UNSCORED = { r: 124, g: 134, b: 150 };
+
 export interface ImpactState {
   byNode: Map<string, ImpactVerdict>;
   chainEdges: Set<string>;
@@ -84,6 +89,10 @@ export function buildImpactState(g: EconGraph, resp: ImpactResponse): ImpactStat
  *  at 70% opacity so grounded nodes stand out. */
 export function tintColor(verdict: ImpactVerdict | undefined): string | null {
   if (!verdict) return null;
+  if (verdict.direction === "unscored") {
+    const c = COLOR_UNSCORED;
+    return `rgb(${c.r}, ${c.g}, ${c.b})`;
+  }
   const mag = Number(verdict.magnitude);
   if (!isFinite(mag)) return null;
   if (verdict.direction === "no_effect" || mag <= 0.05) return null;
@@ -102,6 +111,9 @@ export function tintColor(verdict: ImpactVerdict | undefined): string | null {
 /** Same tier lookup, returning 0–1 floats for three.js material colour. */
 export function tintColorRGB(verdict: ImpactVerdict | undefined): { r: number; g: number; b: number } | null {
   if (!verdict) return null;
+  if (verdict.direction === "unscored") {
+    return { r: COLOR_UNSCORED.r / 255, g: COLOR_UNSCORED.g / 255, b: COLOR_UNSCORED.b / 255 };
+  }
   const mag = Number(verdict.magnitude);
   if (!isFinite(mag)) return null;
   if (verdict.direction === "no_effect" || mag <= 0.05) return null;
