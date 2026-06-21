@@ -315,21 +315,19 @@ def _filter_with_claude(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     text = _claude_call(prompt)
     if not text:
         return []
-    # Strip accidental markdown fences
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:])
-    if text.endswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[:-1])
-    text = text.strip()
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        log.warning("news: Claude JSON parse failed: %s; head=%s", exc, text[:200])
-        return []
+    # Claude frequently wraps the JSON array in conversational prose ("Most of
+    # this batch is opinion… Two qualify:\n\n[…]") or markdown fences. A strict
+    # json.loads on that preamble throws, which silently dropped us to the RAW
+    # (unfiltered, 15-word-truncated) fallback — letting opinion/analysis through
+    # and cutting headlines mid-sentence. Reuse the impact engine's tolerant
+    # extractor: it strips fences/special tokens and scans for the first balanced
+    # [ … ] block.
+    from api.impact import _parse_llm_json
+    parsed = _parse_llm_json(text)
+    if isinstance(parsed, dict) and "results" in parsed:
+        parsed = parsed["results"]
     if not isinstance(parsed, list):
+        log.warning("news: could not extract a JSON array from Claude output; head=%s", text[:200])
         return []
     # Build a URL → pub_date lookup from the raw items so we can restore
     # the article date on each filtered headline (the LLM doesn't return it).
