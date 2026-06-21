@@ -42,6 +42,13 @@ _RSS_FEEDS: list[tuple[str, str, int]] = [
     # because these publish infrequently.
     ("SEC Press Releases",  "https://www.sec.gov/news/pressreleases.rss", 7),
     ("Federal Reserve",     "https://www.federalreserve.gov/feeds/press_all.xml", 7),
+    # Corporate-action wires — high volume of "named company action" seeds (M&A,
+    # contracts, launches). Heavy micro-cap/promo noise, so we take the M&A
+    # category (not the firehose) and the filter screens the rest; many name
+    # companies too small to be in the graph, so they mainly help on large-cap
+    # deal days.
+    ("PR Newswire M&A",     "https://www.prnewswire.com/rss/financial-services-latest-news/acquisitions-mergers-and-takeovers-list.rss", 2),
+    ("GlobeNewswire",       "https://www.globenewswire.com/RssFeed/orgclass/1/feedTitle/GlobeNewswire%20-%20News%20Releases", 2),
     # NOTE: the old feeds.reuters.com Business/Technology feeds were removed —
     # Reuters discontinued public RSS, so those URLs were dead (0 items).
 ]
@@ -202,6 +209,15 @@ EXCLUDE — no identifiable seed, describes aftermath, or lacks specifics:
   entity taking a confirmed action.
 - Any headline where you would need to invent a company or commodity name to \
   create a seed — if the seed is not stated, exclude it.
+- Press-release / wire NOISE (these dominate PR Newswire / GlobeNewswire): \
+  product/wellness/supplement promos, "Top 100 …" lists, content-marketing \
+  ("X Article Examines …", "HelloNation"), award/recognition puffery, and \
+  shareholder-lawsuit solicitations ("Investors with Losses", "Deadline", \
+  "class action", "investigation"). EXCLUDE all of these.
+- Micro-cap / obscure-company actions: the tool's graph covers MAJOR public \
+  companies (S&P 500 + large global caps). If the named company is small or \
+  obscure and not a globally recognizable public firm, EXCLUDE it — a seed that \
+  isn't in the graph cannot propagate. Prefer well-known names.
 
 DIVERSITY RULE: if one company or story appears in many raw headlines, \
 include at most 2 of them (the most concrete/actionable). Do not let a \
