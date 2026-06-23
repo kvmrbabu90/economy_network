@@ -416,7 +416,12 @@ def _filter_with_claude(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # 120s default risked timing out (→ empty → raw fallback) as volume grew.
     text = _claude_call(prompt, timeout=180)
     if not text:
-        return []
+        # The Claude CLI itself failed (non-zero exit, timeout, or 401 auth).
+        # Raise so the caller treats this as UNAVAILABLE (and does not cache) —
+        # distinct from a successful-but-empty result (a quiet/all-gated day),
+        # which legitimately returns []. We must NOT fall back to raw, unfiltered
+        # headlines here: that's what served opinion/obituary/micro-cap junk.
+        raise RuntimeError("Claude CLI returned nothing (likely auth/timeout)")
     # Claude frequently wraps the JSON array in conversational prose ("Most of
     # this batch is opinion… Two qualify:\n\n[…]") or markdown fences. A strict
     # json.loads on that preamble throws, which silently dropped us to the RAW
@@ -475,28 +480,16 @@ def get_daily_headlines(*, force: bool = False) -> list[dict[str, Any]]:
         log.warning("news: all RSS feeds returned 0 items")
         return []
 
-    def _raw_fallback(items: list[dict]) -> list[dict]:
-        """Return raw headlines trimmed to 15 words — used when Claude fails or returns nothing."""
-        result = []
-        for item in items[:10]:
-            words = item["title"].split()
-            text = " ".join(words[:15]) + ("…" if len(words) > 15 else "")
-            result.append({
-                "text":     text,
-                "source":   item["source"],
-                "url":      item["url"],
-                "pub_date": item.get("pub_date"),
-            })
-        return result
-
+    # The brief is only ever the filtered + graph-gated set (possibly empty on a
+    # quiet day). We deliberately do NOT fall back to raw, unfiltered headlines —
+    # that previously served opinion/obituary/micro-cap junk whenever Claude was
+    # slow or unauthenticated. If the Claude CLI is unavailable, return an empty
+    # brief and DO NOT cache it, so the next call retries once the CLI recovers.
     try:
         filtered = _filter_with_claude(raw)
-        if not filtered:
-            log.warning("news: Claude returned 0 headlines; using raw fallback")
-            filtered = _raw_fallback(raw)
     except Exception as exc:
-        log.warning("news: Claude filter failed (%s); using raw fallback", exc)
-        filtered = _raw_fallback(raw)
+        log.warning("news: filter unavailable (%s); returning empty brief (not cached)", exc)
+        return []
 
-    _cache[today] = filtered
+    _cache[today] = filtered   # cache successes only (incl. a valid empty result)
     return filtered

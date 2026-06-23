@@ -49,11 +49,20 @@ def test_filter_handles_markdown_fenced_json(monkeypatch):
     assert out and out[0]["text"] == "X acquires Y"
 
 
-def test_filter_empty_on_unparseable(monkeypatch):
+def test_filter_empty_on_no_array(monkeypatch):
     _bypass_gate(monkeypatch)
-    # No JSON array at all → empty (caller then applies its own raw fallback).
-    monkeypatch.setattr(news, "_claude_call", lambda prompt, **k: "sorry, nothing qualifies today")
+    # Claude responded but with no JSON array (e.g. "nothing qualifies") → a VALID
+    # empty result, not a failure. Returns [] (does not raise).
+    monkeypatch.setattr(news, "_claude_call", lambda prompt, **k: "Nothing qualifies today.")
     assert news._filter_with_claude([{"title": "t", "source": "s", "url": "u", "pub_date": None}]) == []
+
+
+def test_filter_raises_when_claude_unavailable(monkeypatch):
+    # Empty CLI output = the CLI itself failed (non-zero exit / 401 / timeout).
+    # Must RAISE so the caller serves an empty brief rather than raw junk.
+    monkeypatch.setattr(news, "_claude_call", lambda prompt, **k: "")
+    with pytest.raises(RuntimeError):
+        news._filter_with_claude([{"title": "t", "source": "s", "url": "u", "pub_date": None}])
 
 
 # --- Graph-gate -------------------------------------------------------------
