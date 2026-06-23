@@ -10,26 +10,33 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import subprocess
 import time
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any
 
 import requests
 
 log = logging.getLogger(__name__)
 
+# Graph DB used to gate headlines: a brief item whose primary entity isn't a node
+# can't seed a "So What?" trace, so we drop it. Resolved relative to the repo root.
+_DB_PATH = Path(__file__).resolve().parent.parent / "econgraph.db"
+
 # ---------------------------------------------------------------------------
 # RSS feed catalogue
 # ---------------------------------------------------------------------------
 
-# (name, url, max_age_days). High-churn news feeds use the tight 2-day window so
-# the brief stays fresh; low-frequency primary sources (SEC/Fed publish every few
-# days) get a 7-day window or they'd never clear the recency cutoff.
+# (name, url, max_age_days). Curated general-business / markets feeds with a tight
+# recency window. We deliberately dropped the SEC/Fed primary feeds and the PR
+# Newswire/GlobeNewswire wires: they yielded a useful seed only rarely (a rate
+# decision, a large-cap deal) while injecting daily junk — regulatory-process
+# notices, obituaries, and untraceable micro-cap M&A — that padded the brief.
 _RSS_FEEDS: list[tuple[str, str, int]] = [
-    # General business / markets.
     ("CNBC Top News",       "https://www.cnbc.com/id/100003114/device/rss/rss.html", 2),
     ("CNBC Economy",        "https://www.cnbc.com/id/20910258/device/rss/rss.html", 2),
     ("CNBC Earnings",       "https://www.cnbc.com/id/15839135/device/rss/rss.html", 3),
@@ -37,18 +44,6 @@ _RSS_FEEDS: list[tuple[str, str, int]] = [
     ("MarketWatch",         "https://feeds.marketwatch.com/marketwatch/topstories/", 2),
     ("Yahoo Finance",       "https://finance.yahoo.com/news/rssindex", 2),
     ("Investing.com",       "https://www.investing.com/rss/news.rss", 2),
-    # Primary-source actions — the richest "named entity taking a specific
-    # action" seeds: regulatory moves and central-bank decisions. Longer window
-    # because these publish infrequently.
-    ("SEC Press Releases",  "https://www.sec.gov/news/pressreleases.rss", 7),
-    ("Federal Reserve",     "https://www.federalreserve.gov/feeds/press_all.xml", 7),
-    # Corporate-action wires — high volume of "named company action" seeds (M&A,
-    # contracts, launches). Heavy micro-cap/promo noise, so we take the M&A
-    # category (not the firehose) and the filter screens the rest; many name
-    # companies too small to be in the graph, so they mainly help on large-cap
-    # deal days.
-    ("PR Newswire M&A",     "https://www.prnewswire.com/rss/financial-services-latest-news/acquisitions-mergers-and-takeovers-list.rss", 2),
-    ("GlobeNewswire",       "https://www.globenewswire.com/RssFeed/orgclass/1/feedTitle/GlobeNewswire%20-%20News%20Releases", 2),
     # NOTE: the old feeds.reuters.com Business/Technology feeds were removed —
     # Reuters discontinued public RSS, so those URLs were dead (0 items).
 ]
@@ -236,12 +231,19 @@ REWRITE RULES — apply to every headline you keep:
 - Keep specific numbers (prices, %, quantities) — they are facts.
 - Do NOT invent facts not in the original headline.
 
-QUALITY BAR: aim for 5–10 headlines. Include every item that clearly \
-qualifies — do not stop at 5. Return fewer only if genuinely fewer items \
-qualify; never pad with borderline items.
+QUALITY BAR (strict — do NOT pad): return ONLY items that pass EVERY rule above. \
+There is NO target count. 1–3 strong items is a correct, expected result, and an \
+empty array [] is correct when nothing qualifies. NEVER include a borderline or \
+excluded item to reach a number. A short, clean brief is better than a padded one. \
+Quality over quantity, always.
+
+ENTITY: for each kept headline, also output `entity` — the SINGLE most specific \
+seed the tool can anchor on: the primary named public company, commodity, or \
+region the headline is about (e.g. "Nvidia", "Crude Oil", "Europe"), using its \
+common name. If the headline has no such concrete, nameable entity, EXCLUDE it.
 
 Return ONLY a valid JSON array — no markdown, no other text:
-[{{"text": "<rewritten headline ≤15 words>", "source": "<outlet name>", "url": "<url>"}}]
+[{{"text": "<rewritten headline ≤15 words>", "source": "<outlet>", "url": "<url>", "entity": "<primary company/commodity/region>"}}]
 
 Raw headlines:
 {headlines}
@@ -354,8 +356,54 @@ def _fetch_raw(max_items: int = _MAX_ITEMS) -> list[dict[str, Any]]:
     return items
 
 
+def _entity_resolves(conn: sqlite3.Connection, name: str) -> bool:
+    """True if `name` matches a node of ANY type by name or alias — exact, then
+    starts-with, then contains. Broader than the impact engine's Company-only
+    resolver so commodities/regions count too."""
+    q = (name or "").lower().strip()
+    if not q:
+        return False
+    if conn.execute("SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1", (q,)).fetchone():
+        return True
+    if conn.execute("SELECT 1 FROM aliases WHERE alias_normalized = ? LIMIT 1", (q,)).fetchone():
+        return True
+    if conn.execute("SELECT 1 FROM nodes WHERE LOWER(name) LIKE ? LIMIT 1", (q + "%",)).fetchone():
+        return True
+    if len(q) >= 5 and conn.execute(
+        "SELECT 1 FROM nodes WHERE LOWER(name) LIKE ? LIMIT 1", (f"%{q}%",)
+    ).fetchone():
+        return True
+    return False
+
+
+def _graph_gate(headlines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop headlines whose primary `entity` can't be resolved to a graph node —
+    a brief item that can't seed a trace is noise (e.g. SpaceX, micro-cap M&A).
+    Fail-open if the graph DB is unavailable so a missing file can't blank the
+    brief."""
+    if not _DB_PATH.exists():
+        return headlines
+    try:
+        conn = sqlite3.connect(_DB_PATH)
+    except Exception as exc:
+        log.warning("news: graph-gate could not open DB (%s); keeping unfiltered", exc)
+        return headlines
+    kept: list[dict[str, Any]] = []
+    try:
+        for h in headlines:
+            ent = h.get("entity", "")
+            if ent and _entity_resolves(conn, ent):
+                kept.append(h)
+            else:
+                log.info("news: graph-gate dropped %r (entity %r not in graph)",
+                         h.get("text", "")[:60], ent)
+    finally:
+        conn.close()
+    return kept
+
+
 def _filter_with_claude(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ask Claude to pick + trim the top-5 economic headlines."""
+    """Ask Claude to pick + trim the top economic headlines, then graph-gate."""
     headlines_block = "\n".join(
         # Include pub_date so Claude can reason about recency precisely.
         f"{i + 1}. [{item['source']}] [published: {item.get('pub_date') or 'unknown'}] "
@@ -397,7 +445,10 @@ def _filter_with_claude(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "source":   str(h.get("source", "")).strip(),
                 "url":      url,
                 "pub_date": url_to_date.get(url),   # "YYYY-MM-DD" or None
+                "entity":   str(h.get("entity", "")).strip(),
             })
+    # Graph-gate: keep only headlines whose primary entity is a node we can seed.
+    result = _graph_gate(result)
     return result[:10]  # cap at 10 — frontend paginates to 5 / 10
 
 
