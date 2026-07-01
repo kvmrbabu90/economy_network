@@ -96,6 +96,20 @@ CREATE TABLE IF NOT EXISTS aliases (
 
 CREATE INDEX IF NOT EXISTS idx_aliases_alias ON aliases(alias);
 CREATE INDEX IF NOT EXISTS idx_aliases_normalized ON aliases(alias_normalized);
+
+CREATE TABLE IF NOT EXISTS events (
+    id           TEXT PRIMARY KEY,
+    headline     TEXT NOT NULL,
+    source       TEXT,
+    url          TEXT,
+    category     TEXT,
+    published_at TEXT,
+    ingested_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    seed_entity  TEXT,
+    seed_node_id TEXT,
+    status       TEXT NOT NULL DEFAULT 'queued'
+);
+CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
 """
 
 
@@ -114,6 +128,34 @@ def init_db(conn: sqlite3.Connection) -> None:
     """Create tables and indexes if they do not already exist."""
     conn.executescript(DDL)
     conn.commit()
+
+
+def insert_event(conn: sqlite3.Connection, ev: dict[str, Any]) -> None:
+    """Insert one event; INSERT OR IGNORE so a re-seen id is a no-op (idempotent)."""
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO events
+          (id, headline, source, url, category, published_at, seed_entity, seed_node_id, status)
+        VALUES (:id, :headline, :source, :url, :category, :published_at,
+                :seed_entity, :seed_node_id, :status)
+        """,
+        {
+            "id": ev["id"], "headline": ev["headline"], "source": ev.get("source"),
+            "url": ev.get("url"), "category": ev.get("category"),
+            "published_at": ev.get("published_at"), "seed_entity": ev.get("seed_entity"),
+            "seed_node_id": ev.get("seed_node_id"), "status": ev.get("status", "queued"),
+        },
+    )
+    conn.commit()
+
+
+def event_exists(conn: sqlite3.Connection, event_id: str) -> bool:
+    return conn.execute("SELECT 1 FROM events WHERE id = ? LIMIT 1", (event_id,)).fetchone() is not None
+
+
+def queued_events(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute("SELECT * FROM events WHERE status = 'queued' ORDER BY ingested_at").fetchall()
+    return [dict(r) for r in rows]
 
 
 def upsert_node(conn: sqlite3.Connection, node: Union[Node, dict[str, Any]]) -> Node:
