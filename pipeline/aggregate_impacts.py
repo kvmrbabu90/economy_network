@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -37,7 +37,9 @@ def _age_days(row_date: Optional[str], today: date) -> Optional[int]:
 
 def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_WINDOW_DAYS,
               halflife: float = IMPACT_HALFLIFE_DAYS, top_n: int = TOP_EVENTS_PER_NODE) -> dict:
-    today = today or date.today()
+    # Default to UTC "today" to match events.ingested_at (SQLite datetime('now') is
+    # UTC), so window/age math near the boundary is consistent for the fallback basis.
+    today = today or datetime.now(timezone.utc).date()
     rows = conn.execute(
         """
         SELECT ei.node_id, ei.event_id, ei.direction, ei.magnitude, ei.hop,

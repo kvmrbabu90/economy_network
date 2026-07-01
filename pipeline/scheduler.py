@@ -33,7 +33,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0 if s.get("ok") else 1
     log.info("scheduler: looping every %ds; Ctrl-C to stop", args.interval)
     while True:
-        run_cycle()
+        try:
+            run_cycle()
+        except Exception:                       # a transient failure must not kill the loop
+            log.exception("scheduler: cycle raised; continuing to next interval")
         time.sleep(args.interval)
 
 

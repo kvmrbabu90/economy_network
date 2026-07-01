@@ -33,3 +33,22 @@ def test_scheduler_once_runs_single_cycle(monkeypatch):
     monkeypatch.setattr(scheduler.time, "sleep", lambda s: slept.__setitem__("n", slept["n"] + 1))
     scheduler.main(["--once"])
     assert n["c"] == 1 and slept["n"] == 0        # one cycle, no sleep
+
+
+def test_scheduler_loop_survives_cycle_exception(monkeypatch):
+    import pytest
+    from pipeline import scheduler
+    calls = {"n": 0}
+    def boom():
+        calls["n"] += 1
+        raise RuntimeError("cycle blew up")
+    monkeypatch.setattr(scheduler, "run_cycle", boom)
+
+    class _Stop(Exception):
+        pass
+    monkeypatch.setattr(scheduler.time, "sleep", lambda _s: (_ for _ in ()).throw(_Stop()))
+    # Loop mode: run_cycle raises, the loop must swallow it and reach sleep (which we
+    # use to break out). If the loop did NOT catch, RuntimeError would propagate here.
+    with pytest.raises(_Stop):
+        scheduler.main([])
+    assert calls["n"] == 1
