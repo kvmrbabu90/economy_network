@@ -166,7 +166,7 @@ def fetch_8k(conn) -> list[dict]:
                 item0 = (m.get("items", "") or "").split(",")[0].strip()
                 c = {"headline": f"{node_id} 8-K item {item0}"[:200], "source": "SEC 8-K",
                      "url": m.get("url", ""), "category": _category_for_8k(item0),
-                     "published_at": m.get("date"), "seed_entity": node_id, "seed_node_id": node_id}
+                     "published_at": m.get("filing_date"), "seed_entity": node_id, "seed_node_id": node_id}
                 c["id"] = _event_id(c)
                 out.append(c)
         except Exception as exc:
