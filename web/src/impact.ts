@@ -3,7 +3,7 @@
 // 3d-force-graph instance (3D / Globe). Apply / clear are pure functions
 // over an ImpactResponse -- the bus that calls them lives in main.ts.
 
-import type { ImpactResponse, ImpactVerdict, MultiImpactResponse } from "./api";
+import type { ImpactResponse, ImpactVerdict, MultiImpactResponse, LiveImpact } from "./api";
 import type { EconGraph } from "./graph";
 
 // Re-exported for the UI.
@@ -144,6 +144,41 @@ export function tintColorRGB(verdict: ImpactVerdict | undefined): { r: number; g
     };
   }
   return { r: c.r / 255, g: c.g / 255, b: c.b / 255 };
+}
+
+/** Tint a node from a precomputed (netted, no-hop) combined verdict.
+ *  Full intensity by magnitude; mixed_signals → amber palette. */
+export function tintColorForCombined(
+  row: { direction: string; magnitude: number; mixed_signals?: number | boolean },
+): string | null {
+  const mag = Number(row.magnitude);
+  if (!isFinite(mag)) return null;
+  if (row.direction === "no_effect" || mag <= 0.05) return null;
+  const tier = pickTier(Math.min(1, mag));         // no hop decay for a combined verdict
+  const palette = row.mixed_signals ? TIERS.mixed
+    : row.direction === "positive" ? TIERS.positive : TIERS.negative;
+  const c = palette[tier];
+  return `rgb(${c.r}, ${c.g}, ${c.b})`;
+}
+
+/** Same tint as an {r,g,b} 0-1 triple for the 3D renderer. */
+export function tintColorForCombinedRGB(
+  row: { direction: string; magnitude: number; mixed_signals?: number | boolean },
+): { r: number; g: number; b: number } | null {
+  const mag = Number(row.magnitude);
+  if (!isFinite(mag)) return null;
+  if (row.direction === "no_effect" || mag <= 0.05) return null;
+  const tier = pickTier(Math.min(1, mag));
+  const palette = row.mixed_signals ? TIERS.mixed
+    : row.direction === "positive" ? TIERS.positive : TIERS.negative;
+  const c = palette[tier];
+  return { r: c.r / 255, g: c.g / 255, b: c.b / 255 };
+}
+
+export function buildLiveImpactMap(rows: LiveImpact[]): Map<string, LiveImpact> {
+  const m = new Map<string, LiveImpact>();
+  for (const r of rows ?? []) m.set(r.node_id, r);
+  return m;
 }
 
 export function dimColor(): { r: number; g: number; b: number } {
