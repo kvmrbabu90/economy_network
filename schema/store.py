@@ -121,6 +121,17 @@ CREATE TABLE IF NOT EXISTS event_impacts (
     PRIMARY KEY (event_id, node_id)
 );
 CREATE INDEX IF NOT EXISTS idx_event_impacts_node ON event_impacts(node_id);
+
+CREATE TABLE IF NOT EXISTS node_impact (
+    node_id       TEXT PRIMARY KEY,
+    direction     TEXT NOT NULL,
+    magnitude     REAL NOT NULL,
+    mixed_signals INTEGER NOT NULL DEFAULT 0,
+    event_count   INTEGER NOT NULL,
+    top_events    TEXT NOT NULL DEFAULT '[]',
+    computed_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_node_impact_direction ON node_impact(direction);
 """
 
 
@@ -184,6 +195,18 @@ def write_event_impacts(conn: sqlite3.Connection, event_id: str, impacts: list[d
 
 def set_event_status(conn: sqlite3.Connection, event_id: str, status: str) -> None:
     conn.execute("UPDATE events SET status = ? WHERE id = ?", (status, event_id))
+    conn.commit()
+
+
+def replace_node_impact(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    """Atomically swap the derived node_impact cache: wipe, then bulk-insert `rows`."""
+    conn.execute("DELETE FROM node_impact")
+    conn.executemany(
+        "INSERT INTO node_impact (node_id, direction, magnitude, mixed_signals, "
+        "event_count, top_events, computed_at) VALUES (?,?,?,?,?,?,?)",
+        [(r["node_id"], r["direction"], float(r["magnitude"]), int(r.get("mixed_signals", 0)),
+          int(r["event_count"]), r.get("top_events", "[]"), r["computed_at"]) for r in rows],
+    )
     conn.commit()
 
 

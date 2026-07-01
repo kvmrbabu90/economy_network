@@ -53,3 +53,20 @@ def test_set_event_status():
                               "seed_node_id": "cik:1", "status": "queued"})
     store.set_event_status(conn, "e1", "traced")
     assert conn.execute("SELECT status FROM events WHERE id='e1'").fetchone()["status"] == "traced"
+
+
+def test_replace_node_impact_atomic_swap():
+    conn = _mem()
+    store.replace_node_impact(conn, [
+        {"node_id": "cik:1", "direction": "negative", "magnitude": 0.6, "mixed_signals": 0,
+         "event_count": 2, "top_events": '[]', "computed_at": "2026-06-17T00:00:00"},
+    ])
+    r = conn.execute("SELECT * FROM node_impact").fetchall()
+    assert len(r) == 1 and r[0]["node_id"] == "cik:1" and r[0]["direction"] == "negative"
+    # Replace wipes the prior set (node no longer present drops out).
+    store.replace_node_impact(conn, [
+        {"node_id": "cik:2", "direction": "positive", "magnitude": 0.3, "mixed_signals": 1,
+         "event_count": 1, "top_events": '[]', "computed_at": "2026-06-18T00:00:00"},
+    ])
+    ids = [x["node_id"] for x in conn.execute("SELECT node_id FROM node_impact")]
+    assert ids == ["cik:2"]
