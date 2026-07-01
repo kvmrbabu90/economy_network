@@ -27,7 +27,20 @@ import { feature as topoFeature } from "topojson-client";
 import type { EconGraph } from "./graph";
 import { countryInMarkets, type FilterState } from "./ui/filters";
 import type { ImpactState } from "./impact";
-import { tintColor, tintColorRGB } from "./impact";
+import { tintColor, tintColorRGB, tintColorForCombinedRGB } from "./impact";
+import type { LiveImpact } from "./api";
+
+// Cheap {r,g,b} 0-1 float → "#rrggbb" so the live-tint color feeds into
+// three-forcegraph's `sphereMaterials[colorString]` cache the same way the
+// on-demand `tintColor()` string does — each distinct tint gets its own
+// material, no shared-material overwrite.
+function rgbFloatToHex(c: { r: number; g: number; b: number }): string {
+  const to = (x: number) => {
+    const v = Math.max(0, Math.min(255, Math.round(x * 255)));
+    return v.toString(16).padStart(2, "0");
+  };
+  return `#${to(c.r)}${to(c.g)}${to(c.b)}`;
+}
 
 export interface View3DCallbacks {
   onNodeClick?: (id: string) => void;
@@ -201,6 +214,17 @@ let _cleanup3D: (() => void) | null = null;
  * tint colors without a separate applyImpact3D() call.
  */
 let _currentImpactState: ImpactState | null = null;
+
+/**
+ * So What? V2 · P5 — live-impact pre-tint map (node_id → LiveImpact row),
+ * mirroring the on-demand `_currentImpactState` mechanism. Read by the
+ * nodeColor / nodeLabel closures registered in start3D() ONLY when there is
+ * no active on-demand impact (`_currentImpactState` takes precedence). Set via
+ * setLiveImpact3D() from main.ts, exactly as applyImpact3D() sets the on-demand
+ * state. Unlike the on-demand path this does NOT drive nodeVisibility — live
+ * mode never hides untinted nodes; they keep their normal color.
+ */
+let _liveImpactState: Map<string, LiveImpact> | null = null;
 
 /**
  * Reverse the premultiplication applied by style.ts/toRgba so the 3D renderer
@@ -442,6 +466,7 @@ export function start3D(
         const tc = tintColor(_currentImpactState.byNode.get(n.id));
         return tc ? `<span style="color:#e8e3da">${n.label}</span>` : "";
       }
+      // Live-tint mode: every node keeps a hover label (none are hidden).
       return `<span style="color:#e8e3da">${n.label}</span>`;
     })
     .nodeColor((n: ForceNode) => {
@@ -451,8 +476,19 @@ export function start3D(
       // sphereMaterials cache, so nodes with different tints never share a
       // material — fixing the bug where direct material mutation caused the
       // last-applied tint to overwrite all earlier ones.
+      //
+      // On-demand impact ALWAYS takes precedence (unchanged behavior).
       if (_currentImpactState) {
         return tintColor(_currentImpactState.byNode.get(n.id)) ?? "#14171a";
+      }
+      // So What? V2 · P5 — live pre-tint. When no on-demand trace is active,
+      // warm nodes present in the live map; everything else keeps its normal
+      // color (NOT hidden, NOT dimmed). Reuses the shared palette helper so
+      // there is no duplicated tier logic here.
+      if (_liveImpactState) {
+        const row = _liveImpactState.get(n.id);
+        const rgb = row ? tintColorForCombinedRGB(row) : null;
+        if (rgb) return rgbFloatToHex(rgb);
       }
       return n.color;
     })
@@ -1063,6 +1099,28 @@ export function applyImpact3D(
   requestAnimationFrame(() => _applyLinkTint(_snap));
   setTimeout(() => _applyLinkTint(_snap), 300);
   setTimeout(() => _applyLinkTint(_snap), 900);
+}
+
+/**
+ * So What? V2 · P5 — push the live-impact map into the 3D renderer and
+ * re-paint. Mirrors applyImpact3D(): set the module-level state, then trigger
+ * a kapsule re-digest via update3D() so the nodeColor closure re-runs and each
+ * distinct live tint gets its own cached material.
+ *
+ * The on-demand path is untouched: if a trace is active (_currentImpactState
+ * non-null) the nodeColor closure short-circuits before ever reading the live
+ * map, so on-demand precedence is preserved regardless of what is stored here.
+ * No link tinting — live mode leaves edges in their idle (hidden) state.
+ */
+export function setLiveImpact3D(
+  g: EconGraph,
+  live: Map<string, LiveImpact> | null,
+  filterState?: FilterState | null,
+): void {
+  _liveImpactState = live;
+  if (!instance) return;
+  // Re-trigger the kapsule digest so nodeColor re-runs with the new live map.
+  update3D(g, filterState);
 }
 
 /** Reset the globe camera to the default whole-globe view (lat=30, lon=-90). */

@@ -42,6 +42,7 @@ import {
   is3DRunning,
   resetGlobeCamera,
   resize3D,
+  setLiveImpact3D,
   start3D,
   stop3D,
   update3D,
@@ -1463,9 +1464,12 @@ async function applyLiveImpactTint(): Promise<void> {
     const resp = await getImpactLive();
     liveImpactState = buildLiveImpactMap(resp.impacts);
     refreshEdgeVisibility();               // reinstalls the reducer, which reads liveImpactState
-    // 3D pre-tint is not wired: render3d.ts colors from the on-demand
-    // ImpactState only. This re-sync is harmless (nodes stay default in 3D).
-    if (is3DRunning()) update3D(g, filters);
+    // So What? V2 · P5 — push the live map into the 3D renderer too, using the
+    // same mechanism the on-demand path uses (a setter that re-digests). This
+    // warms the globe on open. On-demand impact still wins if a trace is active
+    // (render3d.ts checks _currentImpactState before the live map). setLiveImpact3D
+    // calls update3D() internally, so no separate re-sync is needed here.
+    if (is3DRunning()) setLiveImpact3D(g, liveImpactState, filters);
   } catch (err) {
     console.error("live impact tint failed", err);   // graph still usable untinted
   }
