@@ -277,3 +277,48 @@ def fetch_rss_broad() -> list[dict]:
     """Pull broad-category RSS via the news layer, then Claude-extract events."""
     from api.news import _fetch_raw
     return extract_rss_events(_fetch_raw())
+
+
+def run_ingest(db_path: Path = DB_PATH) -> dict[str, int]:
+    """One ingestion cycle. Returns a summary counter dict."""
+    from schema.store import connect, init_db, insert_event
+    conn = connect(db_path)
+    init_db(conn)
+    try:
+        idx = _ticker_index(conn)
+        cands: list[dict] = []
+        cands += fetch_8k(conn)
+        cands += fetch_marketaux(idx)
+        cands += fetch_alphavantage(idx)
+        cands += fetch_rss_broad()
+
+        # Resolve seeds for RSS (API/8-K already mapped); gate unresolvable.
+        resolved = []
+        for c in cands:
+            if not c.get("seed_node_id"):
+                c["seed_node_id"] = _resolve_to_node_id(conn, c.get("seed_entity", ""))
+            if c["seed_node_id"]:
+                resolved.append(c)
+
+        fresh = dedupe(resolved, conn)
+        ranked = cap(rank(fresh, conn))
+        for c in ranked:
+            insert_event(conn, {**c, "status": c["status"]})
+        summary = {"fetched": len(cands), "resolved": len(resolved), "fresh": len(fresh),
+                   "queued": sum(1 for c in ranked if c["status"] == "queued"),
+                   "skipped": sum(1 for c in ranked if c["status"] == "skipped")}
+        log.info("ingest: %s", summary)
+        return summary
+    finally:
+        conn.close()
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    s = run_ingest()
+    print(f"ingest cycle: {s}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

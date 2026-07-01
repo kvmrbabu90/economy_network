@@ -46,6 +46,11 @@ _RSS_FEEDS: list[tuple[str, str, int]] = [
     ("Investing.com",       "https://www.investing.com/rss/news.rss", 2),
     # NOTE: the old feeds.reuters.com Business/Technology feeds were removed —
     # Reuters discontinued public RSS, so those URLs were dead (0 items).
+    # V2: broadened category coverage (verified each returns items 2026-06-30).
+    ("CNBC World",       "https://www.cnbc.com/id/100727362/device/rss/rss.html", 2),
+    ("CNBC Politics",    "https://www.cnbc.com/id/10000113/device/rss/rss.html", 2),
+    ("CNBC Health Care", "https://www.cnbc.com/id/10000108/device/rss/rss.html", 3),
+    ("CNBC Energy",      "https://www.cnbc.com/id/19836768/device/rss/rss.html", 2),
 ]
 
 _HEADERS = {"User-Agent": "EconGraph/0.1 kondaru.mk@gmail.com"}

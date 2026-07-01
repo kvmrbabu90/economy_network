@@ -61,3 +61,21 @@ def test_dedupe_drops_ids_already_in_db():
                               "seed_node_id": "cik:1", "status": "traced"})
     out = ing.dedupe([{"id": "seen"}, {"id": "fresh"}, {"id": "fresh"}], conn)
     assert [c["id"] for c in out] == ["fresh"]   # prior-cycle 'seen' dropped; in-cycle dup collapsed
+
+
+def test_run_ingest_end_to_end(monkeypatch, tmp_path):
+    import pipeline.ingest_news as ing
+    db = tmp_path / "g.db"
+    conn = store.connect(db); store.init_db(conn)
+    conn.execute("INSERT INTO nodes (id,type,name,tickers) VALUES ('cik:1','Company','Acme','[]')")
+    conn.commit(); conn.close()
+    monkeypatch.setattr(ing, "fetch_8k", lambda c: [
+        {"id": "a", "headline": "h", "source": "SEC 8-K", "url": "u1", "category": "m&a",
+         "published_at": "2026-06-17", "seed_entity": "cik:1", "seed_node_id": "cik:1"}])
+    monkeypatch.setattr(ing, "fetch_marketaux", lambda idx: [])
+    monkeypatch.setattr(ing, "fetch_alphavantage", lambda idx: [])
+    monkeypatch.setattr(ing, "fetch_rss_broad", lambda: [])
+    s = ing.run_ingest(db)
+    assert s["queued"] == 1
+    conn = store.connect(db)
+    assert store.queued_events(conn)[0]["seed_node_id"] == "cik:1"
