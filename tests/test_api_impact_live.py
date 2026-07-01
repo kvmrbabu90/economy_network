@@ -65,3 +65,32 @@ def test_health_has_freshness(tmp_path):
     body = _client(tmp_path).get("/health").json()
     assert body["node_impact_rows"] == 1
     assert body["node_impact_computed_at"] == "2026-06-30T00:00:00"
+
+
+def test_impact_live_empty(tmp_path):
+    db = tmp_path / "empty.db"
+    conn = store.connect(db); store.init_db(conn); conn.close()   # node_impact exists but empty
+    api_main.set_db_path(db)
+    body = TestClient(api_main.app).get("/impact/live").json()
+    assert body == {"computed_at": None, "count": 0, "impacts": []}
+
+
+def test_node_impact_resolves_alias(tmp_path):
+    db = _seed(tmp_path)
+    conn = store.connect(db)
+    conn.execute("INSERT INTO aliases (alias, node_id, alias_normalized) VALUES ('AAPL','cik:1','aapl')")
+    conn.commit(); conn.close()
+    api_main.set_db_path(db)
+    body = TestClient(api_main.app).get("/node/AAPL/impact").json()
+    assert body["node_id"] == "cik:1"                 # alias resolved to canonical id
+    assert body["impact"]["event_count"] == 2
+
+
+def test_health_degrades_without_node_impact_table(tmp_path):
+    db = _seed(tmp_path)
+    conn = store.connect(db)
+    conn.execute("DROP TABLE node_impact")            # simulate a pre-P4 DB
+    conn.commit(); conn.close()
+    api_main.set_db_path(db)
+    body = TestClient(api_main.app).get("/health").json()
+    assert body["node_impact_rows"] == 0 and body["node_impact_computed_at"] is None
