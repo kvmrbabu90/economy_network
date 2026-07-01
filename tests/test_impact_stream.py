@@ -477,3 +477,61 @@ def test_default_config_runs_all_passes(conn, monkeypatch):
                         lambda **k: seen.__setitem__("verify", 1) or orig_v(**k))
     list(impact_mod.run_impact_stream("global crude oil supply shock", conn=conn))
     assert seen == {"refine": 1, "verify": 1}   # defaults unchanged
+
+
+# --- P6: seed_hint_id injection for batch precompute --------------------------
+
+def _first_company(conn):
+    row = conn.execute("SELECT id, name, type FROM nodes WHERE type='Company' LIMIT 1").fetchone()
+    return row
+
+
+def test_seed_hint_injected_at_hop0(conn, monkeypatch):
+    # A hint node the engine's own extraction would NOT seed (fake extraction
+    # returns no entities; commodity seed picks a different first candidate).
+    hint = _first_company(conn)
+    monkeypatch.setattr(impact_mod, "_score_seed_node",
+                        lambda text, name, ntype: {"direction": "negative", "magnitude": 0.7, "reasoning": "hint"})
+    events = list(impact_mod.run_impact_stream("some headline", conn=conn, seed_hint_id=hint["id"]))
+    seeds_ev = next(e for e in events if e["event"] == "seeds")
+    seed_ids = {v["node_id"] for v in seeds_ev["seeds"]}
+    assert hint["id"] in seed_ids                                  # guaranteed seed present
+    hint_seed = next(v for v in seeds_ev["seeds"] if v["node_id"] == hint["id"])
+    assert hint_seed["hop"] == 0 and hint_seed["direction"] == "negative"
+
+
+def test_seed_hint_none_is_unchanged(conn):
+    # Backward-compat: passing no hint == today's behavior for the same input.
+    base = {v["node_id"] for v in
+            next(e for e in impact_mod.run_impact_stream("global crude oil supply shock", conn=conn)
+                 if e["event"] == "seeds")["seeds"]}
+    withn = {v["node_id"] for v in
+             next(e for e in impact_mod.run_impact_stream("global crude oil supply shock", conn=conn, seed_hint_id=None)
+                  if e["event"] == "seeds")["seeds"]}
+    assert base == withn
+
+
+def test_seed_hint_scoring_failopen(conn, monkeypatch):
+    # If scoring returns None AND the engine finds no other seed, it must still
+    # produce the normal "no seeds" result (not crash). Force no LLM seeds + no score.
+    monkeypatch.setattr(impact_mod, "_extract_named_entities", lambda text: [])
+    monkeypatch.setattr(impact_mod, "_llm_call", lambda prompt: "")   # commodity seed returns nothing
+    monkeypatch.setattr(impact_mod, "_score_seed_node", lambda *a, **k: None)
+    hint = _first_company(conn)
+    result = impact_mod.run_impact("x headline", conn=conn, seed_hint_id=hint["id"])
+    assert result.get("impacts") == [] and "seed" in result        # graceful, no exception
+
+
+def test_seed_hint_already_seeded_no_duplicate(conn, monkeypatch):
+    # If extraction already resolves the hint id, passing it must not duplicate it.
+    hint = _first_company(conn)
+    monkeypatch.setattr(impact_mod, "_extract_named_entities",
+                        lambda text: [{"company_name": hint["name"], "direction": "negative",
+                                       "magnitude": 0.8, "reasoning": "t"}])
+    calls = {"n": 0}
+    monkeypatch.setattr(impact_mod, "_score_seed_node",
+                        lambda *a, **k: calls.__setitem__("n", calls["n"] + 1) or {"direction": "negative", "magnitude": 0.5, "reasoning": "t"})
+    events = list(impact_mod.run_impact_stream("x", conn=conn, seed_hint_id=hint["id"]))
+    seeds = next(e for e in events if e["event"] == "seeds")["seeds"]
+    assert sum(1 for v in seeds if v["node_id"] == hint["id"]) == 1  # exactly one
+    assert calls["n"] == 0                                          # hint already seeded → no scoring call

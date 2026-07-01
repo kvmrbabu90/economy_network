@@ -533,6 +533,34 @@ def _node_summary(conn: sqlite3.Connection, node_id: str) -> Optional[dict[str, 
     }
 
 
+_SEED_SCORE_PROMPT = (
+    "You are scoring the impact of a news event on ONE specific entity.\n\n"
+    "News: {news}\n\n"
+    "Entity: {name} ({type})\n\n"
+    "Does this news have a positive, negative, or no_effect impact on this entity, "
+    "and how strong is it (0.0-1.0)? Reply with ONLY a JSON object:\n"
+    '{{"direction": "positive|negative|no_effect", "magnitude": 0.0, "reasoning": "<one short clause>"}}'
+)
+
+
+def _score_seed_node(text: str, name: str, node_type: str) -> Optional[dict[str, Any]]:
+    """One focused LLM call: direction/magnitude/reasoning of `text` on a known
+    entity. Returns None if the call fails or yields no usable direction."""
+    raw = _llm_call(_SEED_SCORE_PROMPT.format(news=text, name=name, type=node_type))
+    obj = _parse_llm_json(raw)
+    if not isinstance(obj, dict):
+        return None
+    direction = obj.get("direction")
+    if direction not in ("positive", "negative", "no_effect"):
+        return None
+    mag = obj.get("magnitude")
+    try:
+        magnitude = max(0.0, min(1.0, float(mag)))
+    except (TypeError, ValueError):
+        magnitude = 0.5
+    return {"direction": direction, "magnitude": magnitude, "reasoning": obj.get("reasoning") or ""}
+
+
 def _neighbors(conn: sqlite3.Connection, node_ids: list[str], visited: set[str]) -> list[dict[str, Any]]:
     """Return new neighbour summaries reachable from any of the given
     parent nodes via supplies / customer_of (derived) / competes_with /
@@ -979,6 +1007,7 @@ def _build_seeds_block(all_seeds: list[dict[str, Any]]) -> str:
 def run_impact_stream(
     text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None,
     max_hops: Optional[int] = None, refine: bool = True, verify: bool = True,
+    seed_hint_id: Optional[str] = None,
 ):
     """Streaming variant of run_impact. Yields event dicts:
       {"event":"seeds", ...} once, then {"event":"hop", ...} per hop,
@@ -1115,6 +1144,30 @@ def run_impact_stream(
         all_seeds: list[dict[str, Any]] = list(resolved_seeds)
         if commodity_seed:
             all_seeds.append(commodity_seed)
+
+        # == Step 5b: inject the caller's known seed (batch precompute) =========
+        # precompute passes the node ingestion already resolved. _resolve_entity is
+        # Company-only, so the engine's own extraction often can't re-find it; the
+        # hint guarantees the trace anchors on the right node. Authoritative → not
+        # subject to the seed-directness verify gate.
+        if seed_hint_id and seed_hint_id not in seen_ids:
+            summ = _node_summary(conn, seed_hint_id)
+            if summ:
+                scored = _score_seed_node(text, summ["name"], summ["type"])
+                if scored:
+                    all_seeds.append({
+                        "node_id": seed_hint_id, "name": summ["name"], "type": summ["type"],
+                        "direction": scored["direction"], "magnitude": scored["magnitude"],
+                        "reasoning": scored["reasoning"], "sector": summ.get("sector"),
+                        "country": summ.get("country"), "is_named_entity": False,
+                    })
+                    seen_ids.add(seed_hint_id)
+                    debug_log.append(f"seed_hint: injected {seed_hint_id} ({summ['name']}) "
+                                     f"{scored['direction']} ({scored['magnitude']:.2f})")
+                else:
+                    debug_log.append(f"seed_hint: {seed_hint_id} scoring failed — skipped")
+            else:
+                debug_log.append(f"seed_hint: {seed_hint_id} did not resolve — skipped")
 
         if not all_seeds:
             yield {"event": "error", "message": "Could not identify any seed nodes from the news text"}
@@ -1407,11 +1460,13 @@ def run_impact_stream(
 def run_impact(
     text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None,
     max_hops: Optional[int] = None, refine: bool = True, verify: bool = True,
+    seed_hint_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Non-streaming wrapper: drain run_impact_stream, return the done payload."""
     final: dict[str, Any] = {}
     for ev in run_impact_stream(text, conn=conn, provider=provider,
-                                max_hops=max_hops, refine=refine, verify=verify):
+                                max_hops=max_hops, refine=refine, verify=verify,
+                                seed_hint_id=seed_hint_id):
         if ev["event"] == "done":
             final = ev["result"]
     return final
