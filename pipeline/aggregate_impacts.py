@@ -43,6 +43,7 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
         SELECT ei.node_id, ei.event_id, ei.direction, ei.magnitude, ei.hop,
                e.headline, e.published_at, e.ingested_at
         FROM event_impacts ei JOIN events e ON e.id = ei.event_id
+        WHERE e.status = 'traced'
         """
     ).fetchall()
 

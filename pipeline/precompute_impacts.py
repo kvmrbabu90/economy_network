@@ -36,6 +36,15 @@ def run_precompute(db_path: Path = DB_PATH, *, max_events: int = PRECOMPUTE_MAX_
     prov = provider or os.environ.get("IMPACT_LLM_PROVIDER", "claude")
     summary = {"processed": 0, "traced": 0, "failed": 0, "impacts_written": 0, "elapsed_s": 0.0}
     t0 = time.time()
+
+    def _mark_failed(eid: str) -> None:
+        # Clear any impacts a prior trace may have written for this event, so a
+        # re-traced event (e.g. via --retry-failed) that now fails never leaves
+        # stale rows behind for aggregation. No-op when there were none.
+        store.write_event_impacts(conn, eid, [])
+        store.set_event_status(conn, eid, "failed")
+        summary["failed"] += 1
+
     try:
         if retry_failed:
             conn.execute("UPDATE events SET status='queued' WHERE status='failed'")
@@ -51,14 +60,12 @@ def run_precompute(db_path: Path = DB_PATH, *, max_events: int = PRECOMPUTE_MAX_
                                        max_hops=BATCH_MAX_HOPS, refine=False, verify=False)
             except Exception as exc:
                 log.warning("precompute: %s trace raised %s", ev["id"], exc)
-                store.set_event_status(conn, ev["id"], "failed")
-                summary["failed"] += 1
+                _mark_failed(ev["id"])
                 continue
             has_seeds = bool(r.get("seed")) or bool(r.get("seeds"))
             impacts = r.get("impacts") or []
             if not has_seeds or not impacts:
-                store.set_event_status(conn, ev["id"], "failed")
-                summary["failed"] += 1
+                _mark_failed(ev["id"])
                 continue
             store.write_event_impacts(conn, ev["id"], impacts)
             store.set_event_status(conn, ev["id"], "traced")

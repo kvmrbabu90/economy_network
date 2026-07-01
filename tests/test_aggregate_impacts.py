@@ -78,3 +78,36 @@ def test_rebuild_is_deterministic_and_drops_stale_nodes(tmp_path):
     agg.aggregate(conn, today=date(2026, 6, 17))       # rerun
     second = conn.execute("SELECT node_id, direction, magnitude FROM node_impact ORDER BY node_id").fetchall()
     assert [tuple(r) for r in first] == [tuple(r) for r in second]
+
+
+def test_mixed_signals_magnitude_floored(tmp_path):
+    conn = _db(tmp_path)
+    _event(conn, "p", "2026-06-17"); _event(conn, "n", "2026-06-17")
+    store.write_event_impacts(conn, "p", [{"node_id": "m", "direction": "positive", "magnitude": 0.5, "hop": 1}])
+    store.write_event_impacts(conn, "n", [{"node_id": "m", "direction": "negative", "magnitude": 0.45, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT * FROM node_impact WHERE node_id='m'").fetchone()
+    assert r["mixed_signals"] == 1
+    assert abs(r["magnitude"] - 0.15) < 1e-6              # |0.5 - 0.45| = 0.05 floored up to 0.15
+
+
+def test_equal_opposing_masses_net_to_no_effect(tmp_path):
+    conn = _db(tmp_path)
+    _event(conn, "p", "2026-06-17"); _event(conn, "n", "2026-06-17")
+    store.write_event_impacts(conn, "p", [{"node_id": "q", "direction": "positive", "magnitude": 0.6, "hop": 1}])
+    store.write_event_impacts(conn, "n", [{"node_id": "q", "direction": "negative", "magnitude": 0.6, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT * FROM node_impact WHERE node_id='q'").fetchone()
+    assert r["direction"] == "no_effect" and r["magnitude"] == 0.0
+    assert r["mixed_signals"] == 1 and r["event_count"] == 2
+
+
+def test_only_traced_events_aggregated(tmp_path):
+    conn = _db(tmp_path)
+    # an event whose status is not 'traced' must not contribute, even with impacts present
+    store.insert_event(conn, {"id": "f1", "headline": "H f1", "source": "SEC 8-K", "url": "u/f1",
+                              "category": "m&a", "published_at": "2026-06-17",
+                              "seed_entity": "E", "seed_node_id": "cik:1", "status": "failed"})
+    store.write_event_impacts(conn, "f1", [{"node_id": "ghost", "direction": "negative", "magnitude": 0.9, "hop": 0}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    assert conn.execute("SELECT COUNT(*) c FROM node_impact WHERE node_id='ghost'").fetchone()["c"] == 0

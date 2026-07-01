@@ -62,3 +62,46 @@ def test_idempotent_when_nothing_queued(tmp_path, monkeypatch):
     pc.run_precompute(db)
     s2 = pc.run_precompute(db)          # nothing queued now
     assert s2["processed"] == 0
+
+
+def test_retry_failed_requeues_and_retraces(tmp_path, monkeypatch):
+    db = _db_with_queued(tmp_path, 1)
+    monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {"seeds": [], "impacts": []})
+    pc.run_precompute(db)                                    # fails -> status 'failed'
+    conn = store.connect(db)
+    assert conn.execute("SELECT status FROM events WHERE id='e0'").fetchone()["status"] == "failed"
+    conn.close()
+    monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {
+        "seeds": [{"node_id": "cik:0"}],
+        "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.5, "hop": 0}]})
+    s = pc.run_precompute(db, retry_failed=True)             # re-queues the failed event, now succeeds
+    assert s["traced"] == 1
+    conn = store.connect(db)
+    assert conn.execute("SELECT status FROM events WHERE id='e0'").fetchone()["status"] == "traced"
+    assert conn.execute("SELECT COUNT(*) c FROM event_impacts WHERE event_id='e0'").fetchone()["c"] == 1
+
+
+def test_wallclock_budget_stops_immediately(tmp_path, monkeypatch):
+    db = _db_with_queued(tmp_path, 2)
+    monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {
+        "seeds": [{"node_id": "x"}], "impacts": [{"node_id": "x", "direction": "negative", "magnitude": 0.5, "hop": 0}]})
+    s = pc.run_precompute(db, wallclock_s=0)                 # budget hit before the first event
+    assert s["processed"] == 0
+    conn = store.connect(db)
+    assert conn.execute("SELECT COUNT(*) c FROM events WHERE status='queued'").fetchone()["c"] == 2
+
+
+def test_retrace_failure_clears_stale_impacts(tmp_path, monkeypatch):
+    db = _db_with_queued(tmp_path, 1)
+    monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {
+        "seeds": [{"node_id": "cik:0"}],
+        "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.9, "hop": 0}]})
+    pc.run_precompute(db)                                    # succeeds -> impacts written
+    conn = store.connect(db)
+    assert conn.execute("SELECT COUNT(*) c FROM event_impacts WHERE event_id='e0'").fetchone()["c"] == 1
+    conn.execute("UPDATE events SET status='queued' WHERE id='e0'"); conn.commit(); conn.close()  # operator re-run
+    monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {"seeds": [], "impacts": []})
+    pc.run_precompute(db)                                    # re-trace now fails
+    conn = store.connect(db)
+    assert conn.execute("SELECT status FROM events WHERE id='e0'").fetchone()["status"] == "failed"
+    assert conn.execute("SELECT COUNT(*) c FROM event_impacts WHERE event_id='e0'").fetchone()["c"] == 0
