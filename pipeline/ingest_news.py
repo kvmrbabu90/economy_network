@@ -148,7 +148,7 @@ def _candidate_from_ticker(ticker, headline, source, url, category, published_at
     node_id = idx.get((ticker or "").upper())
     if not node_id:
         return None
-    c = {"headline": headline[:200], "source": source, "url": url, "category": category,
+    c = {"headline": (headline or "")[:200], "source": source, "url": url, "category": category,
          "published_at": published_at, "seed_entity": ticker, "seed_node_id": node_id}
     c["id"] = _event_id(c)
     return c

@@ -22,6 +22,14 @@ def test_map_api_item_by_ticker():
     assert ing._candidate_from_ticker("ZZZ", "x", "Marketaux", "u", "company", None, idx) is None
 
 
+def test_candidate_from_ticker_tolerates_null_headline():
+    # News APIs can return {"title": null}; dict.get("title","") yields None, not "".
+    conn = _graph()
+    idx = ing._ticker_index(conn)
+    c = ing._candidate_from_ticker("ACME", None, "Marketaux", "http://x/1", "company", "2026-06-17", idx)
+    assert c is not None and c["headline"] == ""     # coerced, no TypeError crash
+
+
 def test_8k_category_from_item_code():
     assert ing._category_for_8k("2.01") == "m&a"
     assert ing._category_for_8k("1.01") == "agreement"
