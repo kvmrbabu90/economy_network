@@ -54,10 +54,14 @@ import { describeNode, runImpact, runImpactStream, runMultiImpact, type ImpactRe
 import { fetchHeadlines, type Headline } from "./news";
 import {
   buildImpactState,
+  buildLiveImpactMap,
   buildMultiImpactState,
   tintColor,
+  tintColorForCombined,
   type ImpactState,
 } from "./impact";
+import { getImpactLive, getNodeImpact, type LiveImpact } from "./api";
+import { renderCombinedImpactInto } from "./ui/inspector";
 import {
   loadArchive,
   saveToArchive,
@@ -126,6 +130,7 @@ declare global {
       expandFrom: (id: string) => Promise<void>;
       loadFullCore: () => Promise<void>;
       setIncludeProvisional: (v: boolean) => void;
+      tintLive: () => Promise<void>;
     };
   }
 }
@@ -135,6 +140,7 @@ window.__ec = {
   recenterOn,
   expandFrom,
   loadFullCore,
+  tintLive: applyLiveImpactTint,
   setIncludeProvisional: (v: boolean) => {
     const cb = document.getElementById("toggle-provisional") as HTMLInputElement | null;
     if (cb) {
@@ -204,6 +210,13 @@ const NODE_SCALE_STEP = 0.15;
 // tint/dim everything accordingly. The 3D mesh tinting is applied
 // via applyImpact3D() in render3d.ts.
 let impactState: ImpactState | null = null;
+
+// So What? V2 · P5 — live-impact overlay state. Populated from GET /impact/live
+// after the graph loads; drives an ADDITIVE tint in the nodeReducer that does
+// NOT hide untinted nodes (unlike the on-demand `impactState` branch, which
+// hides everything outside the traced chain). The on-demand `impactState`
+// always takes precedence when both are set.
+let liveImpactState: Map<string, LiveImpact> = new Map();
 
 // Build the inspector's contextual extras: surfaces the LLM verdict
 // (if a propagation run is active for this node) and wires the
@@ -301,6 +314,16 @@ function refreshEdgeVisibility(): void {
         zIndex: isImpacted ? 10 : 0,
         forceLabel: isImpacted && (verdict?.hop === 0 || (verdict?.magnitude ?? 0) >= 0.6),
       };
+    }
+    // Live pre-tint (So What? V2): additive baseline from /impact/live. Tinted
+    // nodes glow; untinted nodes keep their NORMAL appearance (NOT hidden) —
+    // this is the key difference from the on-demand branch above, which takes
+    // precedence whenever an on-demand trace is active.
+    if (liveImpactState.size) {
+      const row = liveImpactState.get(id);
+      const tint = row ? tintColorForCombined(row) : null;
+      if (tint) return { ...nattrs, label, hidden: hide, color: tint, size: baseSize * 1.4, zIndex: 5 };
+      return { ...nattrs, label, hidden: hide, size: baseSize };
     }
     return { ...nattrs, label, hidden: hide, size: baseSize };
   });
@@ -820,6 +843,13 @@ renderer.on("clickNode", (event) => {
     timer: window.setTimeout(() => {
       pendingClick = null;
       setInspectorCollapsed(false); // expand so the user sees the node details
+      // Render node detail synchronously, then patch in the precomputed
+      // combined-impact section once /node/{id}/impact resolves.
+      if (g.hasNode(id)) {
+        showNode(g.getNodeAttributes(id).apiNode, g, inspectorExtrasFor(id));
+        hideMorningBrief();
+        showCombinedImpact(id);
+      }
       expandFrom(id).catch(console.error);
     }, DOUBLE_CLICK_WINDOW_MS),
   };
@@ -951,6 +981,7 @@ function setView(next: "2d" | "3d" | "globe") {
           // then expand its neighbours in the background.
           if (g.hasNode(id)) {
             showNode(g.getNodeAttributes(id).apiNode, g, inspectorExtrasFor(id));
+            showCombinedImpact(id);
           }
           expandFrom(id).catch(console.error);
         },
@@ -1421,6 +1452,56 @@ if (impactCancelBtn) impactCancelBtn.addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
+// So What? V2 · P5 — live pre-tint + node-click combined impact + sharpen
+// ---------------------------------------------------------------------------
+
+/** Fetch the precomputed /impact/live map and pre-tint the graph. Non-blocking:
+ *  runs after the graph is interactive and never blocks first paint. On failure
+ *  the graph simply renders untinted (log + move on). */
+async function applyLiveImpactTint(): Promise<void> {
+  try {
+    const resp = await getImpactLive();
+    liveImpactState = buildLiveImpactMap(resp.impacts);
+    refreshEdgeVisibility();               // reinstalls the reducer, which reads liveImpactState
+    // 3D pre-tint is not wired: render3d.ts colors from the on-demand
+    // ImpactState only. This re-sync is harmless (nodes stay default in 3D).
+    if (is3DRunning()) update3D(g, filters);
+  } catch (err) {
+    console.error("live impact tint failed", err);   // graph still usable untinted
+  }
+}
+
+/** Node-click → fetch /node/{id}/impact and patch the combined-impact section
+ *  into the inspector body asynchronously (same pattern as the Describe button). */
+function showCombinedImpact(nodeId: string): void {
+  getNodeImpact(nodeId)
+    .then((resp) => {
+      const inspectorRoot = document.getElementById("inspector-body");
+      if (inspectorRoot) renderCombinedImpactInto(inspectorRoot, resp, { onSharpen: sharpenWithClaude });
+    })
+    .catch((err) => console.error("combined impact fetch failed", err));
+}
+
+/** "Sharpen with Claude": re-run the full V1 streaming trace on the strongest
+ *  contributing event. Reuses the EXISTING on-demand trigger (handleImpactRun)
+ *  — no duplicated stream loop — by loading the headline into the impact bar's
+ *  input and invoking the same handler the Run button / Enter key use. The full
+ *  trace overlays the live baseline (on-demand impactState takes reducer
+ *  precedence). */
+function sharpenWithClaude(headline: string): void {
+  // Reset the impact bar to a single clean row (handleImpactClear rebuilds the
+  // first .impact-news-input), then seed it with the headline so getNewsTexts()
+  // picks it up on the single-event streaming path.
+  handleImpactClear();
+  const firstInput =
+    impactInputsList?.querySelector<HTMLInputElement>(".impact-news-input") ?? impactInput;
+  if (firstInput) firstInput.value = headline;
+  // handleImpactRun() is the exact function the search/impact box uses: it runs
+  // runImpactStream(...) and sets impactState. Do NOT re-implement streaming.
+  handleImpactRun().catch(console.error);
+}
+
+// ---------------------------------------------------------------------------
 // Morning brief — daily top-5 economic headlines in the inspector panel.
 // Shown when nothing is selected; hidden when node/edge detail is active.
 // ---------------------------------------------------------------------------
@@ -1815,7 +1896,12 @@ runLanding().then(() => {
   // empty scene and the nodeAdded events may have already resolved before
   // the .then() below runs — this guarantees a final sync.
   loadFullCore()
-    .then(() => { if (is3DRunning()) update3D(g, filters); })
+    .then(() => {
+      if (is3DRunning()) update3D(g, filters);
+      // So What? V2 · P5 — warm the graph from /impact/live once it's
+      // interactive. Non-blocking: failure just leaves the graph untinted.
+      applyLiveImpactTint().catch((err) => console.error("live impact tint failed", err));
+    })
     .catch(console.error);
 
   // After scan line finishes (~700 ms), fade the overlay out and clean up.
