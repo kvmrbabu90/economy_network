@@ -132,3 +132,148 @@ def dedupe(cands: list[dict[str, Any]], conn) -> list[dict[str, Any]]:
         seen.add(cid)
         out.append(c)
     return out
+
+
+# Reuse the impact engine's Claude caller + tolerant parser, and the news RSS layer.
+from api.impact import _claude_call, _parse_llm_json  # noqa: E402
+
+_8K_ITEM_CATEGORY = {"2.01": "m&a", "1.01": "agreement", "5.02": "exec"}
+
+
+def _category_for_8k(item_code: str) -> str:
+    return _8K_ITEM_CATEGORY.get((item_code or "").strip(), "filing")
+
+
+def _candidate_from_ticker(ticker, headline, source, url, category, published_at, idx) -> Optional[dict]:
+    node_id = idx.get((ticker or "").upper())
+    if not node_id:
+        return None
+    c = {"headline": headline[:200], "source": source, "url": url, "category": category,
+         "published_at": published_at, "seed_entity": ticker, "seed_node_id": node_id}
+    c["id"] = _event_id(c)
+    return c
+
+
+def fetch_8k(conn) -> list[dict]:
+    """Recent 8-Ks across graph filers → candidates (seed = the filer node)."""
+    from pipeline.sec_8k import fetch_recent_8k_meta
+    out = []
+    ciks = [r["id"] for r in conn.execute("SELECT id FROM nodes WHERE id LIKE 'cik:%'")]
+    for node_id in ciks:
+        cik = node_id.split(":", 1)[1]
+        try:
+            for m in fetch_recent_8k_meta(cik, since_days=INGEST_MAX_AGE_DAYS):
+                item0 = (m.get("items", "") or "").split(",")[0].strip()
+                c = {"headline": f"{node_id} 8-K item {item0}"[:200], "source": "SEC 8-K",
+                     "url": m.get("url", ""), "category": _category_for_8k(item0),
+                     "published_at": m.get("date"), "seed_entity": node_id, "seed_node_id": node_id}
+                c["id"] = _event_id(c)
+                out.append(c)
+        except Exception as exc:
+            log.debug("8k: %s failed: %s", node_id, exc)
+    return out
+
+
+def fetch_marketaux(idx: dict[str, str]) -> list[dict]:
+    key = os.environ.get("MARKETAUX_KEY")
+    if not key:
+        log.info("marketaux: no key; skipping")
+        return []
+    import requests
+    try:
+        r = requests.get("https://api.marketaux.com/v1/news/all",
+                         params={"api_token": key, "language": "en", "filter_entities": "true", "limit": 50},
+                         timeout=10)
+        r.raise_for_status()
+        data = r.json().get("data", [])
+    except Exception as exc:
+        log.warning("marketaux: %s", exc)
+        return []
+    out = []
+    for art in data:
+        for ent in art.get("entities", []):
+            c = _candidate_from_ticker(ent.get("symbol"), art.get("title", ""), "Marketaux",
+                                       art.get("url", ""), "company", (art.get("published_at") or "")[:10], idx)
+            if c:
+                out.append(c)
+                break   # one seed per article (top entity)
+    return out
+
+
+def fetch_alphavantage(idx: dict[str, str]) -> list[dict]:
+    key = os.environ.get("ALPHAVANTAGE_KEY")
+    if not key:
+        log.info("alphavantage: no key; skipping")
+        return []
+    import requests
+    try:
+        r = requests.get("https://www.alphavantage.co/query",
+                         params={"function": "NEWS_SENTIMENT", "apikey": key, "limit": 50}, timeout=10)
+        r.raise_for_status()
+        feed = r.json().get("feed", [])
+    except Exception as exc:
+        log.warning("alphavantage: %s", exc)
+        return []
+    out = []
+    for art in feed:
+        ts = art.get("time_published", "")            # YYYYMMDDTHHMMSS
+        pub = f"{ts[0:4]}-{ts[4:6]}-{ts[6:8]}" if len(ts) >= 8 else None
+        for ts_ent in sorted(art.get("ticker_sentiment", []),
+                             key=lambda x: -abs(float(x.get("ticker_sentiment_score", 0) or 0))):
+            c = _candidate_from_ticker(ts_ent.get("ticker"), art.get("title", ""), "Alpha Vantage",
+                                       art.get("url", ""), "company", pub, idx)
+            if c:
+                out.append(c)
+                break
+    return out
+
+
+_RSS_EXTRACT_PROMPT = """You are extracting market-moving EVENTS from raw news headlines for a
+supply-chain impact graph. For EACH headline describing a concrete event that could move a
+public company, commodity, or region (M&A, contract, output cut, approval, ban, tariff,
+outbreak, policy action, etc.), output one object. SKIP opinion, analysis, "how/why"
+explainers, listicles, price-move-only stories, and celebrity/sports.
+
+For each kept item: rewrite the headline neutrally in <=15 words; name the SINGLE most
+specific entity (company/commodity/region) it concerns; classify the category as one of
+politics|commodity|health|filing|m&a|agreement|exec|macro|company|other.
+
+RAW (numbered):
+{items}
+
+Return ONLY a JSON array (no prose):
+[{{"index": <n>, "headline": "<rewrite>", "entity": "<name>", "category": "<cat>"}}]
+"""
+
+
+def extract_rss_events(raw: list[dict]) -> list[dict]:
+    """One Claude call over pooled RSS items → candidates (unresolved seed_entity).
+    Fail-open: empty/garbage from the CLI → [] (8-K + APIs still populate the cycle)."""
+    if not raw:
+        return []
+    block = "\n".join(f"{i+1}. {r['title']}" for i, r in enumerate(raw))
+    parsed = _parse_llm_json(_claude_call(_RSS_EXTRACT_PROMPT.format(items=block)))
+    if not isinstance(parsed, list):
+        return []
+    out = []
+    for h in parsed:
+        if not isinstance(h, dict):
+            continue
+        i = h.get("index")
+        if not isinstance(i, int) or not (1 <= i <= len(raw)):
+            continue
+        src = raw[i - 1]
+        c = {"headline": str(h.get("headline") or src["title"])[:200], "source": src["source"],
+             "url": src["url"], "category": str(h.get("category") or "other"),
+             "published_at": src.get("pub_date"), "seed_entity": str(h.get("entity") or "").strip(),
+             "seed_node_id": None}
+        c["id"] = _event_id(c)
+        if c["seed_entity"]:
+            out.append(c)
+    return out
+
+
+def fetch_rss_broad() -> list[dict]:
+    """Pull broad-category RSS via the news layer, then Claude-extract events."""
+    from api.news import _fetch_raw
+    return extract_rss_events(_fetch_raw())
