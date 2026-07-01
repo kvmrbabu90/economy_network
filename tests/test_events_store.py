@@ -70,3 +70,25 @@ def test_replace_node_impact_atomic_swap():
     ])
     ids = [x["node_id"] for x in conn.execute("SELECT node_id FROM node_impact")]
     assert ids == ["cik:2"]
+
+
+def test_read_all_and_one_node_impact():
+    conn = _mem()
+    store.replace_node_impact(conn, [
+        {"node_id": "b", "direction": "negative", "magnitude": 0.4, "mixed_signals": 0,
+         "event_count": 1, "top_events": "[]", "computed_at": "2026-06-30T00:00:00"},
+        {"node_id": "a", "direction": "positive", "magnitude": 0.7, "mixed_signals": 1,
+         "event_count": 2, "top_events": "[]", "computed_at": "2026-06-30T00:00:00"},
+    ])
+    allrows = store.read_all_node_impact(conn)
+    assert [r["node_id"] for r in allrows] == ["a", "b"]          # ordered by node_id
+    assert allrows[0]["direction"] == "positive" and allrows[0]["event_count"] == 2
+    assert "top_events" not in allrows[0]                          # compact rows only
+    one = store.read_node_impact(conn, "a")
+    assert one["magnitude"] == 0.7 and one["top_events"] == "[]"   # full row
+    assert store.read_node_impact(conn, "missing") is None
+    assert store.latest_node_impact_computed_at(conn) == "2026-06-30T00:00:00"
+
+
+def test_latest_computed_at_empty():
+    assert store.latest_node_impact_computed_at(_mem()) is None
