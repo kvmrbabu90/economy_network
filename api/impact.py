@@ -1194,7 +1194,7 @@ def run_impact_stream(
                         "impacts": list(impacts.values()),
                         "provider": effective_provider,
                         "model": "claude-code-cli" if effective_provider == "claude" else OLLAMA_MODEL,
-                        "max_hops": MAX_HOPS,
+                        "max_hops": effective_max_hops,
                         "debug": debug_log,
                         "refinement": {"considered": 0, "rescored": 0, "applied": 0},
                         "scoring": {"scored": 0, "recovered": 0, "unscored": 0, "unscored_node_ids": []},
