@@ -86,6 +86,20 @@ def test_node_impact_resolves_alias(tmp_path):
     assert body["impact"]["event_count"] == 2
 
 
+def test_impact_endpoints_survive_pre_p4_db(tmp_path):
+    # A DB built before P4 has nodes but none of the V2 tables. The impact
+    # endpoints must serve empty results, not 500 on the missing node_impact table.
+    db = tmp_path / "old.db"
+    conn = store.connect(db)
+    conn.execute("CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT, name TEXT)")
+    conn.execute("INSERT INTO nodes (id, type, name) VALUES ('cik:1','Company','Apple')")
+    conn.commit(); conn.close()
+    api_main.set_db_path(db)
+    client = TestClient(api_main.app)
+    assert client.get("/impact/live").json() == {"computed_at": None, "count": 0, "impacts": []}
+    assert client.get("/node/cik:1/impact").json()["impact"] is None    # 200, not 500
+
+
 def test_health_degrades_without_node_impact_table(tmp_path):
     db = _seed(tmp_path)
     conn = store.connect(db)

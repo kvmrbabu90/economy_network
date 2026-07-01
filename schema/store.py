@@ -211,26 +211,37 @@ def replace_node_impact(conn: sqlite3.Connection, rows: list[dict[str, Any]]) ->
 
 
 def read_all_node_impact(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Compact node_impact rows for graph tinting, ordered by node_id."""
-    rows = conn.execute(
-        "SELECT node_id, direction, magnitude, mixed_signals, event_count "
-        "FROM node_impact ORDER BY node_id"
-    ).fetchall()
+    """Compact node_impact rows for graph tinting, ordered by node_id. Returns []
+    if the table doesn't exist (DB built before P4 / no cycle has run yet)."""
+    try:
+        rows = conn.execute(
+            "SELECT node_id, direction, magnitude, mixed_signals, event_count "
+            "FROM node_impact ORDER BY node_id"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
     return [dict(r) for r in rows]
 
 
 def read_node_impact(conn: sqlite3.Connection, node_id: str) -> Optional[dict[str, Any]]:
-    """Full node_impact row (top_events remains a JSON string) or None."""
-    row = conn.execute(
-        "SELECT node_id, direction, magnitude, mixed_signals, event_count, "
-        "top_events, computed_at FROM node_impact WHERE node_id = ?", (node_id,)
-    ).fetchone()
+    """Full node_impact row (top_events remains a JSON string), or None when the
+    node has no row or the table doesn't exist yet."""
+    try:
+        row = conn.execute(
+            "SELECT node_id, direction, magnitude, mixed_signals, event_count, "
+            "top_events, computed_at FROM node_impact WHERE node_id = ?", (node_id,)
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
     return dict(row) if row else None
 
 
 def latest_node_impact_computed_at(conn: sqlite3.Connection) -> Optional[str]:
-    """MAX(computed_at) across node_impact, or None when the table is empty."""
-    row = conn.execute("SELECT MAX(computed_at) AS c FROM node_impact").fetchone()
+    """MAX(computed_at) across node_impact, or None when empty / table absent."""
+    try:
+        row = conn.execute("SELECT MAX(computed_at) AS c FROM node_impact").fetchone()
+    except sqlite3.OperationalError:
+        return None
     return row["c"] if row and row["c"] is not None else None
 
 
