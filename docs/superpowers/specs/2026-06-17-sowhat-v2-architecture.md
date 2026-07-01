@@ -35,7 +35,8 @@ precomputed tables.
 ```
 every 12h ─► P1 ingest broad news ─► events               (event + candidate entities)
                                           │
-              P2 batch precompute ◄───────┘   (LOCAL model, all gated events, 3 hops)
+              P2 batch precompute ◄───────┘   (CLAUDE CLI, lighter config: 2 hops,
+                                              no refine/verify; top ~25 ranked events)
                     │  one impact trace per event
                     ▼
               event_impacts   (event_id, node_id, direction, magnitude, hop, reasoning)
@@ -50,13 +51,21 @@ every 12h ─► P1 ingest broad news ─► events               (event + candi
 
 ### Cross-cutting decisions (locked)
 
-- **Hybrid compute engine.** The 12h batch runs on the **free local model**
-  (Ollama/Gemma, already wired via `IMPACT_LLM_PROVIDER=ollama`) so breadth is
-  unlimited and unmetered. **Claude** is reserved for (a) a user-triggered "sharpen"
-  re-run of a single event/node, and (b) optionally re-scoring the top movers each
-  cycle. Rationale: precomputing hundreds of traces/cycle with Claude is infeasible
-  on a personal Max plan (rate limits, ~3 min/trace, the 401 risk on unattended
-  jobs); the local model has none of those constraints.
+- **Claude batch on a lighter config (with budget + fallback).** The 12h batch runs
+  on the **Claude CLI** for verdict quality, but with a reduced trace to stay within
+  Max-plan usage limits: **2 hops, no refinement, no verification pass, no
+  seed-verify** — the quality-polish passes are exactly what the on-demand "sharpen"
+  re-adds on the node the user clicks. That cuts a trace from ~10–20 `claude -p`
+  calls to ~5–6, so ~25 events × 2 cycles/day ≈ ~250–300 calls/day. The batch
+  enforces a **per-cycle call budget + wall-clock budget**, and on throttle/401/timeout
+  it marks the event `failed` and defers to the next cycle (never fabricates). The
+  full-strength engine (3 hops + refine + verify) remains the **on-demand "sharpen
+  with Claude"** action for a single clicked node/event.
+  - *Reasoning cost is Max-subscription, not per-token; the concern is usage caps
+    (the batch competing with interactive Claude use) + unattended reliability, hence
+    the lighter config + budgets. The Anthropic API (pay-per-token) is out — it
+    violates invariant #11 and isn't free. Gemma/local remains available as a
+    configurable fallback provider if the user later wants an unmetered batch.*
 - **7-day rolling window + recency decay.** A node's combined impact aggregates
   events from the last 7 days, each weighted by recency (`weight = 0.5 ** (age_days /
   HALFLIFE_DAYS)`, HALFLIFE ≈ 3 days). Events older than the window roll off. Keeps
@@ -128,12 +137,17 @@ resolved `seed_entity`, dedupe by URL/id, and queue only graph-resolvable events
 multi-category items; no tracing yet.
 
 ### P2 — Batch impact precompute
-A runnable that, for each `status='queued'` event, calls `run_impact` on the LOCAL
-provider and writes `event_impacts`, then marks the event `traced`. Idempotent,
-restartable, bounded by a per-cycle cap. Reuses the entire existing engine (streaming
-not needed here — the non-streaming `run_impact` wrapper is fine).
+A runnable that, for each `status='queued'` event, calls `run_impact` via the CLAUDE
+CLI on a **lighter config** (2 hops, refinement + verification + seed-verify OFF —
+exposed as `run_impact` params/env so the batch differs from the on-demand path),
+writes `event_impacts`, then marks the event `traced`. Enforces a per-cycle **call
+budget + wall-clock budget**; on throttle/401/timeout marks the event `failed` (never
+fabricates) and defers. Idempotent, restartable (skips already-`traced`). Uses the
+non-streaming `run_impact` wrapper. Provider is configurable so Gemma/local can be
+swapped in as an unmetered fallback.
 **Done when:** every queued event has an `event_impacts` set (or is marked `failed`),
-re-running is a no-op, and a mid-batch crash resumes cleanly.
+re-running is a no-op, a mid-batch crash resumes cleanly, and the cycle respects its
+budgets.
 
 ### P3 — Impact aggregation
 A rollup that recomputes `node_impact` from `event_impacts` over the 7-day decayed
@@ -163,15 +177,16 @@ node reveals its combined-impact story.
 Strictly P1 → P2 → P3 → P4 → P5. Each phase is independently testable and delivers a
 verifiable artifact (a populated table / a working endpoint) before the next depends
 on it — matching the project's layered-restartable invariant. P1–P3 are backend/data
-and can be validated with the local model at zero cost; P4–P5 are the user-facing
-payoff.
+and are validated on the Claude CLI; P4–P5 are the user-facing payoff.
 
 ## Key risks & mitigations
 
 | Risk | Mitigation |
 |---|---|
-| Local-model verdict quality lower than Claude | Hybrid: Claude "sharpen" on demand; optionally Claude re-scores top-N movers/cycle in a later iteration |
-| Local batch throughput (Gemma is slow: minutes/trace × dozens of events) | Per-cycle cap; 3-hop stays but frontier caps already bound ring size; batch runs in background, not on the request path |
+| Batch Claude usage competes with / throttles the user's interactive Claude | Lighter config (~5–6 calls/event) + per-cycle call budget + top-25 cap keeps it ~250–300 calls/day; run the cycle off-peak (overnight) |
+| Unattended CLI failure (401 auth expiry, throttle) | Batch marks the event `failed` + defers, logs it, never fabricates; `status` column makes it visible + re-runnable; provider is swappable to local Gemma as an unmetered fallback |
+| Lighter baseline (2-hop, no refine/verify) is coarser than a full trace | On-demand "sharpen with Claude" re-runs the full-strength engine on the clicked node; the baseline is intentionally a fast first pass |
+| Batch runtime (~5–6 calls/event × 25, plus latency) overruns the cycle | Wall-clock budget stops the batch and defers the remainder; events are ranked so the most important are traced first |
 | Stale/unbounded accumulation | 7-day rolling window + recency decay; `node_impact` fully rebuildable |
 | Ingestion noise (opinion/micro-cap) | Reuse the news filter + graph-gate; only resolvable events are queued |
 | Unattended job reliability (the 401 we hit) | Local model has no auth; scheduler logs + status column make failures visible and re-runnable |
