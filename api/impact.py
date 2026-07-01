@@ -977,7 +977,8 @@ def _build_seeds_block(all_seeds: list[dict[str, Any]]) -> str:
 
 
 def run_impact_stream(
-    text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None
+    text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None,
+    max_hops: Optional[int] = None, refine: bool = True, verify: bool = True,
 ):
     """Streaming variant of run_impact. Yields event dicts:
       {"event":"seeds", ...} once, then {"event":"hop", ...} per hop,
@@ -1011,6 +1012,7 @@ def run_impact_stream(
             _thread_local.provider = prev_thread_provider
 
     try:
+        effective_max_hops = max_hops if max_hops is not None else MAX_HOPS
         # == Step 1: Build commodity/region seed prompt (no LLM yet) ==========
         candidates = _list_seed_candidates(conn)
         candidate_lines = []
@@ -1070,7 +1072,7 @@ def run_impact_stream(
         commodity_seed: Optional[dict[str, Any]] = None
         if commodity_seed_id and commodity_seed_id not in seen_ids:
             commodity_summary = _node_summary(conn, commodity_seed_id)
-            if commodity_summary and VERIFY_ENABLED and not _verify_seed_directness(
+            if commodity_summary and verify and VERIFY_ENABLED and not _verify_seed_directness(
                 text, commodity_summary["name"], commodity_summary["type"], debug_log
             ):
                 # B: the picked commodity/region failed the adversarial directness
@@ -1167,7 +1169,7 @@ def run_impact_stream(
 
         # -- Step 7: BFS ring by ring ----------------------------------------
         total_recovered = 0   # nodes filled by retry across all hops (for `scoring`)
-        for hop in range(1, MAX_HOPS + 1):
+        for hop in range(1, effective_max_hops + 1):
             full_ring = _neighbors(conn, frontier, visited)
             log.info("hop %d: frontier=%d, ring=%d", hop, len(frontier), len(full_ring))
             debug_log.append(f"hop {hop}: frontier={len(frontier)}, raw_neighbors={len(full_ring)}")
@@ -1325,13 +1327,16 @@ def run_impact_stream(
         # Only apply the new verdict if it strengthens (higher magnitude or
         # flipped direction from no_effect to a definite call) -- never
         # downgrade an already-strong verdict.
-        refinement_summary = _refinement_pass(
-            text=text,
-            impacts=impacts,
-            seeds_block=seeds_block,
-            conn=conn,
-            debug_log=debug_log,
-        )
+        if refine:
+            refinement_summary = _refinement_pass(
+                text=text,
+                impacts=impacts,
+                seeds_block=seeds_block,
+                conn=conn,
+                debug_log=debug_log,
+            )
+        else:
+            refinement_summary = {"considered": 0, "rescored": 0, "applied": 0}
         # _refinement_pass sets impacts[nid]["refined"] = True on every applied node.
         yield {
             "event": "refinement",
@@ -1342,7 +1347,7 @@ def run_impact_stream(
         verification_summary = (
             _verification_pass(text=text, impacts=impacts, seeds_block=seeds_block,
                                conn=conn, debug_log=debug_log)
-            if VERIFY_ENABLED
+            if (verify and VERIFY_ENABLED)
             else {"checked": 0, "upheld": 0, "weakened": 0, "refuted": 0}
         )
         yield {
@@ -1369,7 +1374,7 @@ def run_impact_stream(
             "impacts": list(impacts.values()),
             "provider": effective_provider,
             "model": "claude-code-cli" if effective_provider == "claude" else OLLAMA_MODEL,
-            "max_hops": MAX_HOPS,
+            "max_hops": effective_max_hops,
             "debug": debug_log,
             "refinement": refinement_summary,
             "scoring": scoring_summary,
@@ -1400,11 +1405,13 @@ def run_impact_stream(
 
 
 def run_impact(
-    text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None
+    text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None,
+    max_hops: Optional[int] = None, refine: bool = True, verify: bool = True,
 ) -> dict[str, Any]:
     """Non-streaming wrapper: drain run_impact_stream, return the done payload."""
     final: dict[str, Any] = {}
-    for ev in run_impact_stream(text, conn=conn, provider=provider):
+    for ev in run_impact_stream(text, conn=conn, provider=provider,
+                                max_hops=max_hops, refine=refine, verify=verify):
         if ev["event"] == "done":
             final = ev["result"]
     return final

@@ -445,3 +445,35 @@ def test_seed_audit_skipped_when_verify_disabled(conn, monkeypatch):
     done = next(e for e in impact_mod.run_impact_stream(
         "global crude oil supply shock", conn=conn) if e["event"] == "done")["result"]
     assert done.get("seed") is not None
+
+
+def test_lighter_config_skips_passes_and_limits_hops(conn, monkeypatch):
+    monkeypatch.setattr(impact_mod, "_llm_call", _fake_llm)
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    calls = {"refine": 0, "verify": 0, "seedverify": 0}
+    monkeypatch.setattr(impact_mod, "_refinement_pass",
+                        lambda **k: calls.__setitem__("refine", calls["refine"] + 1) or {"considered": 0, "rescored": 0, "applied": 0})
+    monkeypatch.setattr(impact_mod, "_verification_pass",
+                        lambda **k: calls.__setitem__("verify", calls["verify"] + 1) or {"checked": 0, "upheld": 0, "weakened": 0, "refuted": 0})
+    monkeypatch.setattr(impact_mod, "_verify_seed_directness",
+                        lambda *a, **k: calls.__setitem__("seedverify", calls["seedverify"] + 1) or True)
+    events = list(impact_mod.run_impact_stream(
+        "global crude oil supply shock", conn=conn, max_hops=2, refine=False, verify=False))
+    hops = [e["hop"] for e in events if e["event"] == "hop"]
+    assert max(hops) <= 2                      # max_hops respected
+    assert calls == {"refine": 0, "verify": 0, "seedverify": 0}   # all passes skipped
+    done = next(e for e in events if e["event"] == "done")["result"]
+    assert done["max_hops"] == 2
+
+
+def test_default_config_runs_all_passes(conn, monkeypatch):
+    monkeypatch.setattr(impact_mod, "_llm_call", _fake_llm)
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    seen = {"refine": 0, "verify": 0}
+    orig_r, orig_v = impact_mod._refinement_pass, impact_mod._verification_pass
+    monkeypatch.setattr(impact_mod, "_refinement_pass",
+                        lambda **k: seen.__setitem__("refine", 1) or orig_r(**k))
+    monkeypatch.setattr(impact_mod, "_verification_pass",
+                        lambda **k: seen.__setitem__("verify", 1) or orig_v(**k))
+    list(impact_mod.run_impact_stream("global crude oil supply shock", conn=conn))
+    assert seen == {"refine": 1, "verify": 1}   # defaults unchanged
