@@ -273,6 +273,54 @@ def extract_rss_events(raw: list[dict]) -> list[dict]:
     return out
 
 
+_MATERIALITY_PROMPT = """You are a markets analyst gatekeeping a supply-chain impact graph.
+For EACH numbered item decide: is it a CONCRETE, DETERMINISTIC market-moving / business-impact
+event with a clear directional effect on a company, commodity, or region?
+
+KEEP (material=true): M&A, contracts won/lost, output/production cuts, regulatory
+approval/ban/recall, tariffs/sanctions, earnings or guidance surprises, supply disruptions,
+plant/mine closures, defaults, large capex/JV, major executive departures.
+
+DROP (material=false): opinion / analysis / "how/why" explainers, price-move-only stories
+("stock rises 3%"), analyst rating or price-target changes, rumor / "could/may/reportedly",
+routine product launches, and celebrity/sports/lifestyle.
+
+ITEMS (numbered):
+{items}
+
+Return ONLY a JSON array (no prose):
+[{{"index": <n>, "material": true|false}}]
+"""
+
+
+def _materiality_filter(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only candidates the LLM judges to be concrete, deterministic market-moving /
+    business-impact events. One batched call. Fail-open (empty/garbled → keep all).
+    Disabled when INGEST_MATERIALITY_GATE='0'."""
+    if not cands:
+        return cands
+    if os.environ.get("INGEST_MATERIALITY_GATE", "1") == "0":
+        return cands
+    block = "\n".join(f"{i+1}. {c.get('headline','')} — {c.get('seed_entity','')}"
+                      for i, c in enumerate(cands))
+    parsed = _parse_llm_json(_claude_call(_MATERIALITY_PROMPT.format(items=block)))
+    if not isinstance(parsed, list):
+        log.warning("materiality gate: unparseable LLM output — keeping all %d", len(cands))
+        return cands
+    keep_idx = set()
+    for h in parsed:
+        if isinstance(h, dict) and h.get("material") is True:
+            i = h.get("index")
+            if isinstance(i, int) and 1 <= i <= len(cands):
+                keep_idx.add(i - 1)
+    if not keep_idx:
+        # A parsed-but-empty keep-set is ambiguous (all-noise vs. a bad response).
+        # Fail-open to avoid silently zeroing a cycle.
+        log.warning("materiality gate: LLM kept 0/%d — keeping all (fail-open)", len(cands))
+        return cands
+    return [c for i, c in enumerate(cands) if i in keep_idx]
+
+
 def fetch_rss_broad() -> list[dict]:
     """Pull broad-category RSS via the news layer, then Claude-extract events."""
     from api.news import _fetch_raw
@@ -301,10 +349,12 @@ def run_ingest(db_path: Path = DB_PATH) -> dict[str, int]:
                 resolved.append(c)
 
         fresh = dedupe(resolved, conn)
-        ranked = cap(rank(fresh, conn))
+        material = _materiality_filter(fresh)
+        ranked = cap(rank(material, conn))
         for c in ranked:
             insert_event(conn, {**c, "status": c["status"]})
         summary = {"fetched": len(cands), "resolved": len(resolved), "fresh": len(fresh),
+                   "material": len(material),
                    "queued": sum(1 for c in ranked if c["status"] == "queued"),
                    "skipped": sum(1 for c in ranked if c["status"] == "skipped")}
         log.info("ingest: %s", summary)

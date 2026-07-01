@@ -75,7 +75,9 @@ def test_run_ingest_end_to_end(monkeypatch, tmp_path):
     monkeypatch.setattr(ing, "fetch_marketaux", lambda idx: [])
     monkeypatch.setattr(ing, "fetch_alphavantage", lambda idx: [])
     monkeypatch.setattr(ing, "fetch_rss_broad", lambda: [])
+    monkeypatch.setenv("INGEST_MATERIALITY_GATE", "0")   # keep this test hermetic (no LLM call)
     s = ing.run_ingest(db)
     assert s["queued"] == 1
+    assert s["material"] == 1
     conn = store.connect(db)
     assert store.queued_events(conn)[0]["seed_node_id"] == "cik:1"

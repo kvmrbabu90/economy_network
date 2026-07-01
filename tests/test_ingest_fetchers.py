@@ -56,3 +56,40 @@ def test_extract_rss_events_empty_when_claude_unavailable(monkeypatch):
 def test_marketaux_skipped_without_key(monkeypatch):
     monkeypatch.delenv("MARKETAUX_KEY", raising=False)
     assert ing.fetch_marketaux(ing._ticker_index(_graph())) == []
+
+
+def _cand(i, headline, entity="Acme"):
+    return {"headline": headline, "seed_entity": entity, "seed_node_id": f"cik:{i}",
+            "source": "SEC 8-K", "url": f"u/{i}", "category": "m&a", "published_at": "2026-07-01", "id": f"e{i}"}
+
+
+def test_materiality_gate_keeps_only_material(monkeypatch):
+    cands = [_cand(1, "Acme acquires rival for $5B"), _cand(2, "Why Acme stock could rise"),
+             _cand(3, "Acme wins $2B defense contract")]
+    # LLM marks 1 and 3 material, 2 not.
+    monkeypatch.setattr(ing, "_claude_call", lambda p: json.dumps([
+        {"index": 1, "material": True}, {"index": 2, "material": False}, {"index": 3, "material": True}]))
+    out = ing._materiality_filter(cands)
+    assert [c["id"] for c in out] == ["e1", "e3"]          # order preserved, non-material dropped
+
+
+def test_materiality_gate_failopen(monkeypatch):
+    cands = [_cand(1, "x"), _cand(2, "y")]
+    monkeypatch.setattr(ing, "_claude_call", lambda p: "")   # garbage/empty → keep all
+    assert ing._materiality_filter(cands) == cands
+
+
+def test_materiality_gate_toggle_off(monkeypatch):
+    cands = [_cand(1, "x")]
+    def boom(p):
+        raise AssertionError("gate must not call the LLM when disabled")
+    monkeypatch.setattr(ing, "_claude_call", boom)
+    monkeypatch.setenv("INGEST_MATERIALITY_GATE", "0")
+    assert ing._materiality_filter(cands) == cands
+
+
+def test_materiality_gate_empty(monkeypatch):
+    def boom(p):
+        raise AssertionError("no call on empty input")
+    monkeypatch.setattr(ing, "_claude_call", boom)
+    assert ing._materiality_filter([]) == []
