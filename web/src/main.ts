@@ -1475,11 +1475,17 @@ async function applyLiveImpactTint(): Promise<void> {
   }
 }
 
+/** Tracks the most recently clicked node so a slow /node/{id}/impact response
+ *  for a previously-selected node never renders into the current node's panel. */
+let latestImpactNodeId: string | null = null;
+
 /** Node-click → fetch /node/{id}/impact and patch the combined-impact section
  *  into the inspector body asynchronously (same pattern as the Describe button). */
 function showCombinedImpact(nodeId: string): void {
+  latestImpactNodeId = nodeId;
   getNodeImpact(nodeId)
     .then((resp) => {
+      if (nodeId !== latestImpactNodeId) return;   // a newer node was clicked; drop this stale response
       const inspectorRoot = document.getElementById("inspector-body");
       if (inspectorRoot) renderCombinedImpactInto(inspectorRoot, resp, { onSharpen: sharpenWithClaude });
     })
