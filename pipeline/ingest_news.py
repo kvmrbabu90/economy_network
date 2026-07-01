@@ -308,17 +308,26 @@ def _materiality_filter(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
         log.warning("materiality gate: unparseable LLM output — keeping all %d", len(cands))
         return cands
     keep_idx = set()
+    usable = 0   # well-formed verdicts (in-range int index + boolean material)
     for h in parsed:
-        if isinstance(h, dict) and h.get("material") is True:
-            i = h.get("index")
-            if isinstance(i, int) and 1 <= i <= len(cands):
+        if not isinstance(h, dict):
+            continue
+        i = h.get("index")
+        mat = h.get("material")
+        if isinstance(i, int) and 1 <= i <= len(cands) and isinstance(mat, bool):
+            usable += 1
+            if mat:
                 keep_idx.add(i - 1)
-    if not keep_idx:
-        # A parsed-but-empty keep-set is ambiguous (all-noise vs. a bad response).
-        # Fail-open to avoid silently zeroing a cycle.
-        log.warning("materiality gate: LLM kept 0/%d — keeping all (fail-open)", len(cands))
+    if usable == 0:
+        # A list, but no well-formed verdicts — can't tell all-noise from garbage,
+        # so fail open rather than silently zero the cycle.
+        log.warning("materiality gate: no usable verdicts — keeping all %d", len(cands))
         return cands
-    return [c for i, c in enumerate(cands) if i in keep_idx]
+    # Trust a well-formed verdict set even when it keeps zero: a valid "nothing
+    # material this cycle" must NOT fall back to tracing noise.
+    kept = [c for i, c in enumerate(cands) if i in keep_idx]
+    log.info("materiality gate: kept %d/%d material", len(kept), len(cands))
+    return kept
 
 
 def fetch_rss_broad() -> list[dict]:

@@ -93,3 +93,20 @@ def test_materiality_gate_empty(monkeypatch):
         raise AssertionError("no call on empty input")
     monkeypatch.setattr(ing, "_claude_call", boom)
     assert ing._materiality_filter([]) == []
+
+
+def test_materiality_gate_valid_all_nonmaterial_keeps_none(monkeypatch):
+    # A well-formed verdict list judging everything non-material must keep NOTHING
+    # (a quiet hour traces no noise), not fall back to keeping all.
+    cands = [_cand(1, "opinion piece"), _cand(2, "stock rises 2%")]
+    monkeypatch.setattr(ing, "_claude_call", lambda p: json.dumps(
+        [{"index": 1, "material": False}, {"index": 2, "material": False}]))
+    assert ing._materiality_filter(cands) == []
+
+
+def test_materiality_gate_structurally_junk_failopen(monkeypatch):
+    # A list with no well-formed verdicts (no usable index/material) is indistinguishable
+    # from garbage → fail open (keep all) rather than zero the cycle.
+    cands = [_cand(1, "Acme buys rival"), _cand(2, "y")]
+    monkeypatch.setattr(ing, "_claude_call", lambda p: json.dumps([{"foo": "bar"}, "nonsense"]))
+    assert ing._materiality_filter(cands) == cands
