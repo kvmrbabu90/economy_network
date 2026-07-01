@@ -25,11 +25,13 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from schema import store
 from schema.store import connect
 
 from . import impact as impact_mod
 from . import news as news_mod
 from . import query as q
+from .query import resolve_id
 
 
 log = logging.getLogger("api.main")
@@ -137,8 +139,20 @@ app.add_middleware(
 
 @app.get("/health")
 def get_health(conn: sqlite3.Connection = Depends(get_conn)):
-    """Counts + the customer_of-rows invariant check (must be 0)."""
-    return q.health(conn)
+    """Counts + the customer_of-rows invariant check (must be 0), plus
+    node_impact cache freshness (So What? V2 · P4)."""
+    result = q.health(conn)
+    # Tolerate DBs built before the P4 node_impact table existed (e.g. a live
+    # econgraph.db from an older build_graph): report 0 / None rather than 500.
+    try:
+        result["node_impact_rows"] = conn.execute(
+            "SELECT COUNT(*) c FROM node_impact"
+        ).fetchone()["c"]
+        result["node_impact_computed_at"] = store.latest_node_impact_computed_at(conn)
+    except sqlite3.OperationalError:
+        result["node_impact_rows"] = 0
+        result["node_impact_computed_at"] = None
+    return result
 
 
 def _parse_types(types: Optional[str]) -> Optional[list[str]]:
@@ -185,6 +199,44 @@ def get_ego_endpoint(
     if result is None:
         raise HTTPException(status_code=404, detail=f"Node not found: {node_id!r}")
     return result
+
+
+# So What? V2 · P4 — serve the precomputed node_impact cache. NO request-time LLM.
+# NOTE: `/node/{node_id:path}/impact` MUST be declared BEFORE the catch-all
+# `/node/{node_id:path}` (same greedy-:path hazard as the /ego route above),
+# otherwise the catch-all swallows ".../impact" and this endpoint 404s.
+@app.get("/impact/live")
+def impact_live(conn: sqlite3.Connection = Depends(get_conn)):
+    rows = store.read_all_node_impact(conn)
+    return {"computed_at": store.latest_node_impact_computed_at(conn),
+            "count": len(rows), "impacts": rows}
+
+
+@app.get("/node/{node_id:path}/impact")   # BEFORE the catch-all /node/{node_id:path}
+def node_impact(node_id: str, conn: sqlite3.Connection = Depends(get_conn)):
+    cid = resolve_id(conn, node_id)
+    if not cid:
+        raise HTTPException(status_code=404, detail=f"unknown node: {node_id}")
+    nrow = conn.execute("SELECT name, type FROM nodes WHERE id = ?", (cid,)).fetchone()
+    name = nrow["name"] if nrow else cid
+    ntype = nrow["type"] if nrow else None
+    raw = store.read_node_impact(conn, cid)
+    if raw is None:
+        return {"node_id": cid, "name": name, "type": ntype, "impact": None}
+    top = json.loads(raw["top_events"] or "[]")
+    ids = [e["event_id"] for e in top if e.get("event_id")]
+    meta = {}
+    if ids:
+        q_sql = "SELECT id, url, source FROM events WHERE id IN (%s)" % ",".join("?" * len(ids))
+        meta = {r["id"]: r for r in conn.execute(q_sql, ids).fetchall()}
+    for e in top:
+        m = meta.get(e.get("event_id"))
+        e["url"] = m["url"] if m else None
+        e["source"] = m["source"] if m else None
+    return {"node_id": cid, "name": name, "type": ntype,
+            "impact": {"direction": raw["direction"], "magnitude": raw["magnitude"],
+                       "mixed_signals": raw["mixed_signals"], "event_count": raw["event_count"],
+                       "computed_at": raw["computed_at"], "top_events": top}}
 
 
 @app.get("/subgraph")
