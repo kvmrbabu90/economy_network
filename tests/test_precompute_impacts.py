@@ -91,6 +91,18 @@ def test_wallclock_budget_stops_immediately(tmp_path, monkeypatch):
     assert conn.execute("SELECT COUNT(*) c FROM events WHERE status='queued'").fetchone()["c"] == 2
 
 
+def test_precompute_passes_seed_hint(tmp_path, monkeypatch):
+    db = _db_with_queued(tmp_path, 1)              # seeds an event e0 with seed_node_id 'cik:0'
+    captured = {}
+    def fake_run_impact(headline, **kwargs):
+        captured.update(kwargs); captured["headline"] = headline
+        return {"seeds": [{"node_id": "cik:0"}],
+                "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.5, "hop": 0}]}
+    monkeypatch.setattr(pc._impact, "run_impact", fake_run_impact)
+    pc.run_precompute(db)
+    assert captured.get("seed_hint_id") == "cik:0"     # ingest-resolved seed handed to the engine
+
+
 def test_retrace_failure_clears_stale_impacts(tmp_path, monkeypatch):
     db = _db_with_queued(tmp_path, 1)
     monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {

@@ -57,7 +57,8 @@ def run_precompute(db_path: Path = DB_PATH, *, max_events: int = PRECOMPUTE_MAX_
             summary["processed"] += 1
             try:
                 r = _impact.run_impact(ev["headline"], conn=conn, provider=prov,
-                                       max_hops=BATCH_MAX_HOPS, refine=False, verify=False)
+                                       max_hops=BATCH_MAX_HOPS, refine=False, verify=False,
+                                       seed_hint_id=ev.get("seed_node_id"))
             except Exception as exc:
                 log.warning("precompute: %s trace raised %s", ev["id"], exc)
                 _mark_failed(ev["id"])
