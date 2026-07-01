@@ -545,9 +545,15 @@ _SEED_SCORE_PROMPT = (
 
 def _score_seed_node(text: str, name: str, node_type: str) -> Optional[dict[str, Any]]:
     """One focused LLM call: direction/magnitude/reasoning of `text` on a known
-    entity. Returns None if the call fails or yields no usable direction."""
-    raw = _llm_call(_SEED_SCORE_PROMPT.format(news=text, name=name, type=node_type))
-    obj = _parse_llm_json(raw)
+    entity. Returns None if the call fails or yields no usable direction.
+    Fail-open: any LLM/parse exception → None (the caller then skips the hint
+    rather than aborting the whole trace)."""
+    try:
+        raw = _llm_call(_SEED_SCORE_PROMPT.format(news=text, name=name, type=node_type))
+        obj = _parse_llm_json(raw)
+    except Exception as exc:                       # provider misconfig, timeout, subprocess error
+        log.warning("_score_seed_node: scoring call failed (%s) — skipping hint", exc)
+        return None
     if not isinstance(obj, dict):
         return None
     direction = obj.get("direction")

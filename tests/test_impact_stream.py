@@ -535,3 +535,12 @@ def test_seed_hint_already_seeded_no_duplicate(conn, monkeypatch):
     seeds = next(e for e in events if e["event"] == "seeds")["seeds"]
     assert sum(1 for v in seeds if v["node_id"] == hint["id"]) == 1  # exactly one
     assert calls["n"] == 0                                          # hint already seeded → no scoring call
+
+
+def test_score_seed_node_failopen_on_exception(monkeypatch):
+    # If the scoring LLM call raises, _score_seed_node must return None (fail-open),
+    # so the injection block skips the hint instead of aborting the whole trace.
+    def boom(prompt):
+        raise RuntimeError("provider down")
+    monkeypatch.setattr(impact_mod, "_llm_call", boom)
+    assert impact_mod._score_seed_node("some news", "Apple Inc.", "Company") is None
