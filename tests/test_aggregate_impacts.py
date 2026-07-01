@@ -102,6 +102,19 @@ def test_equal_opposing_masses_net_to_no_effect(tmp_path):
     assert r["mixed_signals"] == 1 and r["event_count"] == 2
 
 
+def test_unscored_and_no_effect_excluded_from_top_events(tmp_path):
+    conn = _db(tmp_path)
+    _event(conn, "pos", "2026-06-17"); _event(conn, "uns", "2026-06-17"); _event(conn, "noe", "2026-06-17")
+    store.write_event_impacts(conn, "pos", [{"node_id": "k", "direction": "positive", "magnitude": 0.8, "hop": 1}])
+    store.write_event_impacts(conn, "uns", [{"node_id": "k", "direction": "unscored", "magnitude": 0.0, "hop": 2}])
+    store.write_event_impacts(conn, "noe", [{"node_id": "k", "direction": "no_effect", "magnitude": 0.0, "hop": 2}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT * FROM node_impact WHERE node_id='k'").fetchone()
+    top = json.loads(r["top_events"])
+    assert r["event_count"] == 3                       # all touches counted for context
+    assert len(top) == 1 and top[0]["direction"] == "positive"   # only the real contributor surfaces
+
+
 def test_only_traced_events_aggregated(tmp_path):
     conn = _db(tmp_path)
     # an event whose status is not 'traced' must not contribute, even with impacts present

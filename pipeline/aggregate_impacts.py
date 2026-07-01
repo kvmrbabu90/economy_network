@@ -81,7 +81,10 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
             direction, magnitude = "no_effect", 0.0
         if mixed and 0 < magnitude < 0.15:
             magnitude = 0.15
-        top = sorted(a["events"], key=lambda e: -abs(e["weighted"]))[:top_n]
+        # top_events shows real drivers only: drop zero-weighted rows (unscored /
+        # no_effect) — they still count toward event_count but aren't "contributions".
+        contributing = [e for e in a["events"] if e["weighted"] != 0.0]
+        top = sorted(contributing, key=lambda e: -abs(e["weighted"]))[:top_n]
         out.append({"node_id": node_id, "direction": direction, "magnitude": round(magnitude, 3),
                     "mixed_signals": mixed, "event_count": a["count"],
                     "top_events": json.dumps(top), "computed_at": computed_at})
