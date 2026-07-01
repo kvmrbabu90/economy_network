@@ -23,3 +23,13 @@ def test_run_cycle_isolates_stage_failure(monkeypatch, tmp_path):
     assert s["ok"] is False
     assert "error" in s["precompute"] and "throttled" in s["precompute"]["error"]
     assert ran.get("agg") is True                 # aggregate still ran after precompute failed
+
+
+def test_scheduler_once_runs_single_cycle(monkeypatch):
+    from pipeline import scheduler
+    n = {"c": 0}
+    monkeypatch.setattr(scheduler, "run_cycle", lambda **k: n.__setitem__("c", n["c"] + 1) or {"ok": True})
+    slept = {"n": 0}
+    monkeypatch.setattr(scheduler.time, "sleep", lambda s: slept.__setitem__("n", slept["n"] + 1))
+    scheduler.main(["--once"])
+    assert n["c"] == 1 and slept["n"] == 0        # one cycle, no sleep
