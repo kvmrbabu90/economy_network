@@ -29,3 +29,27 @@ def test_insert_event_is_idempotent_on_id():
     store.insert_event(conn, {**row, "headline": "changed"})   # same id → ignored
     q = store.queued_events(conn)
     assert len(q) == 1 and q[0]["headline"] == "h"
+
+
+def test_event_impacts_write_and_replace():
+    conn = _mem()
+    store.write_event_impacts(conn, "e1", [
+        {"node_id": "cik:1", "direction": "negative", "magnitude": 0.8, "hop": 0, "reasoning": "seed"},
+        {"node_id": "cik:2", "direction": "positive", "magnitude": 0.3, "hop": 1, "reasoning": "x"},
+    ])
+    rows = conn.execute("SELECT node_id, direction, magnitude, hop FROM event_impacts WHERE event_id='e1' ORDER BY hop").fetchall()
+    assert [r["node_id"] for r in rows] == ["cik:1", "cik:2"]
+    # Re-write is delete-then-insert (no dup PK, replaces cleanly).
+    store.write_event_impacts(conn, "e1", [
+        {"node_id": "cik:3", "direction": "negative", "magnitude": 0.5, "hop": 1, "reasoning": "y"}])
+    rows = conn.execute("SELECT node_id FROM event_impacts WHERE event_id='e1'").fetchall()
+    assert [r["node_id"] for r in rows] == ["cik:3"]
+
+
+def test_set_event_status():
+    conn = _mem()
+    store.insert_event(conn, {"id": "e1", "headline": "h", "source": "s", "url": "u",
+                              "category": "c", "published_at": None, "seed_entity": "E",
+                              "seed_node_id": "cik:1", "status": "queued"})
+    store.set_event_status(conn, "e1", "traced")
+    assert conn.execute("SELECT status FROM events WHERE id='e1'").fetchone()["status"] == "traced"

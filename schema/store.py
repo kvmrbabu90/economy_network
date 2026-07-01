@@ -110,6 +110,17 @@ CREATE TABLE IF NOT EXISTS events (
     status       TEXT NOT NULL DEFAULT 'queued'
 );
 CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
+
+CREATE TABLE IF NOT EXISTS event_impacts (
+    event_id   TEXT NOT NULL,
+    node_id    TEXT NOT NULL,
+    direction  TEXT NOT NULL,
+    magnitude  REAL NOT NULL,
+    hop        INTEGER NOT NULL,
+    reasoning  TEXT,
+    PRIMARY KEY (event_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_impacts_node ON event_impacts(node_id);
 """
 
 
@@ -156,6 +167,24 @@ def event_exists(conn: sqlite3.Connection, event_id: str) -> bool:
 def queued_events(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM events WHERE status = 'queued' ORDER BY ingested_at").fetchall()
     return [dict(r) for r in rows]
+
+
+def write_event_impacts(conn: sqlite3.Connection, event_id: str, impacts: list[dict[str, Any]]) -> None:
+    """Replace all impact rows for an event (delete-then-insert, so a re-trace is clean)."""
+    conn.execute("DELETE FROM event_impacts WHERE event_id = ?", (event_id,))
+    conn.executemany(
+        "INSERT INTO event_impacts (event_id, node_id, direction, magnitude, hop, reasoning) "
+        "VALUES (?,?,?,?,?,?)",
+        [(event_id, v["node_id"], v.get("direction", "no_effect"),
+          float(v.get("magnitude") or 0.0), int(v.get("hop") or 0), v.get("reasoning"))
+         for v in impacts],
+    )
+    conn.commit()
+
+
+def set_event_status(conn: sqlite3.Connection, event_id: str, status: str) -> None:
+    conn.execute("UPDATE events SET status = ? WHERE id = ?", (status, event_id))
+    conn.commit()
 
 
 def upsert_node(conn: sqlite3.Connection, node: Union[Node, dict[str, Any]]) -> Node:
