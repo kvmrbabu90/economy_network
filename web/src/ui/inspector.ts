@@ -8,6 +8,8 @@ import type { EconGraph } from "../graph";
 export interface NodeExtras {
   impact?: ImpactVerdict;
   onDescribe?: (nodeId: string) => Promise<string>;
+  combinedImpact?: import("../api").NodeImpact | null;   // resolved verdict, or null = no recent impact
+  onSharpen?: (headline: string) => void;                // run full V1 trace on the strongest event
 }
 
 // Point at the BODY div, not the outer <section>.  This keeps the toggle
@@ -274,4 +276,73 @@ export function showEdge(
       r.appendChild(block);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Combined impact (So What? V2) -- precomputed, netted verdict + event timeline
+// ---------------------------------------------------------------------------
+
+export interface TimelineRow {
+  headline: string; direction: string; magnitude: number;
+  publishedAt: string | null; linkUrl: string | null; sourceLabel: string | null;
+}
+
+/** Pure view-model: flatten a NodeImpact's top_events into renderable rows. */
+export function buildTimelineRows(impact: import("../api").NodeImpact): TimelineRow[] {
+  return (impact.top_events ?? []).map(e => ({
+    headline: e.headline, direction: e.direction, magnitude: e.magnitude,
+    publishedAt: e.published_at, linkUrl: e.url ?? null, sourceLabel: e.source ?? null,
+  }));
+}
+
+/** Render the combined-impact section into `root` (the #inspector-body element that
+ *  showNode renders into). Removes any prior `.combined-impact-box` so re-clicks
+ *  don't stack. Exported so main.ts can call it after the async /node/{id}/impact fetch. */
+export function renderCombinedImpactInto(
+  root: HTMLElement,
+  resp: import("../api").NodeImpactResponse,
+  handlers: { onSharpen?: (headline: string) => void } = {},
+): void {
+  root.querySelector(".combined-impact-box")?.remove();
+  const imp = resp.impact;
+  const box = el("div", { class: "combined-impact-box" });
+  box.appendChild(el("div", { class: "combined-impact-title" }, "Combined impact · precomputed"));
+  if (!imp) {
+    box.appendChild(el("p", { class: "combined-empty" }, "No recent impact."));
+    root.appendChild(box);
+    return;
+  }
+  const dir = imp.direction === "positive" ? "POSITIVE"
+    : imp.direction === "negative" ? "NEGATIVE" : "NO EFFECT";
+  box.appendChild(el("div", { class: "combined-header" },
+    el("span", { class: "impact-dir" }, imp.mixed_signals ? "MIXED" : dir),
+    el("span", { class: "impact-mag" }, `magnitude ${imp.magnitude.toFixed(2)}`),
+    el("span", { class: "impact-count" }, `${imp.event_count} event${imp.event_count === 1 ? "" : "s"}`),
+  ));
+  box.appendChild(el("div", { class: "combined-freshness" }, `as of ${imp.computed_at}`));
+  const rows = buildTimelineRows(imp);
+  if (rows.length) {
+    const tl = el("div", { class: "combined-timeline" });
+    for (const rrow of rows) {
+      const item = el("div", { class: "timeline-event" },
+        el("span", { class: `event-dir ${rrow.direction}` }, rrow.direction.toUpperCase()),
+        el("span", { class: "event-headline" }, rrow.headline),
+        el("span", { class: "event-date" }, rrow.publishedAt ?? ""));
+      if (rrow.linkUrl) {
+        item.appendChild(el("a", { class: "event-source", href: rrow.linkUrl,
+          target: "_blank", rel: "noopener noreferrer" }, rrow.sourceLabel ?? "source"));
+      } else if (rrow.sourceLabel) {
+        item.appendChild(el("span", { class: "event-source muted" }, rrow.sourceLabel));
+      }
+      tl.appendChild(item);
+    }
+    box.appendChild(tl);
+  }
+  if (handlers.onSharpen && rows.length) {
+    const btn = el("button", { class: "sharpen-btn", type: "button" }, "Sharpen with Claude");
+    const strongest = imp.top_events[0].headline;
+    btn.addEventListener("click", () => handlers.onSharpen!(strongest));
+    box.appendChild(btn);
+  }
+  root.appendChild(box);
 }

@@ -1290,6 +1290,95 @@ html, body {
   color: var(--text);
 }
 
+/* So What? V2: combined (precomputed) impact section */
+.combined-impact-box {
+  margin: 14px 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border-left: 3px solid #6e6a62;
+  background: rgba(255, 255, 255, 0.03);
+}
+.combined-impact-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-mute);
+  margin-bottom: 8px;
+}
+.combined-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-mute);
+}
+.combined-header {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+.combined-header .impact-count {
+  font-size: 11px;
+  color: var(--text-mute);
+}
+.combined-freshness {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-bottom: 8px;
+}
+.combined-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 10px;
+}
+.timeline-event {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+}
+.timeline-event .event-dir {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.timeline-event .event-dir.positive { color: #40c86e; }
+.timeline-event .event-dir.negative { color: #e25454; }
+.timeline-event .event-dir.no_effect { color: var(--text-mute); }
+.timeline-event .event-headline {
+  flex: 1 1 auto;
+  color: var(--text);
+  line-height: 1.4;
+}
+.timeline-event .event-date {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.timeline-event .event-source {
+  font-size: 11px;
+  color: #38bdf8;
+  text-decoration: none;
+}
+.timeline-event .event-source:hover { text-decoration: underline; }
+.timeline-event .event-source.muted {
+  color: var(--text-faint);
+}
+.sharpen-btn {
+  background: #2a2e34;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  margin-top: 4px;
+}
+.sharpen-btn:hover:not([disabled]) { background: #36393f; border-color: var(--text-mute); }
+.sharpen-btn[disabled] { opacity: 0.6; cursor: wait; }
+
 .provenance {
   background: var(--bg-recess);
   border-left: 3px solid var(--c-supplies);
