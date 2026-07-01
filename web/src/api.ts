@@ -497,3 +497,47 @@ export async function runImpactStream(
     notifyLoading();
   }
 }
+
+// ---------------------------------------------------------------------------
+// So What? V2 · P5 — precomputed impact endpoints (no request-time LLM).
+// ---------------------------------------------------------------------------
+
+export interface LiveImpact {
+  node_id: string;
+  direction: "positive" | "negative" | "no_effect";
+  magnitude: number;
+  mixed_signals: number;   // SQLite integer 0|1
+  event_count: number;
+}
+export interface ImpactLiveResponse { computed_at: string | null; count: number; impacts: LiveImpact[]; }
+
+export interface TopEvent {
+  event_id: string;
+  headline: string;
+  direction: string;
+  magnitude: number;
+  weighted: number;
+  hop: number;
+  published_at: string | null;
+  url: string | null;
+  source: string | null;
+}
+export interface NodeImpact {
+  direction: "positive" | "negative" | "no_effect";
+  magnitude: number;
+  mixed_signals: number;   // 0|1
+  event_count: number;
+  computed_at: string;
+  top_events: TopEvent[];
+}
+export interface NodeImpactResponse { node_id: string; name: string; type: string | null; impact: NodeImpact | null; }
+
+export function getImpactLive(): Promise<ImpactLiveResponse> {
+  return get<ImpactLiveResponse>("/impact/live");
+}
+export function getNodeImpact(nodeId: string): Promise<NodeImpactResponse> {
+  // Node ids embed colons (cik:0000320193); the API route is {node_id:path}, so
+  // the colon must survive into the path. encodeURI preserves ':' (encodeURIComponent
+  // would escape it) — same convention as getNode/getEgo above.
+  return get<NodeImpactResponse>(`/node/${encodeURI(nodeId)}/impact`);
+}
