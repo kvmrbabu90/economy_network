@@ -287,11 +287,24 @@ export interface TimelineRow {
   publishedAt: string | null; linkUrl: string | null; sourceLabel: string | null;
 }
 
+/** Only http(s) URLs are safe to use as an <a href>. Event urls come from
+ *  external news feeds, so a `javascript:`/`data:` URI must never become a
+ *  clickable link (XSS in the app origin). Returns the url or null. */
+function _safeHttpUrl(u: string | null | undefined): string | null {
+  if (!u) return null;
+  try {
+    const p = new URL(u);   // absolute parse; throws on relative/garbage
+    return p.protocol === "http:" || p.protocol === "https:" ? u : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Pure view-model: flatten a NodeImpact's top_events into renderable rows. */
 export function buildTimelineRows(impact: import("../api").NodeImpact): TimelineRow[] {
   return (impact.top_events ?? []).map(e => ({
     headline: e.headline, direction: e.direction, magnitude: e.magnitude,
-    publishedAt: e.published_at, linkUrl: e.url ?? null, sourceLabel: e.source ?? null,
+    publishedAt: e.published_at, linkUrl: _safeHttpUrl(e.url), sourceLabel: e.source ?? null,
   }));
 }
 

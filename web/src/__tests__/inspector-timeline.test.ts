@@ -22,4 +22,13 @@ describe("buildTimelineRows", () => {
   it("empty top_events → empty rows", () => {
     expect(buildTimelineRows(imp([])).length).toBe(0);
   });
+  it("rejects non-http(s) urls (no javascript:/data: href — XSS guard)", () => {
+    const mk = (url: string) => imp([{ event_id: "x", headline: "H", direction: "negative",
+      magnitude: 0.5, weighted: -0.5, hop: 1, published_at: null, url, source: "Feed" }]);
+    expect(buildTimelineRows(mk("javascript:alert(1)"))[0].linkUrl).toBeNull();
+    expect(buildTimelineRows(mk("data:text/html,<script>1</script>"))[0].linkUrl).toBeNull();
+    expect(buildTimelineRows(mk("not a url"))[0].linkUrl).toBeNull();
+    expect(buildTimelineRows(mk("https://ok/1"))[0].linkUrl).toBe("https://ok/1");   // http(s) preserved
+    expect(buildTimelineRows(mk("http://ok/2"))[0].linkUrl).toBe("http://ok/2");
+  });
 });
