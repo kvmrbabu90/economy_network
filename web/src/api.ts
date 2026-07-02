@@ -541,3 +541,28 @@ export function getNodeImpact(nodeId: string): Promise<NodeImpactResponse> {
   // would escape it) — same convention as getNode/getEgo above.
   return get<NodeImpactResponse>(`/node/${encodeURI(nodeId)}/impact`);
 }
+
+// So What? V2 · P9 — on-demand "Refresh news". POST starts a background cycle;
+// GET polls its status. Both use a raw fetch (bypassing the global inflight
+// "loading…" counter) so the periodic status poll doesn't flicker the app spinner
+// — the Refresh button shows its own spinner instead.
+export interface RefreshStatus {
+  running: boolean;
+  started_at: number | null;
+  finished_at: number | null;
+  result: unknown | null;
+  error: string | null;
+  status?: string;
+}
+
+export async function startImpactRefresh(): Promise<RefreshStatus> {
+  const resp = await fetch(new URL("/impact/refresh", API_BASE_URL).toString(), { method: "POST" });
+  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return (await resp.json()) as RefreshStatus;
+}
+
+export async function getImpactRefreshStatus(): Promise<RefreshStatus> {
+  const resp = await fetch(new URL("/impact/refresh/status", API_BASE_URL).toString());
+  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return (await resp.json()) as RefreshStatus;
+}

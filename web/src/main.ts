@@ -61,7 +61,7 @@ import {
   tintColorForCombined,
   type ImpactState,
 } from "./impact";
-import { getImpactLive, getNodeImpact, getHealth, type LiveImpact } from "./api";
+import { getImpactLive, getNodeImpact, getHealth, startImpactRefresh, getImpactRefreshStatus, type LiveImpact } from "./api";
 import { renderCombinedImpactInto, isStale } from "./ui/inspector";
 import {
   loadArchive,
@@ -940,6 +940,59 @@ const fullBtn = document.getElementById("btn-fullview");
 fullBtn?.addEventListener("click", () => {
   loadFullCore().catch(console.error);
 });
+
+// ---------------------------------------------------------------------------
+// "Refresh news" button (So What? V2 · P9): trigger a full ingest → materiality
+// gate → trace → aggregate cycle in the BACKGROUND, spin the icon while it runs,
+// then re-tint the map when it finishes. Poll uses a raw fetch (no global
+// spinner). Reflects an already-running refresh on load (e.g. after a reload).
+// ---------------------------------------------------------------------------
+const refreshBtn = document.getElementById("btn-refresh-news") as HTMLButtonElement | null;
+const refreshIcon = document.getElementById("btn-refresh-icon");
+let _refreshPoll: ReturnType<typeof setInterval> | null = null;
+
+function _setRefreshSpinning(on: boolean): void {
+  refreshIcon?.classList.toggle("spin", on);
+  if (refreshBtn) refreshBtn.disabled = on;
+}
+
+async function _pollRefreshUntilDone(): Promise<void> {
+  let s;
+  try {
+    s = await getImpactRefreshStatus();
+  } catch {
+    return;   // transient; keep polling
+  }
+  if (!s.running) {
+    if (_refreshPoll) { clearInterval(_refreshPoll); _refreshPoll = null; }
+    _setRefreshSpinning(false);
+    if (s.error) console.error("refresh cycle error:", s.error);
+    await applyLiveImpactTint().catch((err) => console.error("post-refresh re-tint failed", err));
+  }
+}
+
+function _beginRefreshPolling(): void {
+  if (_refreshPoll) return;
+  _setRefreshSpinning(true);
+  _refreshPoll = setInterval(() => { _pollRefreshUntilDone().catch(console.error); }, 5000);
+}
+
+refreshBtn?.addEventListener("click", async () => {
+  if (_refreshPoll) return;   // already refreshing
+  _setRefreshSpinning(true);
+  try {
+    await startImpactRefresh();
+    _beginRefreshPolling();
+  } catch (err) {
+    console.error("refresh start failed", err);
+    _setRefreshSpinning(false);
+  }
+});
+
+// If a refresh is already in flight when the page loads, show the spinner + poll.
+getImpactRefreshStatus()
+  .then((s) => { if (s.running) _beginRefreshPolling(); })
+  .catch(() => { /* backend not up yet; ignore */ });
 
 // ---------------------------------------------------------------------------
 // 2D <-> 3D view toggle. Sigma (2D) is the default; flipping to 3D mounts a

@@ -17,6 +17,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
@@ -46,6 +47,30 @@ def set_db_path(path: Path) -> None:
     global _DB_PATH, _ALIAS_INDEX
     _DB_PATH = Path(path)
     _ALIAS_INDEX = None  # rebuilt lazily on next /search call
+
+
+# --- So What? V2 · P9 — on-demand "Refresh news" ---------------------------
+# Run the full ingest -> materiality-gate -> trace -> aggregate cycle in a
+# background thread so the UI can trigger it and poll for completion. Only one
+# runs at a time (_refresh_lock). It shares the DB with the hourly scheduled
+# cycle safely (WAL + per-event commits); worst case both run at once and a
+# little work is duplicated.
+_refresh_lock = threading.Lock()
+_refresh_state: dict = {"running": False, "started_at": None, "finished_at": None,
+                        "result": None, "error": None}
+
+
+def _run_refresh() -> None:
+    from pipeline.run_cycle import run_cycle
+    try:
+        _refresh_state["result"] = run_cycle(_DB_PATH)
+        _refresh_state["error"] = None
+    except Exception as exc:   # never let the daemon thread crash silently
+        log.exception("impact refresh failed")
+        _refresh_state["error"] = repr(exc)
+    finally:
+        _refresh_state["finished_at"] = time.time()
+        _refresh_state["running"] = False
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +271,27 @@ def impact_live(conn: sqlite3.Connection = Depends(get_conn)):
         _reraise_if_locked(exc)   # 503 on lock, re-raises 'no such table'
         rows, computed_at = [], None   # unreachable for missing-table (helpers swallow it)
     return {"computed_at": computed_at, "count": len(rows), "impacts": rows}
+
+
+@app.post("/impact/refresh")
+def impact_refresh():
+    """Kick off a full news→impact cycle (ingest → materiality gate → trace →
+    aggregate) in the background. Idempotent while running: a second call just
+    reports the in-progress state. Poll GET /impact/refresh/status for completion."""
+    with _refresh_lock:
+        if _refresh_state["running"]:
+            return {"status": "already_running", "running": True}
+        _refresh_state.update(running=True, started_at=time.time(),
+                              finished_at=None, result=None, error=None)
+    threading.Thread(target=_run_refresh, daemon=True, name="impact-refresh").start()
+    return {"status": "started", "running": True}
+
+
+@app.get("/impact/refresh/status")
+def impact_refresh_status():
+    """Current state of a background refresh: {running, started_at, finished_at,
+    result, error}. When running flips false, the map is ready to re-poll."""
+    return dict(_refresh_state)
 
 
 @app.get("/node/{node_id:path}/impact")   # BEFORE the catch-all /node/{node_id:path}

@@ -159,3 +159,21 @@ def test_node_impact_locked_on_resolve_returns_503(tmp_path, monkeypatch):
     monkeypatch.setattr(api_main, "resolve_id", _locked)
     r = TestClient(api_main.app).get("/node/cik:1/impact")
     assert r.status_code == 503
+
+
+def test_impact_refresh_start_and_status(tmp_path, monkeypatch):
+    # POST starts a background cycle; GET status reports completion + result.
+    _client(tmp_path)
+    import pipeline.run_cycle as rc
+    calls = {"n": 0}
+    monkeypatch.setattr(rc, "run_cycle", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1) or {"ok": True, "ingest": {"queued": 3}})
+    import time as _t
+    client = TestClient(api_main.app)
+    assert client.post("/impact/refresh").json()["status"] in ("started", "already_running")
+    for _ in range(100):
+        if not client.get("/impact/refresh/status").json()["running"]:
+            break
+        _t.sleep(0.02)
+    st = client.get("/impact/refresh/status").json()
+    assert st["running"] is False and st["result"] == {"ok": True, "ingest": {"queued": 3}} and st["error"] is None
+    assert calls["n"] == 1
