@@ -1,7 +1,8 @@
 """So What? V2 · Phase 4 — full-cycle orchestrator.
 
-Runs the ingest -> precompute -> aggregate pipeline once, against one DB, with
-per-stage error isolation. Idempotent + restartable. Schedule this every 12h.
+Runs the ingest -> precompute -> aggregate -> prune pipeline once, against one DB,
+with per-stage error isolation. Idempotent + restartable. Scheduled hourly by the
+deployed Windows Task (see docs); the cadence is just how often you invoke this.
 
     python -B -m pipeline.run_cycle
 """

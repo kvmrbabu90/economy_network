@@ -24,7 +24,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = REPO_ROOT / "econgraph.db"
 
 PRECOMPUTE_MAX_EVENTS = int(os.environ.get("PRECOMPUTE_MAX_EVENTS", "25"))
-PRECOMPUTE_WALLCLOCK_S = int(os.environ.get("PRECOMPUTE_WALLCLOCK_S", str(6 * 3600)))
+# Default sized for the deployed HOURLY cadence (must finish well within the hour so
+# the next trigger isn't dropped by the task's MultipleInstances=IgnoreNew). The env
+# var overrides this; a 12h cadence can safely raise it.
+PRECOMPUTE_WALLCLOCK_S = int(os.environ.get("PRECOMPUTE_WALLCLOCK_S", "3000"))
 BATCH_MAX_HOPS = int(os.environ.get("PRECOMPUTE_MAX_HOPS", "2"))
 
 

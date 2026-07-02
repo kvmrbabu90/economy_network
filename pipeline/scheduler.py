@@ -1,9 +1,9 @@
 """So What? V2 · Phase 4 — unattended scheduler.
 
-Loops run_cycle every SCHEDULER_INTERVAL_S (default 12h). Use --once for a single
-cycle. RECOMMENDED on a workstation: instead of this long-lived loop, register an OS
-scheduler (Windows Task Scheduler / cron) to run `python -B -m pipeline.run_cycle`
-every 12h — more robust across sleep/restart.
+Loops run_cycle every SCHEDULER_INTERVAL_S (default 1h, matching the deployed
+hourly Task). Use --once for a single cycle. RECOMMENDED on a workstation: instead
+of this long-lived loop, register an OS scheduler (Windows Task Scheduler / cron) to
+run `python -B -m pipeline.run_cycle` on your cadence — more robust across sleep/restart.
 
     python -B -m pipeline.scheduler --once
     python -B -m pipeline.scheduler            # loop forever
@@ -19,7 +19,7 @@ from typing import Optional, Sequence
 from pipeline.run_cycle import run_cycle
 
 log = logging.getLogger(__name__)
-INTERVAL_S = int(os.environ.get("SCHEDULER_INTERVAL_S", str(12 * 3600)))
+INTERVAL_S = int(os.environ.get("SCHEDULER_INTERVAL_S", str(3600)))
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
