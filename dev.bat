@@ -6,13 +6,18 @@ echo Backend  : http://localhost:8101
 echo Frontend : http://localhost:5180
 echo.
 
+:: The graph DB lives OUTSIDE OneDrive (WAL + continuous sync corrupts). Point every
+:: launched process at it. Child windows started below inherit this. Also set as a
+:: persistent user env var, but the logged-on session may predate it, so set it here.
+set "ECONGRAPH_DB=%LOCALAPPDATA%\econgraph\econgraph.db"
+
 :: Kill any stale processes on these ports
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8101" ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":5180" ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
 
 :: Start backend
 echo Starting backend (uvicorn port 8101)...
-start "EconGraph Backend" cmd /k "cd /d C:\Users\konda\OneDrive\econgraph_repo && python -m uvicorn api.main:app --host :: --port 8101 --reload"
+start "EconGraph Backend" cmd /k "cd /d C:\Users\konda\OneDrive\econgraph_repo && python -B -m uvicorn api.main:app --host :: --port 8101 --reload"
 
 :: Brief pause so uvicorn binds before frontend tries to talk to it
 timeout /t 3 /nobreak >nul
