@@ -25,8 +25,9 @@ import requests
 log = logging.getLogger(__name__)
 
 # Graph DB used to gate headlines: a brief item whose primary entity isn't a node
-# can't seed a "So What?" trace, so we drop it. Resolved relative to the repo root.
-_DB_PATH = Path(__file__).resolve().parent.parent / "econgraph.db"
+# can't seed a "So What?" trace, so we drop it. Honors ECONGRAPH_DB (matches
+# schema.store.default_db_path) so it tracks the relocated, non-synced DB.
+_DB_PATH = Path(os.environ.get("ECONGRAPH_DB") or (Path(__file__).resolve().parent.parent / "econgraph.db"))
 
 # ---------------------------------------------------------------------------
 # RSS feed catalogue

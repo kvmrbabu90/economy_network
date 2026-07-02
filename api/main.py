@@ -37,7 +37,7 @@ from .query import resolve_id
 log = logging.getLogger("api.main")
 
 # Module-level config -- replaced by tests via the dependency override hook.
-_DB_PATH = Path("econgraph.db")
+_DB_PATH = store.default_db_path()
 _ALIAS_INDEX: Optional[q.AliasIndex] = None
 
 

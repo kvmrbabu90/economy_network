@@ -18,11 +18,11 @@ from fastapi.testclient import TestClient
 
 from api import main as api_main
 from api import query as q
-from schema.store import connect
+from schema.store import connect, default_db_path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = REPO_ROOT / "econgraph.db"
+DB_PATH = default_db_path()   # honors ECONGRAPH_DB so this tracks the relocated DB
 
 
 @pytest.fixture(scope="module", autouse=True)

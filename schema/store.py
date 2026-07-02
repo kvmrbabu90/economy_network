@@ -11,11 +11,23 @@ happens at the boundary between in-memory dicts and persisted rows.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Optional, Union
 
 from .models import Edge, Node
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def default_db_path() -> Path:
+    """The graph DB path used by every runtime process. Honors the ECONGRAPH_DB
+    env var so the DB can live on a LOCAL (non-synced) path; falls back to
+    <repo>/econgraph.db. The DB must NOT live in a continuously-synced folder
+    (OneDrive/Dropbox) — WAL sidecars corrupt under sync."""
+    env = os.environ.get("ECONGRAPH_DB")
+    return Path(env) if env else (_REPO_ROOT / "econgraph.db")
 
 # Module-level DDL — applied by init_db(). Keeping it as a single block makes
 # it cheap to diff and review against the data model in docs/PRD.md §4.
@@ -143,10 +155,16 @@ def connect(db_path: PathLike = "econgraph.db") -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    # Wait up to 5s for a busy writer instead of raising 'database is locked'
-    # immediately. WAL is deliberately NOT enabled here: the DB currently lives
-    # in a OneDrive-synced tree where WAL is unsafe (deferred to a relocation).
+    # Wait up to 5s for a busy writer instead of raising 'database is locked'.
     conn.execute("PRAGMA busy_timeout=5000")
+    # WAL lets the API read concurrently with the hourly cycle's writes without
+    # blocking, and journal_mode is persistent (effectively set-once). Safe now
+    # that the DB lives on a LOCAL path (see default_db_path) — it must NOT live
+    # in a continuously-synced folder. Best-effort: :memory: has no WAL.
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 

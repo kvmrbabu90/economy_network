@@ -13,10 +13,10 @@ from pathlib import Path
 import pytest
 
 from api import impact as impact_mod
-from schema.store import connect
+from schema.store import connect, default_db_path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = REPO_ROOT / "econgraph.db"
+DB_PATH = default_db_path()   # honors ECONGRAPH_DB so this tracks the relocated DB
 
 
 @pytest.fixture

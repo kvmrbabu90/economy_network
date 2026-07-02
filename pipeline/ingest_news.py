@@ -19,7 +19,9 @@ from typing import Any, Optional
 log = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = REPO_ROOT / "econgraph.db"
+# Honors ECONGRAPH_DB (matches schema.store.default_db_path) so the DB can live
+# on a local, non-synced path; falls back to <repo>/econgraph.db.
+DB_PATH = Path(os.environ.get("ECONGRAPH_DB") or (REPO_ROOT / "econgraph.db"))
 HUBS_PATH = REPO_ROOT / "data" / "hubs.jsonl"
 
 INGEST_CAP = int(os.environ.get("INGEST_CAP", "25"))

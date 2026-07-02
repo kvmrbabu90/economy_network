@@ -19,7 +19,7 @@ from schema import store
 
 log = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = REPO_ROOT / "econgraph.db"
+DB_PATH = store.default_db_path()
 
 
 def _run_ingest(db_path) -> dict:

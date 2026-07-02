@@ -29,6 +29,7 @@ from schema.store import (
     add_alias_rows,
     add_aliases,
     connect,
+    default_db_path,
     init_db,
     upsert_edge,
     upsert_node,
@@ -507,7 +508,7 @@ def run(*, data_root: Path, db_path: Path, graph_json_path: Path) -> Stats:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="EconGraph Phase 4 graph build")
     parser.add_argument("--data-root", default="data")
-    parser.add_argument("--db-path", default="econgraph.db")
+    parser.add_argument("--db-path", default=str(default_db_path()))
     parser.add_argument("--graph-json", default="data/graph.json")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)

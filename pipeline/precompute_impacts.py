@@ -21,7 +21,7 @@ from schema import store
 log = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = REPO_ROOT / "econgraph.db"
+DB_PATH = store.default_db_path()
 
 PRECOMPUTE_MAX_EVENTS = int(os.environ.get("PRECOMPUTE_MAX_EVENTS", "25"))
 # Default sized for the deployed HOURLY cadence (must finish well within the hour so
