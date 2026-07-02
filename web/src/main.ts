@@ -84,7 +84,9 @@ onLoadingChange((loading) => {
 });
 
 startStatusPolling();
-startStalenessPolling();
+// NOTE: startStalenessPolling() is invoked LOWER in the module (right after its
+// definition). Calling it here hit a temporal-dead-zone ReferenceError — its body
+// reads `let _stalenessInterval`, declared ~line 1517 — which aborted all init.
 
 const g: EconGraph = createGraph();
 
@@ -1577,6 +1579,11 @@ function startStalenessPolling(): void {
     _pollStaleness().catch((err) => console.error("staleness poll failed", err));
   }, STALENESS_POLL_MS);
 }
+
+// Kick off the staleness poll here — AFTER `let _stalenessInterval` (above) is
+// initialized. (It was previously called at module-top, before this line ran,
+// which threw a TDZ ReferenceError and aborted the entire app init.)
+startStalenessPolling();
 
 /** Tracks the most recently clicked node so a slow /node/{id}/impact response
  *  for a previously-selected node never renders into the current node's panel. */
