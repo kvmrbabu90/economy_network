@@ -12,6 +12,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
@@ -80,32 +81,59 @@ def _resolve_claude_binary() -> str:
 
 
 def _claude_call(prompt: str, timeout: int = 120) -> str:
-    """Single Claude CLI call; returns model text or empty string on error."""
+    """Single Claude CLI call; returns model text or empty string on error.
+
+    Windows-safe process management (mirrors api/impact.py._claude_call): the CLI
+    spawns a Node child tree, and subprocess.run(timeout=) only kills the direct
+    process, orphaning that tree. Use Popen in a new process group + communicate,
+    and on timeout `taskkill /F /T` the whole tree, then drain the pipes with a
+    bounded communicate() so the process is actually reaped before we return.
+    Fail-open: any error/timeout returns "".
+    """
+    import tempfile
     binary = _resolve_claude_binary()
     cmd = [binary, "-p", prompt, "--output-format", "json"]
     t0 = time.time()
     try:
-        import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
+            _kw: dict = dict(
                 stdin=subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 cwd=tmpdir,   # run outside repo root so CLAUDE.md doesn't block
             )
-    except subprocess.TimeoutExpired:
-        log.warning("news: Claude CLI timeout after %ds", timeout)
+            if sys.platform == "win32":
+                # Run in a new process group so we can kill the whole tree.
+                _kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            with subprocess.Popen(cmd, **_kw) as proc:
+                try:
+                    stdout_b, stderr_b = proc.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    log.warning("news: Claude CLI timeout after %ds — killing process tree", timeout)
+                    if sys.platform == "win32":
+                        subprocess.call(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    else:
+                        proc.kill()
+                    try:
+                        proc.communicate(timeout=5)  # drain pipes so the process exits cleanly
+                    except subprocess.TimeoutExpired:
+                        pass
+                    return ""
+                stdout_bytes = stdout_b
+                stderr_bytes = stderr_b
+                returncode = proc.returncode
+    except Exception as exc:
+        log.warning("news: Claude CLI launch failed: %s", exc)
         return ""
-    log.info("news: Claude CLI (%.1fs, exit=%d)", time.time() - t0, proc.returncode)
-    if proc.returncode != 0:
-        log.warning("news: Claude CLI error: %s", (proc.stderr or "")[:300])
+    stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+    stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+    log.info("news: Claude CLI (%.1fs, exit=%d)", time.time() - t0, returncode)
+    if returncode != 0:
+        log.warning("news: Claude CLI error: %s", stderr[:300])
         return ""
     try:
-        envelope = json.loads(proc.stdout)
+        envelope = json.loads(stdout)
     except json.JSONDecodeError:
         return ""
     if envelope.get("is_error"):
@@ -297,6 +325,20 @@ def _parse_pub_date(item: ET.Element) -> datetime | None:
         return None
 
 
+def _fmt_pub_date(pub_dt: datetime | None) -> str | None:
+    """Format a pubDate as a UTC calendar day ("YYYY-MM-DD"), or None.
+
+    Converts to UTC first so a tz-offset item near midnight (e.g. +13:00) isn't
+    stamped a day ahead — a day-ahead stamp would win max recency weight
+    downstream. Tz-naive datetimes are assumed to already be UTC.
+    """
+    if pub_dt is None:
+        return None
+    if pub_dt.tzinfo is None:
+        pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+    return pub_dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+
 # Per-feed and overall caps. We sample up to _PER_FEED items from EACH feed and
 # round-robin them into the final list, so a single high-volume feed (Yahoo) can't
 # crowd out the high-signal seeded feeds (SEC/Fed/Investing) — the old sequential
@@ -338,7 +380,10 @@ def _fetch_raw(max_items: int = _MAX_ITEMS) -> list[dict[str, Any]]:
                     "title": title,
                     "source": source,
                     "url": link,
-                    "pub_date": pub_dt.strftime("%Y-%m-%d") if pub_dt else None,
+                    # Normalise to UTC before formatting: a tz-offset item near
+                    # midnight (e.g. +13:00) would otherwise be stamped a day
+                    # ahead, which grants it max recency weight downstream.
+                    "pub_date": _fmt_pub_date(pub_dt),
                 })
         except Exception as exc:
             log.debug("news: feed %s failed: %s", source, exc)

@@ -61,8 +61,8 @@ import {
   tintColorForCombined,
   type ImpactState,
 } from "./impact";
-import { getImpactLive, getNodeImpact, type LiveImpact } from "./api";
-import { renderCombinedImpactInto } from "./ui/inspector";
+import { getImpactLive, getNodeImpact, getHealth, type LiveImpact } from "./api";
+import { renderCombinedImpactInto, isStale } from "./ui/inspector";
 import {
   loadArchive,
   saveToArchive,
@@ -84,6 +84,7 @@ onLoadingChange((loading) => {
 });
 
 startStatusPolling();
+startStalenessPolling();
 
 const g: EconGraph = createGraph();
 
@@ -1456,10 +1457,24 @@ if (impactCancelBtn) impactCancelBtn.addEventListener("click", () => {
 // So What? V2 · P5 — live pre-tint + node-click combined impact + sharpen
 // ---------------------------------------------------------------------------
 
+// So What? V2 · P5 — periodic re-tint. applyLiveImpactTint() used to run once
+// at load; an open dashboard would then freeze at page-load tints and never
+// reflect a new hourly precompute cycle. LIVE_TINT_REPOLL_MS drives a setInterval
+// (below) that re-runs it so the warm map refreshes WITHOUT a manual reload.
+const LIVE_TINT_REPOLL_MS = 300_000; // 5 min
+// Guard against overlapping fetches: skip a scheduled re-tint if a previous
+// applyLiveImpactTint() is still awaiting the network.
+let _liveTintInFlight = false;
+// Exposed so the interval is clear and can be inspected/cancelled in tests or
+// the console (window.__ec).
+let _liveTintInterval: ReturnType<typeof setInterval> | null = null;
+
 /** Fetch the precomputed /impact/live map and pre-tint the graph. Non-blocking:
  *  runs after the graph is interactive and never blocks first paint. On failure
  *  the graph simply renders untinted (log + move on). */
 async function applyLiveImpactTint(): Promise<void> {
+  if (_liveTintInFlight) return;   // overlap guard — a prior fetch is still running
+  _liveTintInFlight = true;
   try {
     const resp = await getImpactLive();
     liveImpactState = buildLiveImpactMap(resp.impacts);
@@ -1472,7 +1487,95 @@ async function applyLiveImpactTint(): Promise<void> {
     if (is3DRunning()) setLiveImpact3D(g, liveImpactState, filters);
   } catch (err) {
     console.error("live impact tint failed", err);   // graph still usable untinted
+  } finally {
+    _liveTintInFlight = false;
   }
+}
+
+/** Start the periodic /impact/live re-tint so an open dashboard reflects new
+ *  hourly precompute cycles without a reload. Each tick skips when an on-demand
+ *  trace is active (impactState set) — its reducer branch takes precedence and
+ *  a live re-tint would clobber the reducer install for that cycle — and when a
+ *  prior fetch is still in flight (handled inside applyLiveImpactTint). */
+function startLiveImpactRepoll(): void {
+  if (_liveTintInterval !== null) return;   // guard against double-init
+  _liveTintInterval = setInterval(() => {
+    if (impactState) return;                // don't clobber an active on-demand trace
+    applyLiveImpactTint().catch((err) => console.error("live impact re-tint failed", err));
+  }, LIVE_TINT_REPOLL_MS);
+}
+
+// ---------------------------------------------------------------------------
+// So What? V2 · P5 — staleness indicator. The hourly precompute cycle stamps
+// node_impact_computed_at (surfaced on /health). When it lags (stalled pipeline,
+// crashed scheduler), an unobtrusive note appears so the operator can see the
+// warm map is no longer fresh. Reuses the /health endpoint the status pill polls,
+// on its own light interval so it survives regardless of status.ts internals.
+// ---------------------------------------------------------------------------
+
+const STALENESS_POLL_MS = 300_000; // 5 min — matches the live re-tint cadence
+let _stalenessInterval: ReturnType<typeof setInterval> | null = null;
+
+/** Lazily create (once) the small "impact data as of …" note and mount it in
+ *  the topbar beside the status pill. Returns null if the topbar isn't present. */
+function _ensureStalenessNote(): HTMLElement | null {
+  let note = document.getElementById("impact-staleness");
+  if (note) return note;
+  const topbar = document.querySelector(".topbar");
+  if (!topbar) return null;
+  note = document.createElement("div");
+  note.id = "impact-staleness";
+  note.className = "impact-staleness";
+  note.hidden = true;
+  // Minimal inline styling so no CSS edit is required — a muted amber chip that
+  // stays out of the way until the data actually goes stale.
+  note.style.cssText =
+    "font-size:11px;color:#d9a441;opacity:0.85;margin-left:8px;white-space:nowrap;" +
+    "align-self:center;";
+  const pill = document.getElementById("status-pill");
+  if (pill && pill.parentNode) pill.parentNode.insertBefore(note, pill);
+  else topbar.appendChild(note);
+  return note;
+}
+
+/** Human-readable stamp for the staleness note. Uses locale time; falls back to
+ *  the raw string if it isn't parseable. */
+function _formatComputedAt(computedAt: string | null): string {
+  if (!computedAt) return "never computed";
+  const t = Date.parse(computedAt);
+  if (Number.isNaN(t)) return computedAt;
+  return new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+async function _pollStaleness(): Promise<void> {
+  const note = _ensureStalenessNote();
+  if (!note) return;
+  try {
+    // node_impact_computed_at is present on /health (added in the P4 scheduler
+    // work) but not yet in the HealthResponse type; read it defensively.
+    const h = await getHealth();
+    const computedAt = (h as unknown as { node_impact_computed_at?: string | null }).node_impact_computed_at ?? null;
+    if (isStale(computedAt)) {
+      note.textContent = `⚠ impact data as of ${_formatComputedAt(computedAt)}`;
+      note.title = "The hourly impact precompute cycle looks stalled — this map may be out of date.";
+      note.hidden = false;
+    } else {
+      note.hidden = true;
+    }
+  } catch {
+    // /health unreachable — the status pill already surfaces that; keep the
+    // staleness note quiet rather than double-reporting an outage.
+    note.hidden = true;
+  }
+}
+
+/** Start the light /health-backed staleness poll. */
+function startStalenessPolling(): void {
+  if (_stalenessInterval !== null) return;   // guard against double-init
+  _pollStaleness().catch((err) => console.error("staleness poll failed", err));
+  _stalenessInterval = setInterval(() => {
+    _pollStaleness().catch((err) => console.error("staleness poll failed", err));
+  }, STALENESS_POLL_MS);
 }
 
 /** Tracks the most recently clicked node so a slow /node/{id}/impact response
@@ -1911,6 +2014,9 @@ runLanding().then(() => {
       // So What? V2 · P5 — warm the graph from /impact/live once it's
       // interactive. Non-blocking: failure just leaves the graph untinted.
       applyLiveImpactTint().catch((err) => console.error("live impact tint failed", err));
+      // Keep the warm map fresh: re-poll every LIVE_TINT_REPOLL_MS so a new
+      // hourly precompute cycle shows up without a manual reload.
+      startLiveImpactRepoll();
     })
     .catch(console.error);
 

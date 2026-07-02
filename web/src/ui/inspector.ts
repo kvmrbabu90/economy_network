@@ -300,6 +300,34 @@ function _safeHttpUrl(u: string | null | undefined): string | null {
   }
 }
 
+/** Pure: the direction label to show for a combined-impact verdict.
+ *  A magnitude-0 / no_effect row must NEVER show a MIXED badge — the map
+ *  doesn't tint no_effect nodes, so the inspector must agree. Treat "mixed"
+ *  as meaningful only when there is actually a signal (magnitude > 0). */
+export function combinedDirLabel(
+  imp: { direction: string; magnitude: number; mixed_signals: boolean | number },
+): string {
+  const mixed = !!imp.mixed_signals && imp.magnitude > 0;
+  if (mixed) return "MIXED";
+  return imp.direction === "positive" ? "POSITIVE"
+    : imp.direction === "negative" ? "NEGATIVE" : "NO EFFECT";
+}
+
+/** Pure: has the precomputed impact data gone stale? True when `computedAt`
+ *  is missing/unparseable or older than `maxAgeMs` (default 2 h). Used to drive
+ *  the unobtrusive "impact data as of …" staleness note so a stalled hourly
+ *  pipeline is visible without a manual reload. */
+export function isStale(
+  computedAt: string | null | undefined,
+  now: number = Date.now(),
+  maxAgeMs: number = 2 * 60 * 60 * 1000,
+): boolean {
+  if (!computedAt) return true;
+  const t = Date.parse(computedAt);
+  if (Number.isNaN(t)) return true;
+  return now - t > maxAgeMs;
+}
+
 /** Pure view-model: flatten a NodeImpact's top_events into renderable rows. */
 export function buildTimelineRows(impact: import("../api").NodeImpact): TimelineRow[] {
   return (impact.top_events ?? []).map(e => ({
@@ -325,10 +353,8 @@ export function renderCombinedImpactInto(
     root.appendChild(box);
     return;
   }
-  const dir = imp.direction === "positive" ? "POSITIVE"
-    : imp.direction === "negative" ? "NEGATIVE" : "NO EFFECT";
   box.appendChild(el("div", { class: "combined-header" },
-    el("span", { class: "impact-dir" }, imp.mixed_signals ? "MIXED" : dir),
+    el("span", { class: "impact-dir" }, combinedDirLabel(imp)),
     el("span", { class: "impact-mag" }, `magnitude ${imp.magnitude.toFixed(2)}`),
     el("span", { class: "impact-count" }, `${imp.event_count} event${imp.event_count === 1 ? "" : "s"}`),
   ));

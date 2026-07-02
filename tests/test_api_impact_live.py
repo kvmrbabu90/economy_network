@@ -1,4 +1,7 @@
 import json
+import sqlite3
+
+import pytest
 from fastapi.testclient import TestClient
 from api import main as api_main
 from schema import store
@@ -108,3 +111,40 @@ def test_health_degrades_without_node_impact_table(tmp_path):
     api_main.set_db_path(db)
     body = TestClient(api_main.app).get("/health").json()
     assert body["node_impact_rows"] == 0 and body["node_impact_computed_at"] is None
+
+
+def test_impact_live_locked_db_returns_503(tmp_path, monkeypatch):
+    # A transient write-lock (the hourly aggregate is mid-commit) must NOT be
+    # laundered into an empty overlay — the cache is fine, we just collided.
+    # Surface 503 so the frontend retries. Simulate by making the store read
+    # helper raise the exact OperationalError SQLite raises on lock contention.
+    _client(tmp_path)  # seed + set_db_path; we replace the read helper below
+
+    def _locked(_conn):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "read_all_node_impact", _locked)
+    r = TestClient(api_main.app).get("/impact/live")
+    assert r.status_code == 503
+    assert r.json()["detail"] == "impact cache temporarily locked, retry"
+
+
+def test_node_impact_locked_db_returns_503(tmp_path, monkeypatch):
+    _client(tmp_path)
+
+    def _locked(_conn, _node_id):
+        raise sqlite3.OperationalError("database is busy")
+
+    monkeypatch.setattr(store, "read_node_impact", _locked)
+    r = TestClient(api_main.app).get("/node/cik:1/impact")
+    assert r.status_code == 503
+    assert r.json()["detail"] == "impact cache temporarily locked, retry"
+
+
+def test_impact_live_computed_at_matches_rows_atomically(tmp_path):
+    # The snapshot read must return computed_at drawn from the SAME view as the
+    # rows. With a populated seed, the timestamp is the seeded one and the row
+    # count is consistent — the two reads happen inside one transaction.
+    body = _client(tmp_path).get("/impact/live").json()
+    assert body["count"] == 1
+    assert body["computed_at"] == "2026-06-30T00:00:00"

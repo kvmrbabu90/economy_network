@@ -162,6 +162,28 @@ def _parse_types(types: Optional[str]) -> Optional[list[str]]:
     return [t.strip() for t in types.split(",") if t.strip()]
 
 
+def _reraise_if_locked(exc: sqlite3.OperationalError) -> None:
+    """Distinguish a transient lock from a genuinely-absent table.
+
+    The store read helpers swallow `OperationalError` to empty so a DB built
+    before the P4 `node_impact` table ('no such table') degrades gracefully.
+    A lock ('database is locked' / 'database is busy') is a different beast:
+    the cache is fine, we just collided with the hourly aggregate's commit.
+    Surface that as a 503 so the frontend retries instead of rendering an
+    (empty and therefore wrong) impact overlay.
+
+    Missing-table errors are re-raised unchanged for the caller to swallow.
+    """
+    msg = str(exc).lower()
+    if "database is locked" in msg or "database is busy" in msg:
+        raise HTTPException(
+            status_code=503, detail="impact cache temporarily locked, retry"
+        ) from exc
+    # 'no such table' (or anything else non-lock) — let the caller decide;
+    # the impact endpoints treat it as the pre-P4 empty-cache case.
+    raise exc
+
+
 # IMPORTANT: declare the more-specific `.../ego` route BEFORE the catch-all
 # `/node/{node_id:path}`. With path-style ids (colons in "cik:0000080424"),
 # the :path converter would otherwise swallow "cik:0000080424/ego" into the
@@ -207,9 +229,23 @@ def get_ego_endpoint(
 # otherwise the catch-all swallows ".../impact" and this endpoint 404s.
 @app.get("/impact/live")
 def impact_live(conn: sqlite3.Connection = Depends(get_conn)):
-    rows = store.read_all_node_impact(conn)
-    return {"computed_at": store.latest_node_impact_computed_at(conn),
-            "count": len(rows), "impacts": rows}
+    # Atomic snapshot: read the rows and their computed_at inside ONE deferred
+    # transaction so `computed_at` describes exactly the payload returned. Read
+    # as two bare statements, the hourly aggregate could commit its atomic swap
+    # (replace_node_impact) between them and hand back a timestamp that belongs
+    # to a different set of rows. BEGIN pins a read view for the whole call.
+    try:
+        conn.execute("BEGIN")
+        try:
+            rows = store.read_all_node_impact(conn)
+            computed_at = store.latest_node_impact_computed_at(conn)
+        finally:
+            # Read-only: nothing to persist. Rollback releases the snapshot.
+            conn.rollback()
+    except sqlite3.OperationalError as exc:
+        _reraise_if_locked(exc)   # 503 on lock, re-raises 'no such table'
+        rows, computed_at = [], None   # unreachable for missing-table (helpers swallow it)
+    return {"computed_at": computed_at, "count": len(rows), "impacts": rows}
 
 
 @app.get("/node/{node_id:path}/impact")   # BEFORE the catch-all /node/{node_id:path}
@@ -220,7 +256,11 @@ def node_impact(node_id: str, conn: sqlite3.Connection = Depends(get_conn)):
     nrow = conn.execute("SELECT name, type FROM nodes WHERE id = ?", (cid,)).fetchone()
     name = nrow["name"] if nrow else cid
     ntype = nrow["type"] if nrow else None
-    raw = store.read_node_impact(conn, cid)
+    try:
+        raw = store.read_node_impact(conn, cid)
+    except sqlite3.OperationalError as exc:
+        _reraise_if_locked(exc)   # 503 on lock, re-raises 'no such table'
+        raw = None                # unreachable for missing-table (helper swallows it)
     if raw is None:
         return {"node_id": cid, "name": name, "type": ntype, "impact": None}
     top = json.loads(raw["top_events"] or "[]")

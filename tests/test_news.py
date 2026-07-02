@@ -10,7 +10,9 @@ brief only contains items the tool can actually seed a trace on).
 """
 from __future__ import annotations
 
+import subprocess
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -92,3 +94,89 @@ def test_graph_gate_drops_unresolvable(monkeypatch):
         {"text": "c", "entity": ""},
     ])
     assert [h["text"] for h in out] == ["a"]
+
+
+# --- UTC pub_date normalisation --------------------------------------------
+
+def test_fmt_pub_date_converts_positive_offset_to_utc():
+    # 2026-06-21 00:30 at +13:00 is still 2026-06-20 in UTC — must NOT be stamped
+    # a day ahead (which would win max recency weight downstream).
+    dt = datetime(2026, 6, 21, 0, 30, tzinfo=timezone(timedelta(hours=13)))
+    assert news._fmt_pub_date(dt) == "2026-06-20"
+
+
+def test_fmt_pub_date_converts_negative_offset_to_utc():
+    # 2026-06-21 23:30 at -05:00 is 2026-06-22 in UTC.
+    dt = datetime(2026, 6, 21, 23, 30, tzinfo=timezone(timedelta(hours=-5)))
+    assert news._fmt_pub_date(dt) == "2026-06-22"
+
+
+def test_fmt_pub_date_assumes_utc_for_naive():
+    # A tz-naive datetime is assumed UTC (no shift).
+    assert news._fmt_pub_date(datetime(2026, 6, 21, 12, 0)) == "2026-06-21"
+
+
+def test_fmt_pub_date_none_passthrough():
+    assert news._fmt_pub_date(None) is None
+
+
+# --- Claude CLI process-tree kill (Windows-safe timeout) --------------------
+
+class _FakeProc:
+    """Minimal stand-in for a subprocess.Popen used as a context manager."""
+
+    def __init__(self, *, timeout: bool = False, stdout: bytes = b"", returncode: int = 0):
+        self._timeout = timeout
+        self._stdout = stdout
+        self._returncode = returncode
+        self.returncode = returncode
+        self.pid = 4242
+        self.communicate_calls = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def communicate(self, timeout=None):
+        self.communicate_calls += 1
+        # First call raises on the timeout scenario; the drain call succeeds.
+        if self._timeout and self.communicate_calls == 1:
+            raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
+        return (self._stdout, b"")
+
+
+def test_claude_call_timeout_kills_tree_and_returns_empty(monkeypatch):
+    monkeypatch.setattr(news, "_resolve_claude_binary", lambda: "claude.exe")
+    fake = _FakeProc(timeout=True)
+    monkeypatch.setattr(news.subprocess, "Popen", lambda *a, **k: fake)
+    killed: dict = {}
+    monkeypatch.setattr(
+        news.subprocess, "call",
+        lambda cmd, **k: killed.setdefault("cmd", cmd) or 0,
+    )
+    # Force the win32 branch so we exercise the taskkill path deterministically.
+    monkeypatch.setattr(news.sys, "platform", "win32")
+
+    out = news._claude_call("prompt", timeout=1)
+    assert out == ""                                  # fail-open on timeout
+    assert killed["cmd"][:4] == ["taskkill", "/F", "/T", "/PID"]
+    assert killed["cmd"][4] == str(fake.pid)          # kills the whole tree by PID
+    assert fake.communicate_calls == 2                # timeout + bounded drain
+
+
+def test_claude_call_parses_envelope_result(monkeypatch):
+    import json as _json
+    monkeypatch.setattr(news, "_resolve_claude_binary", lambda: "claude.exe")
+    envelope = _json.dumps({"result": "hello", "is_error": False}).encode("utf-8")
+    fake = _FakeProc(stdout=envelope, returncode=0)
+    monkeypatch.setattr(news.subprocess, "Popen", lambda *a, **k: fake)
+    assert news._claude_call("prompt") == "hello"
+
+
+def test_claude_call_nonzero_exit_returns_empty(monkeypatch):
+    monkeypatch.setattr(news, "_resolve_claude_binary", lambda: "claude.exe")
+    fake = _FakeProc(stdout=b"boom", returncode=2)
+    monkeypatch.setattr(news.subprocess, "Popen", lambda *a, **k: fake)
+    assert news._claude_call("prompt") == ""
