@@ -148,3 +148,14 @@ def test_impact_live_computed_at_matches_rows_atomically(tmp_path):
     body = _client(tmp_path).get("/impact/live").json()
     assert body["count"] == 1
     assert body["computed_at"] == "2026-06-30T00:00:00"
+
+
+def test_node_impact_locked_on_resolve_returns_503(tmp_path, monkeypatch):
+    # A lock during resolve_id (BEFORE the guarded read) must also surface 503,
+    # not an uncaught 500.
+    _client(tmp_path)
+    def _locked(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(api_main, "resolve_id", _locked)
+    r = TestClient(api_main.app).get("/node/cik:1/impact")
+    assert r.status_code == 503

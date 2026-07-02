@@ -41,7 +41,9 @@ def _run_aggregate(db_path) -> dict:
 def _run_prune(db_path, older_than_days: int = 30) -> dict:
     conn = store.connect(db_path); store.init_db(conn)
     try:
-        return store.prune_old_events(conn, older_than_days=older_than_days)
+        # prune_old_events returns a bare int; wrap it so the prune slot matches
+        # the dict shape of the other stages (ingest/precompute/aggregate).
+        return {"pruned_events": store.prune_old_events(conn, older_than_days=older_than_days)}
     finally:
         conn.close()
 

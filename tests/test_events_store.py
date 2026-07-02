@@ -152,3 +152,23 @@ def test_read_all_node_impact_omits_no_effect():
     # But a directly-queried no_effect node still resolves.
     one = store.read_node_impact(conn, "b")
     assert one is not None and one["direction"] == "no_effect"
+
+
+def test_read_helpers_reraise_lock_but_swallow_missing_table():
+    import sqlite3, pytest
+    class _LockedConn:
+        def execute(self, *a, **k):
+            raise sqlite3.OperationalError("database is locked")
+    class _MissingConn:
+        def execute(self, *a, **k):
+            raise sqlite3.OperationalError("no such table: node_impact")
+    # lock → propagate (so the API can turn it into a retryable 503)
+    for fn in (lambda c: store.read_all_node_impact(c),
+               lambda c: store.read_node_impact(c, "x"),
+               lambda c: store.latest_node_impact_computed_at(c)):
+        with pytest.raises(sqlite3.OperationalError):
+            fn(_LockedConn())
+    # missing table → graceful empty/None (pre-P4 DB)
+    assert store.read_all_node_impact(_MissingConn()) == []
+    assert store.read_node_impact(_MissingConn(), "x") is None
+    assert store.latest_node_impact_computed_at(_MissingConn()) is None

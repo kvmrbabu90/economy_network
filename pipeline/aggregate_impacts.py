@@ -53,7 +53,7 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
                e.headline, e.published_at, e.ingested_at
         FROM event_impacts ei JOIN events e ON e.id = ei.event_id
         WHERE e.status = 'traced'
-          AND date(COALESCE(e.published_at, e.ingested_at)) >= date(?)
+          AND date(COALESCE(NULLIF(e.published_at, ''), e.ingested_at)) >= date(?)
         """,
         (cutoff,),
     ).fetchall()

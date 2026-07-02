@@ -175,3 +175,16 @@ def test_computed_at_is_full_utc_timestamp(tmp_path):
     assert parsed.date() != date(2026, 6, 17)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     assert abs((parsed.replace(tzinfo=None) - now).total_seconds()) < 120
+
+
+def test_blank_published_at_still_in_window_via_ingested_at(tmp_path):
+    # Marketaux stores published_at='' (empty string, not NULL) when an article
+    # lacks a timestamp. The SQL window bound must fall back to ingested_at just
+    # like the Python age math, or these traced events silently vanish.
+    conn = _db(tmp_path)
+    _event(conn, "mkt", "")                                   # blank publish date
+    conn.execute("UPDATE events SET ingested_at='2026-07-01' WHERE id='mkt'")
+    store.write_event_impacts(conn, "mkt", [{"node_id": "z", "direction": "positive", "magnitude": 0.8, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 7, 1), window_days=7)
+    r = conn.execute("SELECT * FROM node_impact WHERE node_id='z'").fetchone()
+    assert r is not None and r["direction"] == "positive"     # included via ingested_at, not dropped

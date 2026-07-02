@@ -242,9 +242,17 @@ def replace_node_impact(conn: sqlite3.Connection, rows: list[dict[str, Any]]) ->
     conn.commit()
 
 
+def _is_missing_table(exc: sqlite3.OperationalError) -> bool:
+    """True only for a genuinely-absent table (DB built before P4). A lock/busy
+    error is NOT this — it must propagate so the API can surface a retryable 503
+    instead of laundering a transient collision into an empty/None result."""
+    return "no such table" in str(exc).lower()
+
+
 def read_all_node_impact(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Compact node_impact rows for graph tinting, ordered by node_id. Returns []
-    if the table doesn't exist (DB built before P4 / no cycle has run yet).
+    if the table doesn't exist (DB built before P4 / no cycle has run yet); any
+    other OperationalError (notably 'database is locked') is re-raised.
 
     Inert (`direction = 'no_effect'`) rows are excluded: they never tint the
     graph and only bloat the /impact/live payload. A directly-queried
@@ -254,30 +262,37 @@ def read_all_node_impact(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "SELECT node_id, direction, magnitude, mixed_signals, event_count "
             "FROM node_impact WHERE direction != 'no_effect' ORDER BY node_id"
         ).fetchall()
-    except sqlite3.OperationalError:
-        return []
+    except sqlite3.OperationalError as exc:
+        if _is_missing_table(exc):
+            return []
+        raise
     return [dict(r) for r in rows]
 
 
 def read_node_impact(conn: sqlite3.Connection, node_id: str) -> Optional[dict[str, Any]]:
     """Full node_impact row (top_events remains a JSON string), or None when the
-    node has no row or the table doesn't exist yet."""
+    node has no row or the table doesn't exist yet. A lock error is re-raised."""
     try:
         row = conn.execute(
             "SELECT node_id, direction, magnitude, mixed_signals, event_count, "
             "top_events, computed_at FROM node_impact WHERE node_id = ?", (node_id,)
         ).fetchone()
-    except sqlite3.OperationalError:
-        return None
+    except sqlite3.OperationalError as exc:
+        if _is_missing_table(exc):
+            return None
+        raise
     return dict(row) if row else None
 
 
 def latest_node_impact_computed_at(conn: sqlite3.Connection) -> Optional[str]:
-    """MAX(computed_at) across node_impact, or None when empty / table absent."""
+    """MAX(computed_at) across node_impact, or None when empty / table absent.
+    A lock error is re-raised (not swallowed to None)."""
     try:
         row = conn.execute("SELECT MAX(computed_at) AS c FROM node_impact").fetchone()
-    except sqlite3.OperationalError:
-        return None
+    except sqlite3.OperationalError as exc:
+        if _is_missing_table(exc):
+            return None
+        raise
     return row["c"] if row and row["c"] is not None else None
 
 

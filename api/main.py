@@ -250,17 +250,21 @@ def impact_live(conn: sqlite3.Connection = Depends(get_conn)):
 
 @app.get("/node/{node_id:path}/impact")   # BEFORE the catch-all /node/{node_id:path}
 def node_impact(node_id: str, conn: sqlite3.Connection = Depends(get_conn)):
-    cid = resolve_id(conn, node_id)
-    if not cid:
-        raise HTTPException(status_code=404, detail=f"unknown node: {node_id}")
-    nrow = conn.execute("SELECT name, type FROM nodes WHERE id = ?", (cid,)).fetchone()
-    name = nrow["name"] if nrow else cid
-    ntype = nrow["type"] if nrow else None
+    # Wrap EVERY DB access (resolve_id, the nodes lookup, and the node_impact read)
+    # in one guard: a lock during ANY of them must surface as a retryable 503, not
+    # an uncaught 500. HTTPException (the 404 below) is not an OperationalError, so
+    # it propagates unchanged. read_node_impact swallows only 'no such table'.
     try:
+        cid = resolve_id(conn, node_id)
+        if not cid:
+            raise HTTPException(status_code=404, detail=f"unknown node: {node_id}")
+        nrow = conn.execute("SELECT name, type FROM nodes WHERE id = ?", (cid,)).fetchone()
+        name = nrow["name"] if nrow else cid
+        ntype = nrow["type"] if nrow else None
         raw = store.read_node_impact(conn, cid)
     except sqlite3.OperationalError as exc:
-        _reraise_if_locked(exc)   # 503 on lock, re-raises 'no such table'
-        raw = None                # unreachable for missing-table (helper swallows it)
+        _reraise_if_locked(exc)   # 503 on lock; re-raises any other OperationalError
+        raise                     # unreachable (helper always raises), keeps types happy
     if raw is None:
         return {"node_id": cid, "name": name, "type": ntype, "impact": None}
     top = json.loads(raw["top_events"] or "[]")
