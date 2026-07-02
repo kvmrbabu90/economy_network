@@ -177,3 +177,10 @@ def test_impact_refresh_start_and_status(tmp_path, monkeypatch):
     st = client.get("/impact/refresh/status").json()
     assert st["running"] is False and st["result"] == {"ok": True, "ingest": {"queued": 3}} and st["error"] is None
     assert calls["n"] == 1
+
+
+def test_health_reports_event_counts(tmp_path):
+    # /health now surfaces how many news events are traced (P11 counter).
+    body = _client(tmp_path).get("/health").json()
+    assert body["events_traced"] == 1          # _seed() inserts one traced event
+    assert body["events"].get("traced") == 1

@@ -177,6 +177,16 @@ def get_health(conn: sqlite3.Connection = Depends(get_conn)):
     except sqlite3.OperationalError:
         result["node_impact_rows"] = 0
         result["node_impact_computed_at"] = None
+    # Event pipeline counts (So What? V2 · P11) so the UI can show how many news
+    # articles have been traced. Guarded: a pre-P1 DB has no events table.
+    try:
+        by_status = {r["status"]: r["c"] for r in conn.execute(
+            "SELECT status, COUNT(*) c FROM events GROUP BY status"
+        ).fetchall()}
+    except sqlite3.OperationalError:
+        by_status = {}
+    result["events"] = by_status
+    result["events_traced"] = by_status.get("traced", 0)
     return result
 
 

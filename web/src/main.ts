@@ -1606,20 +1606,32 @@ async function _pollStaleness(): Promise<void> {
   const note = _ensureStalenessNote();
   if (!note) return;
   try {
-    // node_impact_computed_at is present on /health (added in the P4 scheduler
-    // work) but not yet in the HealthResponse type; read it defensively.
-    const h = await getHealth();
-    const computedAt = (h as unknown as { node_impact_computed_at?: string | null }).node_impact_computed_at ?? null;
+    // events_traced / node_impact_rows / node_impact_computed_at are on /health
+    // (P4 + P11) but not in the HealthResponse type yet; read them defensively.
+    const h = (await getHealth()) as unknown as {
+      node_impact_computed_at?: string | null;
+      node_impact_rows?: number;
+      events_traced?: number;
+    };
+    const computedAt = h.node_impact_computed_at ?? null;
+    const traced = h.events_traced ?? 0;
+    const nodes = h.node_impact_rows ?? 0;
+    const count = `${traced} traced · ${nodes} nodes`;
+    const when = _formatComputedAt(computedAt);
+    // Always show the count; go amber + ⚠ only when the cycle looks stalled.
     if (isStale(computedAt)) {
-      note.textContent = `⚠ impact data as of ${_formatComputedAt(computedAt)}`;
+      note.textContent = `⚠ ${count} · as of ${when}`;
+      note.style.color = "#d9a441";   // amber = stale
       note.title = "The hourly impact precompute cycle looks stalled — this map may be out of date.";
-      note.hidden = false;
     } else {
-      note.hidden = true;
+      note.textContent = `${count} · as of ${when}`;
+      note.style.color = "#7c8696";   // muted = fresh
+      note.title = `${traced} news events traced → ${nodes} tinted nodes; last refreshed ${when}.`;
     }
+    note.hidden = false;
   } catch {
-    // /health unreachable — the status pill already surfaces that; keep the
-    // staleness note quiet rather than double-reporting an outage.
+    // /health unreachable — the status pill already surfaces that; hide to avoid
+    // double-reporting an outage.
     note.hidden = true;
   }
 }
