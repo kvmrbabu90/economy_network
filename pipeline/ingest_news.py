@@ -445,12 +445,18 @@ def run_ingest(db_path: Path = DB_PATH) -> dict[str, int]:
         fresh = dedupe(resolved, conn)
         material = _materiality_filter(fresh)
         ranked = cap(rank(material, conn))
-        for c in ranked:
-            insert_event(conn, {**c, "status": c["status"]})
+        # Persist ONLY the queued (top-cap) events. Over-cap material candidates are
+        # deliberately NOT written: recording them as 'skipped' made event_exists()
+        # skip them forever (nothing re-queues 'skipped'), so a fresh material story
+        # that merely lost the per-cycle cap race was dropped permanently. Leaving
+        # them unpersisted keeps them re-eligible — the next cycle re-fetches (within
+        # INGEST_MAX_AGE_DAYS), re-ranks, and queues them once the queue has room.
+        queued = [c for c in ranked if c["status"] == "queued"]
+        for c in queued:
+            insert_event(conn, {**c, "status": "queued"})
         summary = {"fetched": len(cands), "resolved": len(resolved), "fresh": len(fresh),
-                   "material": len(material),
-                   "queued": sum(1 for c in ranked if c["status"] == "queued"),
-                   "skipped": sum(1 for c in ranked if c["status"] == "skipped")}
+                   "material": len(material), "queued": len(queued),
+                   "deferred": len(ranked) - len(queued)}   # not dropped — re-eligible next cycle
         log.info("ingest: %s", summary)
         return summary
     finally:

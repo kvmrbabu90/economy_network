@@ -201,3 +201,47 @@ def test_run_ingest_end_to_end(monkeypatch, tmp_path):
     assert s["material"] == 1
     conn = store.connect(db)
     assert store.queued_events(conn)[0]["seed_node_id"] == "cik:1"
+
+
+def test_over_cap_events_not_persisted_and_reeligible(monkeypatch, tmp_path):
+    # Over-cap material events must NOT be recorded as permanently-'skipped'
+    # (which event_exists would then skip forever). They are left unpersisted so a
+    # later cycle can queue them once there's room — deferred, not dropped.
+    import pipeline.ingest_news as ing
+    db = tmp_path / "cap.db"
+    conn = store.connect(db); store.init_db(conn)
+    conn.execute("INSERT INTO nodes (id,type,name,tickers) VALUES ('cik:1','Company','Acme','[]')")
+    conn.execute("INSERT INTO nodes (id,type,name,tickers) VALUES ('cik:2','Company','Beta','[]')")
+    conn.commit(); conn.close()
+
+    def two_8k(c, **kw):
+        return [{"id": "ev1", "headline": "Acme deal", "source": "SEC 8-K", "url": "u1",
+                 "category": "m&a", "published_at": "2026-07-02", "seed_entity": "cik:1", "seed_node_id": "cik:1"},
+                {"id": "ev2", "headline": "Beta deal", "source": "SEC 8-K", "url": "u2",
+                 "category": "m&a", "published_at": "2026-07-02", "seed_entity": "cik:2", "seed_node_id": "cik:2"}]
+    monkeypatch.setattr(ing, "fetch_8k", two_8k)
+    monkeypatch.setattr(ing, "fetch_marketaux", lambda idx: [])
+    monkeypatch.setattr(ing, "fetch_alphavantage", lambda idx: [])
+    monkeypatch.setattr(ing, "fetch_rss_broad", lambda: [])
+    monkeypatch.setenv("INGEST_MATERIALITY_GATE", "0")
+    # Force a cap of 1: first ranked → queued, the rest over-cap → skipped in-memory.
+    monkeypatch.setattr(ing, "cap",
+                        lambda ranked, **k: [dict(c, status=("queued" if i == 0 else "skipped"))
+                                             for i, c in enumerate(ranked)])
+
+    # Cycle 1: two material candidates, cap 1 → 1 queued, 1 deferred (NOT written).
+    s1 = ing.run_ingest(db)
+    assert s1["queued"] == 1 and s1["deferred"] == 1
+    conn = store.connect(db)
+    rows = conn.execute("SELECT id, status FROM events ORDER BY id").fetchall()
+    conn.close()
+    assert [r["id"] for r in rows] == ["ev1"]        # over-cap 'ev2' NOT persisted (no 'skipped' row)
+    assert rows[0]["status"] == "queued"
+
+    # Cycle 2: both re-fetched. 'ev1' is skipped (already stored); the previously
+    # deferred 'ev2' is now fresh → gets queued. Proves it wasn't dropped forever.
+    ing.run_ingest(db)
+    conn = store.connect(db)
+    ids = sorted(r["id"] for r in conn.execute("SELECT id FROM events").fetchall())
+    conn.close()
+    assert ids == ["ev1", "ev2"]                     # the deferred event got its shot next cycle
