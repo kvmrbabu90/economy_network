@@ -502,7 +502,7 @@ export function start3D(
       return true;
     })
     .nodeVal((n: ForceNode) => n.size)
-    .nodeRelSize(2)          // default is 4; 2 → 50% visual radius at launch
+    .nodeRelSize(1.02)       // = old default 2 shrunk by three '[' steps (×0.8³≈0.512); smaller launch spheres
     .nodeResolution(12)
     .nodeOpacity(0.95)
     .linkColor((l: ForceLink) => l.color)
