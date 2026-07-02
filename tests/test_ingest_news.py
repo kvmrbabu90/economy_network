@@ -29,6 +29,49 @@ def test_resolve_to_node_id_all_types():
     assert ing._resolve_to_node_id(conn, "Nope") is None
 
 
+def test_resolve_to_node_id_prefix_tiebreak_is_deterministic():
+    # Two nodes share the prefix "Acme"; the shortest name (then lexical id)
+    # must win the LIKE-prefix fallback, reproducibly across rebuilds.
+    conn = store.connect(":memory:")
+    store.init_db(conn)
+    conn.execute("INSERT INTO nodes (id,type,name) VALUES ('cik:200','Company','Acme Holdings International')")
+    conn.execute("INSERT INTO nodes (id,type,name) VALUES ('cik:100','Company','Acme Labs')")
+    conn.commit()
+    # "acme" prefixes both; ORDER BY length(name), id → "Acme Labs" (shorter).
+    assert ing._resolve_to_node_id(conn, "acme") == "cik:100"
+
+
+def test_resolve_to_node_id_contains_tiebreak_is_deterministic():
+    # Contains-fallback (>=5 chars) must also be deterministic.
+    conn = store.connect(":memory:")
+    store.init_db(conn)
+    conn.execute("INSERT INTO nodes (id,type,name) VALUES ('cik:2','Company','Global Widget Corporation')")
+    conn.execute("INSERT INTO nodes (id,type,name) VALUES ('cik:1','Company','Widget Co')")
+    conn.commit()
+    # "widget" is contained in both; shortest name wins.
+    assert ing._resolve_to_node_id(conn, "widget") == "cik:1"
+
+
+def test_resolve_to_node_id_escapes_like_wildcards():
+    # A query term containing % or _ must match literally, not as a wildcard.
+    conn = store.connect(":memory:")
+    store.init_db(conn)
+    conn.execute("INSERT INTO nodes (id,type,name) VALUES ('cik:1','Company','AT&T Inc')")
+    conn.execute("INSERT INTO nodes (id,type,name) VALUES ('cik:2','Company','50% Off Corp')")
+    conn.commit()
+    # Bare "%" would match everything if unescaped; escaped it only hits the
+    # node whose name literally contains "50%".
+    assert ing._resolve_to_node_id(conn, "50%") == "cik:2"
+    # An underscore term must not act as a single-char wildcard.
+    assert ing._resolve_to_node_id(conn, "a_t") is None
+
+
+def test_resolve_to_node_id_contains_gated_on_min_length():
+    conn = _graph()
+    # "cor" (len 3) is < 5 and must NOT trigger the contains-fallback into "Acme Corp".
+    assert ing._resolve_to_node_id(conn, "cor") is None
+
+
 def test_ticker_index_maps_symbol_to_node():
     conn = _graph()
     idx = ing._ticker_index(conn)
@@ -59,8 +102,85 @@ def test_dedupe_drops_ids_already_in_db():
     store.insert_event(conn, {"id": "seen", "headline": "h", "source": "s", "url": "u",
                               "category": "c", "published_at": None, "seed_entity": "E",
                               "seed_node_id": "cik:1", "status": "traced"})
+    # The url-hash-id dedupe path keys on c["id"] only; give these no seed so the
+    # cross-feed collapse (which needs a seed) can't interfere.
     out = ing.dedupe([{"id": "seen"}, {"id": "fresh"}, {"id": "fresh"}], conn)
     assert [c["id"] for c in out] == ["fresh"]   # prior-cycle 'seen' dropped; in-cycle dup collapsed
+
+
+def test_dedupe_collapses_same_story_across_feeds():
+    # The SAME story arriving via 8-K + Marketaux + AV + RSS has 4 distinct urls
+    # (so 4 distinct _event_ids) but must collapse to ONE queued event via the
+    # (seed, publish-date, first-6-headline-words) key. First-wins (8-K here).
+    conn = _graph()
+    def mk(source, url, headline):
+        c = {"headline": headline, "source": source, "url": url, "category": "m&a",
+             "published_at": "2026-07-01", "seed_entity": "Acme", "seed_node_id": "cik:1"}
+        c["id"] = ing._event_id(c)
+        return c
+    # First 6 normalized words are identical across feeds; trailing text and
+    # punctuation differ (as real syndication does). Punctuation is stripped by
+    # the collapse-key normalizer, so "deal," and "deal!" fold together.
+    cands = [
+        mk("SEC 8-K", "https://sec.gov/a", "Acme acquires Beta in cash deal"),
+        mk("Marketaux", "https://marketaux/x", "Acme acquires Beta in cash deal today"),
+        mk("Alpha Vantage", "https://av/y", "Acme acquires Beta in cash deal!"),
+        mk("RSS-World", "https://rss/z", "Acme acquires Beta in cash deal, sources say"),
+    ]
+    # Sanity: all four have distinct primary ids (url-based).
+    assert len({c["id"] for c in cands}) == 4
+    out = ing.dedupe(cands, conn)
+    assert len(out) == 1 and out[0]["source"] == "SEC 8-K"   # collapsed to one; 8-K wins
+
+
+def test_dedupe_keeps_distinct_stories_same_seed_and_date():
+    # Different first-6 headline words → different collapse key → both kept,
+    # even with the same seed + date. Guards against over-collapsing.
+    conn = _graph()
+    def mk(url, headline):
+        c = {"headline": headline, "source": "RSS", "url": url, "category": "m&a",
+             "published_at": "2026-07-01", "seed_entity": "Acme", "seed_node_id": "cik:1"}
+        c["id"] = ing._event_id(c)
+        return c
+    out = ing.dedupe([mk("u1", "Acme wins defense contract worth billions"),
+                      mk("u2", "Acme recalls faulty product line nationwide")], conn)
+    assert len(out) == 2
+
+
+def test_dedupe_no_seed_falls_back_to_id_only():
+    # Candidates without a seed can't form a collapse key; they must survive on
+    # url-hash id alone (only the exact-id dup collapses).
+    conn = _graph()
+    a = {"id": "n1", "headline": "same words here now again", "seed_node_id": None, "published_at": "2026-07-01"}
+    b = {"id": "n2", "headline": "same words here now again", "seed_node_id": None, "published_at": "2026-07-01"}
+    out = ing.dedupe([a, b, {"id": "n1"}], conn)
+    assert [c["id"] for c in out] == ["n1", "n2"]
+
+
+def test_run_ingest_isolates_a_failing_fetcher(monkeypatch, tmp_path):
+    # One fetcher raising must NOT discard the others' candidates (esp. 8-K).
+    db = tmp_path / "iso.db"
+    conn = store.connect(db); store.init_db(conn)
+    conn.execute("INSERT INTO nodes (id,type,name,tickers) VALUES ('cik:1','Company','Acme','[]')")
+    conn.commit(); conn.close()
+
+    def good_8k(c, **kw):
+        return [{"id": "k1", "headline": "Acme 8-K", "source": "SEC 8-K", "url": "u8k",
+                 "category": "m&a", "published_at": "2026-07-01",
+                 "seed_entity": "cik:1", "seed_node_id": "cik:1"}]
+
+    def boom(*a, **k):
+        raise RuntimeError("marketaux is flaky right now")
+
+    monkeypatch.setattr(ing, "fetch_8k", good_8k)
+    monkeypatch.setattr(ing, "fetch_marketaux", boom)         # this one blows up
+    monkeypatch.setattr(ing, "fetch_alphavantage", lambda idx: [])
+    monkeypatch.setattr(ing, "fetch_rss_broad", lambda: [])
+    monkeypatch.setenv("INGEST_MATERIALITY_GATE", "0")
+    s = ing.run_ingest(db)
+    assert s["queued"] == 1                                   # 8-K survived the marketaux failure
+    conn = store.connect(db)
+    assert store.queued_events(conn)[0]["seed_node_id"] == "cik:1"
 
 
 def test_run_ingest_end_to_end(monkeypatch, tmp_path):
@@ -69,7 +189,7 @@ def test_run_ingest_end_to_end(monkeypatch, tmp_path):
     conn = store.connect(db); store.init_db(conn)
     conn.execute("INSERT INTO nodes (id,type,name,tickers) VALUES ('cik:1','Company','Acme','[]')")
     conn.commit(); conn.close()
-    monkeypatch.setattr(ing, "fetch_8k", lambda c: [
+    monkeypatch.setattr(ing, "fetch_8k", lambda c, **kw: [
         {"id": "a", "headline": "h", "source": "SEC 8-K", "url": "u1", "category": "m&a",
          "published_at": "2026-06-17", "seed_entity": "cik:1", "seed_node_id": "cik:1"}])
     monkeypatch.setattr(ing, "fetch_marketaux", lambda idx: [])

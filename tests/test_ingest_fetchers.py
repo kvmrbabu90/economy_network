@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import time
 from schema import store
 from pipeline import ingest_news as ing
 
@@ -56,6 +57,117 @@ def test_extract_rss_events_empty_when_claude_unavailable(monkeypatch):
 def test_marketaux_skipped_without_key(monkeypatch):
     monkeypatch.delenv("MARKETAUX_KEY", raising=False)
     assert ing.fetch_marketaux(ing._ticker_index(_graph())) == []
+
+
+# ── Fix 2: safe-float + null-tolerant parsing ──────────────────────────────
+
+def test_safe_float_never_raises():
+    # Non-numeric / None / bad types all fall back to 0.0 instead of raising.
+    assert ing._safe_float("N/A") == 0.0
+    assert ing._safe_float(None) == 0.0
+    assert ing._safe_float("") == 0.0
+    assert ing._safe_float({"x": 1}) == 0.0
+    assert ing._safe_float("0.42") == 0.42
+    assert ing._safe_float(-1.5) == -1.5
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def test_marketaux_tolerates_null_entities(monkeypatch):
+    # A Marketaux article with "entities": null must not raise (dict.get would
+    # return None and `for ent in None` would TypeError without the `or []`).
+    conn = _graph()
+    idx = ing._ticker_index(conn)
+    payload = {"data": [
+        {"title": "t1", "url": "u1", "published_at": "2026-07-01", "entities": None},
+        {"title": "Acme wins", "url": "u2", "published_at": "2026-07-01",
+         "entities": [{"symbol": "ACME"}]},
+    ]}
+    monkeypatch.setenv("MARKETAUX_KEY", "k")
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp(payload))
+    out = ing.fetch_marketaux(idx)
+    assert [c["seed_node_id"] for c in out] == ["cik:0000000001"]   # null-entities row skipped, not crashed
+
+
+# ── Fix 5: fetch_8k per-CIK cap + wall-clock budget ────────────────────────
+
+def _graph_with_ciks(n):
+    conn = store.connect(":memory:")
+    store.init_db(conn)
+    for i in range(n):
+        conn.execute(f"INSERT INTO nodes (id,type,name) VALUES ('cik:{i:010d}','Company','Filer{i}')")
+    conn.commit()
+    return conn
+
+
+def test_fetch_8k_caps_per_cik(monkeypatch):
+    # A filer with many recent 8-Ks must contribute at most INGEST_8K_PER_CIK.
+    conn = _graph_with_ciks(1)
+    from pipeline import sec_8k
+    many = [{"url": f"http://sec/{j}", "filing_date": "2026-07-01", "items": "1.01"} for j in range(20)]
+    monkeypatch.setattr(sec_8k, "fetch_recent_8k_meta", lambda cik, **kw: many)
+    monkeypatch.setattr(ing, "INGEST_8K_PER_CIK", 3)
+    out = ing.fetch_8k(conn)
+    assert len(out) == 3    # capped, not 20
+
+
+def test_fetch_8k_wallclock_stops_new_ciks(monkeypatch):
+    # Once the wall-clock deadline is spent, no NEW CIK is crawled.
+    conn = _graph_with_ciks(5)
+    from pipeline import sec_8k
+    calls = {"n": 0}
+    def meta(cik, **kw):
+        calls["n"] += 1
+        return [{"url": f"http://sec/{cik}", "filing_date": "2026-07-01", "items": "8.01"}]
+    monkeypatch.setattr(sec_8k, "fetch_recent_8k_meta", meta)
+    # A deadline already in the past → loop breaks before the first CIK.
+    out = ing.fetch_8k(conn, deadline=time.monotonic() - 1)
+    assert out == [] and calls["n"] == 0
+
+
+def test_fetch_8k_isolates_one_failing_cik(monkeypatch):
+    # A per-CIK exception must not abort the whole crawl (existing behavior).
+    conn = _graph_with_ciks(2)
+    from pipeline import sec_8k
+    def meta(cik, **kw):
+        if cik.endswith("0000000000"):
+            raise RuntimeError("SEC 500")
+        return [{"url": "http://sec/ok", "filing_date": "2026-07-01", "items": "1.01"}]
+    monkeypatch.setattr(sec_8k, "fetch_recent_8k_meta", meta)
+    out = ing.fetch_8k(conn)
+    assert len(out) == 1    # first CIK failed, second still yielded
+
+
+def test_alphavantage_tolerates_null_and_nonnumeric_score(monkeypatch):
+    # ticker_sentiment: null must not raise; a non-numeric score "N/A" must not
+    # blow up the sort key (safe-float → 0.0).
+    conn = _graph()
+    idx = ing._ticker_index(conn)
+    payload = {"feed": [
+        {"title": "t1", "url": "u1", "time_published": "20260701T120000",
+         "ticker_sentiment": None},
+        {"title": "Acme moves", "url": "u2", "time_published": "20260701T120000",
+         "ticker_sentiment": [
+             {"ticker": "ACME", "ticker_sentiment_score": "N/A"},
+             {"ticker": "ACME", "ticker_sentiment_score": "0.9"},
+         ]},
+    ]}
+    monkeypatch.setenv("ALPHAVANTAGE_KEY", "k")
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp(payload))
+    out = ing.fetch_alphavantage(idx)
+    assert [c["seed_node_id"] for c in out] == ["cik:0000000001"]   # null row skipped; sort survived "N/A"
+    assert out[0]["published_at"] == "2026-07-01"
 
 
 def _cand(i, headline, entity="Acme"):

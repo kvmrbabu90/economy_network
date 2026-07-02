@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -23,7 +24,22 @@ HUBS_PATH = REPO_ROOT / "data" / "hubs.jsonl"
 
 INGEST_CAP = int(os.environ.get("INGEST_CAP", "25"))
 INGEST_MAX_AGE_DAYS = int(os.environ.get("INGEST_MAX_AGE_DAYS", "3"))
+# Hard wall-clock ceiling for one ingestion cycle (seconds). A slow SEC crawl
+# must not eat the whole hourly slot — fetch_8k stops enqueuing new CIKs once
+# this budget is spent. Default 15 min.
+INGEST_WALLCLOCK_S = float(os.environ.get("INGEST_WALLCLOCK_S", "900"))
+# Cap 8-Ks pulled per filer per cycle, so a single filer with a long recent
+# history can't dominate (and re-crawl) the window.
+INGEST_8K_PER_CIK = int(os.environ.get("INGEST_8K_PER_CIK", "3"))
 _SOURCE_WEIGHT = {"SEC 8-K": 1.0, "Marketaux": 1.0, "Alpha Vantage": 1.0}  # default 0.7 (RSS)
+
+
+def _safe_float(value: Any) -> float:
+    """Best-effort float; 0.0 on None / non-numeric (e.g. "N/A"). Never raises."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _event_id(cand: dict[str, Any]) -> str:
@@ -32,22 +48,54 @@ def _event_id(cand: dict[str, Any]) -> str:
     return "ev:" + hashlib.sha1(basis.encode("utf-8")).hexdigest()[:16]
 
 
+def _collapse_key(cand: dict[str, Any]) -> Optional[tuple[str, str, str]]:
+    """Secondary cross-feed dedupe key: (seed_node_id, published-date, first-6
+    normalized words of the headline). The same story arriving via 8-K +
+    Marketaux + AV + RSS has distinct urls (so distinct _event_id) but collapses
+    here to one queued event. Returns None when we lack a seed to key on."""
+    seed = cand.get("seed_node_id")
+    if not seed:
+        return None
+    day = (cand.get("published_at") or "")[:10]
+    words = [w for w in "".join(
+        ch if (ch.isalnum() or ch.isspace()) else " "
+        for ch in (cand.get("headline") or "").lower()
+    ).split()][:6]
+    return (str(seed), day, " ".join(words))
+
+
+def _like_escape(term: str) -> str:
+    r"""Escape LIKE wildcards so a name containing % or _ (or the escape char
+    itself) matches literally. Pair with an ESCAPE '\' clause."""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _resolve_to_node_id(conn, name: str) -> Optional[str]:
     """Resolve a name to a node id across ALL types (name/alias exact → starts-with →
-    contains). Mirrors the news graph-gate resolver but returns the id."""
+    contains). Mirrors the news graph-gate resolver but returns the id.
+
+    LIKE fallbacks are made deterministic: wildcards in the query term are
+    escaped, and ties broken by ORDER BY length(name), id so LIMIT 1 is stable
+    across rebuilds (the shortest, then lexically-first, name wins)."""
     q = (name or "").lower().strip()
     if not q:
         return None
+    esc = _like_escape(q)
+    # Exact matches first (no LIKE ambiguity); then deterministic prefix/contains.
     for sql, arg in (
         ("SELECT id FROM nodes WHERE LOWER(name) = ? LIMIT 1", q),
         ("SELECT n.id FROM aliases a JOIN nodes n ON n.id = a.node_id WHERE a.alias_normalized = ? LIMIT 1", q),
-        ("SELECT id FROM nodes WHERE LOWER(name) LIKE ? LIMIT 1", q + "%"),
+        ("SELECT id FROM nodes WHERE LOWER(name) LIKE ? ESCAPE '\\' "
+         "ORDER BY length(name), id LIMIT 1", esc + "%"),
     ):
         row = conn.execute(sql, (arg,)).fetchone()
         if row:
             return row[0]
     if len(q) >= 5:
-        row = conn.execute("SELECT id FROM nodes WHERE LOWER(name) LIKE ? LIMIT 1", (f"%{q}%",)).fetchone()
+        row = conn.execute(
+            "SELECT id FROM nodes WHERE LOWER(name) LIKE ? ESCAPE '\\' "
+            "ORDER BY length(name), id LIMIT 1", (f"%{esc}%",)
+        ).fetchone()
         if row:
             return row[0]
     return None
@@ -121,15 +169,27 @@ def cap(ranked: list[dict[str, Any]], *, cap: int = INGEST_CAP) -> list[dict[str
 
 def dedupe(cands: list[dict[str, Any]], conn) -> list[dict[str, Any]]:
     """Drop candidates whose id already exists in `events` (any prior cycle), and
-    collapse in-cycle duplicate ids (first wins)."""
+    collapse in-cycle duplicates. Two collapse layers, first-wins:
+
+      1. url-hash id (`_event_id`) — the primary key.
+      2. cross-feed key (`_collapse_key`) — same (seed, publish-date,
+         first-6-headline-words) via a different feed has a *different* url and
+         thus a different id, so without this one real story becomes N queued
+         events (8-K + Marketaux + AV + RSS)."""
     from schema.store import event_exists
     seen: set[str] = set()
+    seen_keys: set[tuple[str, str, str]] = set()
     out = []
     for c in cands:
         cid = c["id"]
         if cid in seen or event_exists(conn, cid):
             continue
+        key = _collapse_key(c)
+        if key is not None and key in seen_keys:
+            continue
         seen.add(cid)
+        if key is not None:
+            seen_keys.add(key)
         out.append(c)
     return out
 
@@ -154,15 +214,25 @@ def _candidate_from_ticker(ticker, headline, source, url, category, published_at
     return c
 
 
-def fetch_8k(conn) -> list[dict]:
-    """Recent 8-Ks across graph filers → candidates (seed = the filer node)."""
+def fetch_8k(conn, *, deadline: Optional[float] = None) -> list[dict]:
+    """Recent 8-Ks across graph filers → candidates (seed = the filer node).
+
+    Per-CIK cap (INGEST_8K_PER_CIK) keeps one prolific filer from dominating the
+    window; the wall-clock `deadline` (monotonic seconds) stops enqueuing new
+    CIKs so a slow SEC crawl can't blow the hourly slot — CIKs already scanned
+    still count, we just stop starting new ones."""
     from pipeline.sec_8k import fetch_recent_8k_meta
     out = []
     ciks = [r["id"] for r in conn.execute("SELECT id FROM nodes WHERE id LIKE 'cik:%'")]
     for node_id in ciks:
+        if deadline is not None and time.monotonic() >= deadline:
+            log.warning("8k: wall-clock budget spent; stopping crawl (%d CIKs scanned)",
+                        ciks.index(node_id))
+            break
         cik = node_id.split(":", 1)[1]
         try:
-            for m in fetch_recent_8k_meta(cik, since_days=INGEST_MAX_AGE_DAYS):
+            # fetch_recent_8k_meta returns EDGAR recent-first; keep the newest few.
+            for m in fetch_recent_8k_meta(cik, since_days=INGEST_MAX_AGE_DAYS)[:INGEST_8K_PER_CIK]:
                 item0 = (m.get("items", "") or "").split(",")[0].strip()
                 c = {"headline": f"{node_id} 8-K item {item0}"[:200], "source": "SEC 8-K",
                      "url": m.get("url", ""), "category": _category_for_8k(item0),
@@ -191,7 +261,8 @@ def fetch_marketaux(idx: dict[str, str]) -> list[dict]:
         return []
     out = []
     for art in data:
-        for ent in art.get("entities", []):
+        # A null "entities" (or "title"/"url") must not raise — coerce to [].
+        for ent in (art.get("entities") or []):
             c = _candidate_from_ticker(ent.get("symbol"), art.get("title", ""), "Marketaux",
                                        art.get("url", ""), "company", (art.get("published_at") or "")[:10], idx)
             if c:
@@ -216,10 +287,12 @@ def fetch_alphavantage(idx: dict[str, str]) -> list[dict]:
         return []
     out = []
     for art in feed:
-        ts = art.get("time_published", "")            # YYYYMMDDTHHMMSS
+        ts = art.get("time_published", "") or ""      # YYYYMMDDTHHMMSS
         pub = f"{ts[0:4]}-{ts[4:6]}-{ts[6:8]}" if len(ts) >= 8 else None
-        for ts_ent in sorted(art.get("ticker_sentiment", []),
-                             key=lambda x: -abs(float(x.get("ticker_sentiment_score", 0) or 0))):
+        # A null "ticker_sentiment" must not raise; a non-numeric score like
+        # "N/A" must not raise the sort — _safe_float returns 0.0 for both.
+        for ts_ent in sorted((art.get("ticker_sentiment") or []),
+                             key=lambda x: -abs(_safe_float(x.get("ticker_sentiment_score")))):
             c = _candidate_from_ticker(ts_ent.get("ticker"), art.get("title", ""), "Alpha Vantage",
                                        art.get("url", ""), "company", pub, idx)
             if c:
@@ -343,11 +416,21 @@ def run_ingest(db_path: Path = DB_PATH) -> dict[str, int]:
     init_db(conn)
     try:
         idx = _ticker_index(conn)
+        deadline = time.monotonic() + INGEST_WALLCLOCK_S
         cands: list[dict] = []
-        cands += fetch_8k(conn)
-        cands += fetch_marketaux(idx)
-        cands += fetch_alphavantage(idx)
-        cands += fetch_rss_broad()
+        # PER-FETCHER ISOLATION: one flaky source must not discard the others'
+        # candidates (esp. the completed 8-K crawl). Each fetch is wrapped so an
+        # exception is logged and the cycle continues with whatever succeeded.
+        for name, fetch in (
+            ("8k", lambda: fetch_8k(conn, deadline=deadline)),
+            ("marketaux", lambda: fetch_marketaux(idx)),
+            ("alphavantage", lambda: fetch_alphavantage(idx)),
+            ("rss", fetch_rss_broad),
+        ):
+            try:
+                cands += fetch()
+            except Exception as exc:
+                log.warning("ingest: fetcher %s failed, continuing: %s", name, exc)
 
         # Resolve seeds for RSS (API/8-K already mapped); gate unresolvable.
         resolved = []
