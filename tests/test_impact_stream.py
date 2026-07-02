@@ -447,6 +447,67 @@ def test_seed_audit_skipped_when_verify_disabled(conn, monkeypatch):
     assert done.get("seed") is not None
 
 
+# --- Hardening: commodity-seed magnitude clamp + direction validation --------
+
+def _commodity_seed_fake(*, magnitude, direction):
+    """No named companies; the commodity seed picks the first candidate with the
+    given (possibly malformed) magnitude/direction. Ring/refine delegate to the
+    normal echo fake so a kept seed still propagates."""
+    def fake(prompt: str) -> str:
+        if "Extract ONLY investable companies" in prompt:
+            return "[]"
+        if "Pick the ONE node" in prompt:
+            m = re.search(r"^\s{2}(\S+)\s*\|", prompt, re.MULTILINE)
+            return json.dumps({"node_id": m.group(1) if m else None,
+                               "direction": direction, "magnitude": magnitude,
+                               "reasoning": "t"})
+        return _fake_llm(prompt)
+    return fake
+
+
+def test_commodity_seed_magnitude_clamped(conn, monkeypatch):
+    # An out-of-range magnitude (>1) from the seed LLM must be clamped into
+    # [0,1], not stored raw. The commodity seed is the sole anchor here.
+    monkeypatch.setattr(impact_mod, "_llm_call",
+                        _commodity_seed_fake(magnitude=5.0, direction="negative"))
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    seeds = next(e for e in impact_mod.run_impact_stream(
+        "global crude oil supply shock", conn=conn) if e["event"] == "seeds")["seeds"]
+    commodity = [s for s in seeds if s["hop"] == 0]
+    assert commodity, "expected a hop-0 commodity seed"
+    for s in commodity:
+        assert 0.0 <= s["magnitude"] <= 1.0        # clamped, never the raw 5.0
+
+
+def test_commodity_seed_magnitude_junk_falls_back(conn, monkeypatch):
+    # A non-numeric magnitude falls back to the 0.9 default rather than crashing.
+    monkeypatch.setattr(impact_mod, "_llm_call",
+                        _commodity_seed_fake(magnitude="lots", direction="negative"))
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    seeds = next(e for e in impact_mod.run_impact_stream(
+        "global crude oil supply shock", conn=conn) if e["event"] == "seeds")["seeds"]
+    commodity = [s for s in seeds if s["hop"] == 0]
+    assert commodity
+    assert all(s["magnitude"] == 0.9 for s in commodity)
+
+
+def test_commodity_seed_invalid_direction_dropped(conn, monkeypatch):
+    # An invalid direction ("sideways") must DROP the commodity seed rather than
+    # store garbage. With no other seed, the run reports "no seed".
+    monkeypatch.setattr(impact_mod, "_llm_call",
+                        _commodity_seed_fake(magnitude=0.9, direction="sideways"))
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    events = list(impact_mod.run_impact_stream(
+        "global crude oil supply shock", conn=conn))
+    done = next(e for e in events if e["event"] == "done")["result"]
+    assert done.get("seed") is None
+    assert any(e["event"] == "error" and "seed" in e["message"].lower() for e in events)
+    # No seed ever carried the garbage direction.
+    seeds_events = [e for e in events if e["event"] == "seeds"]
+    for ev in seeds_events:
+        assert all(s["direction"] in ("positive", "negative") for s in ev["seeds"])
+
+
 def test_lighter_config_skips_passes_and_limits_hops(conn, monkeypatch):
     monkeypatch.setattr(impact_mod, "_llm_call", _fake_llm)
     monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
