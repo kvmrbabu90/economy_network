@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from schema import store
 from pipeline import aggregate_impacts as agg
 
@@ -47,13 +47,14 @@ def test_window_excludes_stale(tmp_path):
     assert conn.execute("SELECT COUNT(*) c FROM node_impact WHERE node_id='z'").fetchone()["c"] == 0
 
 
-def test_no_effect_counts_but_zero_mass(tmp_path):
+def test_inert_no_effect_node_not_emitted(tmp_path):
+    # A node whose only touch is no_effect/magnitude-0 has no direction, no mass, and no
+    # drivers — it is inert and must be dropped (no "N events, no drivers" ghost row).
     conn = _db(tmp_path)
     _event(conn, "e1", "2026-06-17")
     store.write_event_impacts(conn, "e1", [{"node_id": "n", "direction": "no_effect", "magnitude": 0.0, "hop": 2}])
     agg.aggregate(conn, today=date(2026, 6, 17))
-    r = conn.execute("SELECT * FROM node_impact WHERE node_id='n'").fetchone()
-    assert r["direction"] == "no_effect" and r["magnitude"] == 0.0 and r["event_count"] == 1
+    assert conn.execute("SELECT COUNT(*) c FROM node_impact WHERE node_id='n'").fetchone()["c"] == 0
 
 
 def test_top_events_capped_and_ordered(tmp_path):
@@ -98,8 +99,10 @@ def test_equal_opposing_masses_net_to_no_effect(tmp_path):
     store.write_event_impacts(conn, "n", [{"node_id": "q", "direction": "negative", "magnitude": 0.6, "hop": 1}])
     agg.aggregate(conn, today=date(2026, 6, 17))
     r = conn.execute("SELECT * FROM node_impact WHERE node_id='q'").fetchone()
+    # Real opposing drivers exist (so the row is NOT inert and is still emitted), but the
+    # net is zero mass — a magnitude-0 node must read neutral, never MIXED, on the map.
     assert r["direction"] == "no_effect" and r["magnitude"] == 0.0
-    assert r["mixed_signals"] == 1 and r["event_count"] == 2
+    assert r["mixed_signals"] == 0 and r["event_count"] == 2
 
 
 def test_unscored_and_no_effect_excluded_from_top_events(tmp_path):
@@ -124,3 +127,51 @@ def test_only_traced_events_aggregated(tmp_path):
     store.write_event_impacts(conn, "f1", [{"node_id": "ghost", "direction": "negative", "magnitude": 0.9, "hop": 0}])
     agg.aggregate(conn, today=date(2026, 6, 17))
     assert conn.execute("SELECT COUNT(*) c FROM node_impact WHERE node_id='ghost'").fetchone()["c"] == 0
+
+
+def test_future_dated_event_rejected(tmp_path):
+    # A future-dated event (age < 0) must not slip in and earn max recency weight.
+    conn = _db(tmp_path)
+    _event(conn, "future", "2026-06-20")               # 3 days AFTER the reference date
+    store.write_event_impacts(conn, "future", [{"node_id": "fut", "direction": "positive", "magnitude": 0.9, "hop": 0}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    assert conn.execute("SELECT COUNT(*) c FROM node_impact WHERE node_id='fut'").fetchone()["c"] == 0
+
+
+def test_magnitude_clamped_to_unit_range(tmp_path):
+    # An out-of-range stored magnitude (>1) is clamped to 1.0 before it enters the net.
+    conn = _db(tmp_path)
+    _event(conn, "e1", "2026-06-17")
+    store.write_event_impacts(conn, "e1", [{"node_id": "c", "direction": "positive", "magnitude": 5.0, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 6, 17))        # same-day weight = 1.0
+    r = conn.execute("SELECT * FROM node_impact WHERE node_id='c'").fetchone()
+    assert r["direction"] == "positive"
+    assert abs(r["magnitude"] - 1.0) < 1e-6             # 5.0 clamped to 1.0, not 5.0
+    top = json.loads(r["top_events"])
+    assert abs(top[0]["magnitude"] - 1.0) < 1e-6        # clamp reflected in the surfaced driver too
+
+
+def test_mixed_not_set_when_net_is_zero(tmp_path):
+    # Equal opposing masses net to magnitude 0; such a node reads neutral, never MIXED.
+    conn = _db(tmp_path)
+    _event(conn, "p", "2026-06-17"); _event(conn, "n", "2026-06-17")
+    store.write_event_impacts(conn, "p", [{"node_id": "z0", "direction": "positive", "magnitude": 0.4, "hop": 1}])
+    store.write_event_impacts(conn, "n", [{"node_id": "z0", "direction": "negative", "magnitude": 0.4, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT * FROM node_impact WHERE node_id='z0'").fetchone()
+    assert r["magnitude"] == 0.0 and r["mixed_signals"] == 0
+
+
+def test_computed_at_is_full_utc_timestamp(tmp_path):
+    # computed_at must be a full UTC wall-clock stamp (real time-of-day, not the passed-in
+    # `today` at T00:00:00) so 24 hourly cycles are distinguishable and a stall is detectable.
+    conn = _db(tmp_path)
+    _event(conn, "e1", "2026-06-17")
+    store.write_event_impacts(conn, "e1", [{"node_id": "t", "direction": "positive", "magnitude": 0.5, "hop": 0}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    stamp = conn.execute("SELECT computed_at FROM node_impact WHERE node_id='t'").fetchone()["computed_at"]
+    parsed = datetime.fromisoformat(stamp)
+    # Not the frozen `today` param at midnight; it is the actual UTC now to the second.
+    assert parsed.date() != date(2026, 6, 17)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    assert abs((parsed.replace(tzinfo=None) - now).total_seconds()) < 120

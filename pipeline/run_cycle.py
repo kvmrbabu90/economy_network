@@ -37,6 +37,14 @@ def _run_aggregate(db_path) -> dict:
         conn.close()
 
 
+def _run_prune(db_path, older_than_days: int = 30) -> dict:
+    conn = store.connect(db_path); store.init_db(conn)
+    try:
+        return store.prune_old_events(conn, older_than_days=older_than_days)
+    finally:
+        conn.close()
+
+
 def _stage(name: str, fn: Callable[[], dict], summary: dict) -> None:
     try:
         summary[name] = fn()
@@ -52,6 +60,15 @@ def run_cycle(db_path=DB_PATH, *, provider: Optional[str] = None) -> dict:
     _stage("ingest", lambda: _run_ingest(db_path), summary)
     _stage("precompute", lambda: _run_precompute(db_path, provider), summary)
     _stage("aggregate", lambda: _run_aggregate(db_path), summary)
+    # Bound table growth: drop events (and their impacts) older than the aggregation
+    # window's reach. Runs after aggregate so we never prune a row still in-window.
+    _stage("prune", lambda: _run_prune(db_path, older_than_days=30), summary)
+    # DEFERRED — auto-retry of aged 'failed' events. run_precompute(retry_failed=True)
+    # re-queues *every* failed event indiscriminately, so wiring it into the unattended
+    # cycle would re-process permanent failures (bad seed, deleted node) on every run and
+    # risk double-processing. A safe version needs a failed-at timestamp / attempt count in
+    # the events table to bound retries to genuinely transient, recently-aged failures.
+    # Until that column exists, retry stays a manual `--retry-failed` operator action.
     summary["elapsed_s"] = round(time.time() - t0, 1)
     log.info("run_cycle: %s", summary)
     return summary

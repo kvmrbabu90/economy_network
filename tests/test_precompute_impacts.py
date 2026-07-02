@@ -37,6 +37,64 @@ def test_no_seeds_marks_failed_no_rows(tmp_path, monkeypatch):
     assert conn.execute("SELECT COUNT(*) c FROM event_impacts").fetchone()["c"] == 0
 
 
+def test_no_neighbors_marks_failed_no_rows(tmp_path, monkeypatch):
+    # Seed resolved but the node has no supply-chain edges: run_impact returns seed-only
+    # impacts plus error+no_neighbors. This must NOT be written as 'traced' (phantom rows).
+    db = _db_with_queued(tmp_path, 1)
+    monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {
+        "error": "seed exists but has no recorded supply chain connections yet",
+        "seed": {"node_id": "cik:0"}, "seeds": [{"node_id": "cik:0"}],
+        "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.9, "hop": 0}],
+        "no_neighbors": True})
+    s = pc.run_precompute(db)
+    assert s["failed"] == 1 and s["traced"] == 0 and s["impacts_written"] == 0
+    conn = store.connect(db)
+    assert conn.execute("SELECT status FROM events WHERE id='e0'").fetchone()["status"] == "failed"
+    assert conn.execute("SELECT COUNT(*) c FROM event_impacts").fetchone()["c"] == 0
+
+
+def test_error_result_marks_failed_no_rows(tmp_path, monkeypatch):
+    # Any truthy error on the trace result fails the event even if seeds/impacts exist.
+    db = _db_with_queued(tmp_path, 1)
+    monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {
+        "error": "trace aborted mid-hop", "seeds": [{"node_id": "cik:0"}],
+        "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.5, "hop": 0},
+                    {"node_id": "cik:9", "direction": "positive", "magnitude": 0.3, "hop": 1}]})
+    s = pc.run_precompute(db)
+    assert s["failed"] == 1 and s["traced"] == 0
+    conn = store.connect(db)
+    assert conn.execute("SELECT status FROM events WHERE id='e0'").fetchone()["status"] == "failed"
+    assert conn.execute("SELECT COUNT(*) c FROM event_impacts").fetchone()["c"] == 0
+
+
+def test_all_no_effect_trace_marks_failed_no_rows(tmp_path, monkeypatch):
+    # A trace that reached neighbours but scored everything 'no_effect' produced no real
+    # propagation — mark failed rather than injecting seed-only / no-signal rows.
+    db = _db_with_queued(tmp_path, 1)
+    monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {
+        "seeds": [{"node_id": "cik:0"}],
+        "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.9, "hop": 0},
+                    {"node_id": "cik:9", "direction": "no_effect", "magnitude": 0.0, "hop": 1},
+                    {"node_id": "cik:8", "direction": "no_effect", "magnitude": 0.0, "hop": 2}]})
+    s = pc.run_precompute(db)
+    assert s["failed"] == 1 and s["traced"] == 0 and s["impacts_written"] == 0
+    conn = store.connect(db)
+    assert conn.execute("SELECT status FROM events WHERE id='e0'").fetchone()["status"] == "failed"
+    assert conn.execute("SELECT COUNT(*) c FROM event_impacts").fetchone()["c"] == 0
+
+
+def test_seed_only_no_hop1_marks_failed_no_rows(tmp_path, monkeypatch):
+    # Seed scored directionally but no downstream (hop>=1) impact: seed-only trace fails.
+    db = _db_with_queued(tmp_path, 1)
+    monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {
+        "seeds": [{"node_id": "cik:0"}],
+        "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.9, "hop": 0}]})
+    s = pc.run_precompute(db)
+    assert s["failed"] == 1 and s["traced"] == 0
+    conn = store.connect(db)
+    assert conn.execute("SELECT COUNT(*) c FROM event_impacts").fetchone()["c"] == 0
+
+
 def test_run_impact_raising_marks_failed_and_continues(tmp_path, monkeypatch):
     db = _db_with_queued(tmp_path, 2)
     def boom(*a, **k): raise RuntimeError("kaboom")
@@ -73,12 +131,13 @@ def test_retry_failed_requeues_and_retraces(tmp_path, monkeypatch):
     conn.close()
     monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {
         "seeds": [{"node_id": "cik:0"}],
-        "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.5, "hop": 0}]})
+        "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.5, "hop": 0},
+                    {"node_id": "cik:9", "direction": "negative", "magnitude": 0.4, "hop": 1}]})
     s = pc.run_precompute(db, retry_failed=True)             # re-queues the failed event, now succeeds
     assert s["traced"] == 1
     conn = store.connect(db)
     assert conn.execute("SELECT status FROM events WHERE id='e0'").fetchone()["status"] == "traced"
-    assert conn.execute("SELECT COUNT(*) c FROM event_impacts WHERE event_id='e0'").fetchone()["c"] == 1
+    assert conn.execute("SELECT COUNT(*) c FROM event_impacts WHERE event_id='e0'").fetchone()["c"] == 2
 
 
 def test_wallclock_budget_stops_immediately(tmp_path, monkeypatch):
@@ -107,10 +166,11 @@ def test_retrace_failure_clears_stale_impacts(tmp_path, monkeypatch):
     db = _db_with_queued(tmp_path, 1)
     monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {
         "seeds": [{"node_id": "cik:0"}],
-        "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.9, "hop": 0}]})
+        "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.9, "hop": 0},
+                    {"node_id": "cik:9", "direction": "positive", "magnitude": 0.4, "hop": 1}]})
     pc.run_precompute(db)                                    # succeeds -> impacts written
     conn = store.connect(db)
-    assert conn.execute("SELECT COUNT(*) c FROM event_impacts WHERE event_id='e0'").fetchone()["c"] == 1
+    assert conn.execute("SELECT COUNT(*) c FROM event_impacts WHERE event_id='e0'").fetchone()["c"] == 2
     conn.execute("UPDATE events SET status='queued' WHERE id='e0'"); conn.commit(); conn.close()  # operator re-run
     monkeypatch.setattr(pc._impact, "run_impact", lambda *a, **k: {"seeds": [], "impacts": []})
     pc.run_precompute(db)                                    # re-trace now fails

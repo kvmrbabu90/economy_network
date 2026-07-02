@@ -143,6 +143,10 @@ def connect(db_path: PathLike = "econgraph.db") -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Wait up to 5s for a busy writer instead of raising 'database is locked'
+    # immediately. WAL is deliberately NOT enabled here: the DB currently lives
+    # in a OneDrive-synced tree where WAL is unsafe (deferred to a relocation).
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -198,6 +202,34 @@ def set_event_status(conn: sqlite3.Connection, event_id: str, status: str) -> No
     conn.commit()
 
 
+def prune_old_events(conn: sqlite3.Connection, older_than_days: int = 30) -> int:
+    """Delete events (and their event_impacts) older than the horizon.
+
+    "Age" is COALESCE(published_at, ingested_at) — an event with no publish
+    date falls back to when we ingested it. Both the event rows and their
+    dependent event_impacts are removed in one transaction so the unattended
+    hourly run doesn't grow the DB unbounded. Returns the number of events
+    deleted."""
+    cutoff = f"-{int(older_than_days)} days"
+    conn.execute(
+        """
+        DELETE FROM event_impacts WHERE event_id IN (
+            SELECT id FROM events
+            WHERE date(COALESCE(published_at, ingested_at)) < date('now', ?)
+        )
+        """,
+        (cutoff,),
+    )
+    cur = conn.execute(
+        "DELETE FROM events "
+        "WHERE date(COALESCE(published_at, ingested_at)) < date('now', ?)",
+        (cutoff,),
+    )
+    deleted = cur.rowcount
+    conn.commit()
+    return deleted
+
+
 def replace_node_impact(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
     """Atomically swap the derived node_impact cache: wipe, then bulk-insert `rows`."""
     conn.execute("DELETE FROM node_impact")
@@ -212,11 +244,15 @@ def replace_node_impact(conn: sqlite3.Connection, rows: list[dict[str, Any]]) ->
 
 def read_all_node_impact(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Compact node_impact rows for graph tinting, ordered by node_id. Returns []
-    if the table doesn't exist (DB built before P4 / no cycle has run yet)."""
+    if the table doesn't exist (DB built before P4 / no cycle has run yet).
+
+    Inert (`direction = 'no_effect'`) rows are excluded: they never tint the
+    graph and only bloat the /impact/live payload. A directly-queried
+    no_effect node still resolves via read_node_impact()."""
     try:
         rows = conn.execute(
             "SELECT node_id, direction, magnitude, mixed_signals, event_count "
-            "FROM node_impact ORDER BY node_id"
+            "FROM node_impact WHERE direction != 'no_effect' ORDER BY node_id"
         ).fetchall()
     except sqlite3.OperationalError:
         return []

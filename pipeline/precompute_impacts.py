@@ -65,7 +65,16 @@ def run_precompute(db_path: Path = DB_PATH, *, max_events: int = PRECOMPUTE_MAX_
                 continue
             has_seeds = bool(r.get("seed")) or bool(r.get("seeds"))
             impacts = r.get("impacts") or []
-            if not has_seeds or not impacts:
+            # Real propagation gate: a seed-only / no_neighbors / all-no_effect trace
+            # must NOT be written+marked 'traced' — doing so injects phantom seed-only
+            # rows into node_impact. Require at least one downstream (hop>=1) impact with
+            # a directional verdict, and reject explicit error/no_neighbors signals.
+            propagated = any(
+                (i.get("hop") or 0) >= 1 and i.get("direction") in ("positive", "negative")
+                for i in impacts
+            )
+            if (not has_seeds or not impacts or r.get("error") or r.get("no_neighbors")
+                    or not propagated):
                 _mark_failed(ev["id"])
                 continue
             store.write_event_impacts(conn, ev["id"], impacts)
