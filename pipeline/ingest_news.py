@@ -33,7 +33,29 @@ INGEST_WALLCLOCK_S = float(os.environ.get("INGEST_WALLCLOCK_S", "900"))
 # Cap 8-Ks pulled per filer per cycle, so a single filer with a long recent
 # history can't dominate (and re-crawl) the window.
 INGEST_8K_PER_CIK = int(os.environ.get("INGEST_8K_PER_CIK", "3"))
-_SOURCE_WEIGHT = {"SEC 8-K": 1.0, "Marketaux": 1.0, "Alpha Vantage": 1.0}  # default 0.7 (RSS)
+# GDELT is title-only provenance → default 0.7 weight (same as RSS), so it loses
+# the first-wins cross-feed collapse to the authoritative 8-K / tickered APIs.
+_SOURCE_WEIGHT = {"SEC 8-K": 1.0, "Marketaux": 1.0, "Alpha Vantage": 1.0}  # default 0.7 (RSS, GDELT)
+
+# ── GDELT targeted per-node source ─────────────────────────────────────────
+# Number of highest-centrality nodes to query GDELT for each cycle (one query
+# per node; the seed is that node, so no fuzzy resolution). Small by design —
+# GDELT is high-recall/low-precision, and each query costs an API call + the
+# downstream materiality LLM budget.
+GDELT_TOP_NODES = int(os.environ.get("GDELT_TOP_NODES", "15"))
+GDELT_TIMESPAN = os.environ.get("GDELT_TIMESPAN", "1h")   # match hourly cadence
+# Few per node keeps the downstream materiality LLM batch (all fresh candidates
+# in one call) manageable: 15 nodes x 5 = 75 GDELT candidates max before dedupe.
+GDELT_MAXRECORDS = int(os.environ.get("GDELT_MAXRECORDS", "5"))
+# Self-budgeting wall clock so a slow upstream 8-K crawl can't starve GDELT.
+# GDELT's 1-req/5s limit means 15 nodes need >=75s; 180 leaves headroom for the
+# occasional 429 backoff-retry.
+GDELT_WALLCLOCK_S = float(os.environ.get("GDELT_WALLCLOCK_S", "180"))
+# Category assigned by seed node type (GDELT gives no taxonomy of its own).
+_GDELT_CATEGORY_BY_TYPE = {
+    "Company": "company", "Commodity": "commodity", "Material": "commodity",
+    "Region": "macro", "Regulator": "politics",
+}
 
 
 def _safe_float(value: Any) -> float:
@@ -126,8 +148,13 @@ def _centrality(conn) -> dict[str, float]:
                 continue
             try:
                 h = json.loads(line)
-                if h.get("id") is not None and h.get("score") is not None:
-                    scores[h["id"]] = float(h["score"])
+                # identify_hubs.py writes the betweenness score under "centrality";
+                # accept "score" too for any legacy hubs file. Reading only "score"
+                # silently loaded NOTHING (every line has "centrality"), so this
+                # whole function was falling through to the degree fallback.
+                val = h.get("centrality", h.get("score"))
+                if h.get("id") is not None and val is not None:
+                    scores[h["id"]] = float(val)
             except Exception:
                 continue
     if not scores:  # fallback: undirected degree over core edges
@@ -303,6 +330,52 @@ def fetch_alphavantage(idx: dict[str, str]) -> list[dict]:
     return out
 
 
+def fetch_gdelt(conn, *, deadline: Optional[float] = None) -> list[dict]:
+    """Targeted GDELT DOC 2.0 news for the top-centrality graph nodes.
+
+    For each of the ``GDELT_TOP_NODES`` highest-centrality named nodes we run ONE
+    DOC 2.0 artlist query scoped to that node's name; every returned article is
+    seeded to that KNOWN node id — GDELT's entity noise never touches the seed,
+    and we skip ``_resolve_to_node_id`` for this source entirely. Volume and
+    precision are controlled downstream by the shared dedupe + materiality gate +
+    per-cycle cap. Disabled with ``INGEST_GDELT='0'``.
+
+    Self-budgeting: when ``deadline`` is None it computes its own wall-clock
+    budget (``GDELT_WALLCLOCK_S``) *at call time*, so a slow upstream 8-K crawl
+    can't starve it. Each per-node query is isolated — one failing entity is
+    logged and skipped, never aborting the batch (mirrors ``fetch_8k``)."""
+    if os.environ.get("INGEST_GDELT", "1") == "0":
+        return []
+    from pipeline.gdelt import gdelt_search
+
+    if deadline is None:
+        deadline = time.monotonic() + GDELT_WALLCLOCK_S
+    cen = _centrality(conn)
+    rows = conn.execute(
+        "SELECT id, name, type FROM nodes WHERE name IS NOT NULL AND name != ''"
+    ).fetchall()
+    # Highest centrality first; ties broken by id so the selection is stable.
+    top = sorted(rows, key=lambda r: (-cen.get(r["id"], 0.0), r["id"]))[:GDELT_TOP_NODES]
+    out: list[dict] = []
+    for r in top:
+        if time.monotonic() >= deadline:
+            log.warning("gdelt: wall-clock budget spent; stopping crawl")
+            break
+        try:
+            arts = gdelt_search(r["name"], timespan=GDELT_TIMESPAN, maxrecords=GDELT_MAXRECORDS)
+        except Exception as exc:
+            log.debug("gdelt: query for %r failed: %s", r["name"], exc)
+            continue
+        category = _GDELT_CATEGORY_BY_TYPE.get(r["type"], "other")
+        for a in arts:
+            c = {"headline": a["title"][:200], "source": "GDELT", "url": a["url"],
+                 "category": category, "published_at": a.get("published_at"),
+                 "seed_entity": r["name"], "seed_node_id": r["id"]}
+            c["id"] = _event_id(c)
+            out.append(c)
+    return out
+
+
 _RSS_EXTRACT_PROMPT = """You are extracting market-moving EVENTS from raw news headlines for a
 supply-chain impact graph. For EACH headline describing a concrete event that could move a
 public company, commodity, or region (M&A, contract, output cut, approval, ban, tariff,
@@ -427,6 +500,10 @@ def run_ingest(db_path: Path = DB_PATH) -> dict[str, int]:
             ("8k", lambda: fetch_8k(conn, deadline=deadline)),
             ("marketaux", lambda: fetch_marketaux(idx)),
             ("alphavantage", lambda: fetch_alphavantage(idx)),
+            # GDELT after the high-provenance sources: first-wins cross-feed
+            # collapse must keep the authoritative 8-K / tickered story over
+            # GDELT's title-only one. GDELT self-budgets its own wall clock.
+            ("gdelt", lambda: fetch_gdelt(conn)),
             ("rss", fetch_rss_broad),
         ):
             try:

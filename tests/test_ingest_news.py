@@ -175,6 +175,7 @@ def test_run_ingest_isolates_a_failing_fetcher(monkeypatch, tmp_path):
     monkeypatch.setattr(ing, "fetch_8k", good_8k)
     monkeypatch.setattr(ing, "fetch_marketaux", boom)         # this one blows up
     monkeypatch.setattr(ing, "fetch_alphavantage", lambda idx: [])
+    monkeypatch.setattr(ing, "fetch_gdelt", lambda *a, **k: [])
     monkeypatch.setattr(ing, "fetch_rss_broad", lambda: [])
     monkeypatch.setenv("INGEST_MATERIALITY_GATE", "0")
     s = ing.run_ingest(db)
@@ -194,6 +195,7 @@ def test_run_ingest_end_to_end(monkeypatch, tmp_path):
          "published_at": "2026-06-17", "seed_entity": "cik:1", "seed_node_id": "cik:1"}])
     monkeypatch.setattr(ing, "fetch_marketaux", lambda idx: [])
     monkeypatch.setattr(ing, "fetch_alphavantage", lambda idx: [])
+    monkeypatch.setattr(ing, "fetch_gdelt", lambda *a, **k: [])
     monkeypatch.setattr(ing, "fetch_rss_broad", lambda: [])
     monkeypatch.setenv("INGEST_MATERIALITY_GATE", "0")   # keep this test hermetic (no LLM call)
     s = ing.run_ingest(db)
@@ -222,6 +224,7 @@ def test_over_cap_events_not_persisted_and_reeligible(monkeypatch, tmp_path):
     monkeypatch.setattr(ing, "fetch_8k", two_8k)
     monkeypatch.setattr(ing, "fetch_marketaux", lambda idx: [])
     monkeypatch.setattr(ing, "fetch_alphavantage", lambda idx: [])
+    monkeypatch.setattr(ing, "fetch_gdelt", lambda *a, **k: [])
     monkeypatch.setattr(ing, "fetch_rss_broad", lambda: [])
     monkeypatch.setenv("INGEST_MATERIALITY_GATE", "0")
     # Force a cap of 1: first ranked → queued, the rest over-cap → skipped in-memory.
@@ -245,3 +248,40 @@ def test_over_cap_events_not_persisted_and_reeligible(monkeypatch, tmp_path):
     ids = sorted(r["id"] for r in conn.execute("SELECT id FROM events").fetchall())
     conn.close()
     assert ids == ["ev1", "ev2"]                     # the deferred event got its shot next cycle
+
+
+def test_run_ingest_gdelt_loses_collapse_to_8k(monkeypatch, tmp_path):
+    # The fetcher tuple orders GDELT AFTER 8-K precisely so that on the SAME story
+    # (same seed + date + first-6 headline words) the authoritative 8-K wins the
+    # first-wins cross-feed collapse and GDELT's title-only copy is dropped. This
+    # drives a real GDELT candidate THROUGH run_ingest (the end-to-end tests stub
+    # it to []), guarding the load-bearing tuple order.
+    db = tmp_path / "collapse.db"
+    conn = store.connect(db); store.init_db(conn)
+    conn.execute("INSERT INTO nodes (id,type,name,tickers) VALUES ('cik:1','Company','Acme','[]')")
+    conn.commit(); conn.close()
+
+    def one_8k(c, **kw):
+        cand = {"headline": "Acme acquires Beta in cash deal", "source": "SEC 8-K",
+                "url": "https://sec.gov/a", "category": "m&a", "published_at": "2026-07-02",
+                "seed_entity": "cik:1", "seed_node_id": "cik:1"}
+        cand["id"] = ing._event_id(cand); return [cand]
+
+    def one_gdelt(c, **kw):
+        cand = {"headline": "Acme acquires Beta in cash deal reportedly", "source": "GDELT",
+                "url": "https://news/x", "category": "company", "published_at": "2026-07-02",
+                "seed_entity": "Acme", "seed_node_id": "cik:1"}
+        cand["id"] = ing._event_id(cand); return [cand]
+
+    monkeypatch.setattr(ing, "fetch_8k", one_8k)
+    monkeypatch.setattr(ing, "fetch_gdelt", one_gdelt)
+    monkeypatch.setattr(ing, "fetch_marketaux", lambda idx: [])
+    monkeypatch.setattr(ing, "fetch_alphavantage", lambda idx: [])
+    monkeypatch.setattr(ing, "fetch_rss_broad", lambda: [])
+    monkeypatch.setenv("INGEST_MATERIALITY_GATE", "0")
+    s = ing.run_ingest(db)
+    assert s["queued"] == 1                               # collapsed to one
+    conn = store.connect(db)
+    survivors = [r["source"] for r in conn.execute("SELECT source FROM events").fetchall()]
+    conn.close()
+    assert survivors == ["SEC 8-K"]                      # 8-K won; GDELT copy dropped
