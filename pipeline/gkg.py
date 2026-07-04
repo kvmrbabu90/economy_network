@@ -85,8 +85,9 @@ COMMON_WORDS = {
 # incidental "NASDAQ:TICKER"-style reference, not news about the exchange itself,
 # so they flood the matcher with boilerplate. Skip them as seeds.
 EXCHANGE_NAMES = {
-    "nasdaq", "nyse", "nyse american", "dow jones", "dow", "s p", "ftse", "nikkei",
+    "nasdaq", "nyse", "nyse american", "dow jones", "s p", "ftse", "nikkei",
     "cboe", "lse", "otc", "amex",
+    # NOTE: bare "dow" is intentionally NOT here — it's the real company Dow Inc.
 }
 
 # Themes that signal a market-moving / business event. Prefix families ECON_ and
@@ -106,8 +107,9 @@ HARD_EVENT_THEMES = {
 _CURRENCY_WORDS = {
     "usd", "eur", "gbp", "jpy", "cny", "chf", "cad", "aud", "inr", "krw", "brl",
     "dollar", "dollars", "euro", "euros", "yen", "yuan", "renminbi", "won", "rupee",
-    "rupees", "franc", "francs", "peso", "pesos", "real", "reais", "krona", "krone",
+    "rupees", "franc", "francs", "peso", "pesos", "krona", "krone",
     "pound", "pounds", "sterling", "rand", "ruble", "rouble", "lira", "crore", "lakh",
+    # 'real'/'reais' (Brazilian) omitted — collides with "real estate"/"for real".
     "billion", "million", "trillion", "revenue", "sales", "profit", "profits",
     "deal", "fine", "penalty", "writedown", "buyback", "dividend", "dividends",
     "barrel", "barrels", "tonne", "tonnes", "ton", "tons",
@@ -324,15 +326,20 @@ def _parse_amounts(field_val: str) -> list[tuple[float, str, int]]:
 
 
 _TITLE_RE = re.compile(r"<PAGE_TITLE>(.*?)</PAGE_TITLE>", re.IGNORECASE | re.DOTALL)
+# Collapse control + line-separator chars: a scraped title is attacker-influenceable
+# and flows verbatim into the numbered materiality LLM prompt, where an embedded
+# CR/NEL/LS would masquerade as extra numbered items (prompt injection).
+_TITLE_CTRL_RE = re.compile(r"[\x00-\x1f\x7f\x85  ]+")
 
 
 def _extract_title(extras: str) -> Optional[str]:
     """Pull the HTML-escaped <PAGE_TITLE> out of the Extras XML (absent for many
-    rows — GKG has no first-class title field). Returns unescaped text or None."""
+    rows — GKG has no first-class title field). Returns unescaped, control-char-
+    sanitized text or None."""
     m = _TITLE_RE.search(extras or "")
     if not m:
         return None
-    title = html.unescape(m.group(1)).strip()
+    title = _TITLE_CTRL_RE.sub(" ", html.unescape(m.group(1))).strip()
     return title or None
 
 
@@ -382,16 +389,26 @@ def parse_gkg(lines: Iterable[str]) -> Iterator[GkgRecord]:
 
 _NONALNUM = re.compile(r"[^a-z0-9]+")
 
+# Non-decomposable Latin letters that NFKD does NOT split — must be transliterated
+# explicitly, else `ascii-ignore` deletes them (Ørsted→'rsted' would never match
+# GDELT's romanized 'Orsted'). Keys are lowercased before lookup.
+_TRANSLIT = {
+    "ø": "o", "æ": "ae", "œ": "oe", "ß": "ss", "ð": "d", "þ": "th", "ł": "l",
+    "đ": "d", "ħ": "h", "ı": "i", "ĸ": "k", "ŀ": "l", "ŉ": "n", "ſ": "s",
+}
+
 
 def normalize_name(s: str) -> str:
     """Lowercase, punctuation→space, collapse, strip leading/trailing corp suffixes.
 
     'Procter & Gamble Co.' → 'procter gamble'; 'AT&T Inc' → 'at t'. Empty if the
-    string is only punctuation/suffixes. ASCII-folds accents FIRST so a node named
-    'Estée Lauder'/'Telefónica'/'Nestlé' matches GDELT's folded surface form
-    'Estee Lauder'/'Telefonica'/'Nestle' (else é/ó/etc. become spaces and split)."""
-    folded = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
-    s = _NONALNUM.sub(" ", folded.lower()).strip()
+    string is only punctuation/suffixes. Transliterates non-decomposable Latin
+    letters (Ø→o, Æ→ae, ß→ss…) and ASCII-folds combining accents FIRST so a node
+    named 'Ørsted'/'Estée Lauder'/'Telefónica' matches GDELT's romanized surface
+    form 'Orsted'/'Estee Lauder'/'Telefonica' (else Ø/é become nothing/space)."""
+    lowered = "".join(_TRANSLIT.get(ch, ch) for ch in (s or "").lower())
+    folded = unicodedata.normalize("NFKD", lowered).encode("ascii", "ignore").decode("ascii")
+    s = _NONALNUM.sub(" ", folded).strip()
     toks = [t for t in s.split() if t]
     while toks and toks[-1] in CORP_SUFFIXES:
         toks.pop()

@@ -438,14 +438,17 @@ def build_gkg_node_index(conn) -> dict[str, tuple[str, str, str, bool]]:
     return index
 
 
-def _proximity_ok(org_offs: list[int], biz_offsets: list[int], amt_offsets: list[int]) -> bool:
+def _proximity_ok(org_offs: list[int], biz_offsets: list[int], amt_offsets: list[int],
+                  fallback_signal: bool = False) -> bool:
     """Gate an ambiguous (common-word) org match: ANY of the org's mentions must
     sit near a business theme or a currency amount (GDELT does not order mentions,
     so checking only the first would drop a genuine near-signal mention). With no
-    offsets, fall back to requiring ANY business signal in the record."""
+    offsets, fall back to requiring ANY business signal in the record —
+    `fallback_signal` carries the V1-only-theme case (offset-less business themes),
+    so a match isn't dropped merely because GDELT populated V1 themes not V2."""
     signal = biz_offsets + amt_offsets
     if not org_offs:
-        return bool(signal)
+        return bool(signal) or fallback_signal
     return any(abs(o - s) <= GKG_PROXIMITY_CHARS for o in org_offs for s in signal)
 
 
@@ -462,20 +465,30 @@ def _gkg_materiality_prior(rec, centrality: float) -> float:
     score += 2.0 if hard else 0.0
     score += min(abs(rec.tone) / 5.0, 2.0)
     score += 0.5 if rec.polarity > 6 else 0.0
-    score += centrality
+    # Weight centrality (0-1) so a top-node breaking story stays competitive for a
+    # pre-cap slot even before GDELT has tagged it with an ECON theme.
+    score += 2.0 * centrality
     return score
+
+
+def _tokens_contiguous(needle: list[str], hay: list[str]) -> bool:
+    """True if `needle` appears as a contiguous run within `hay`."""
+    n = len(needle)
+    if n == 0 or n > len(hay):
+        return False
+    return any(hay[i:i + n] == needle for i in range(len(hay) - n + 1))
 
 
 def _org_salience(k: str, offsets: Optional[list[int]], title_norm: str) -> Optional[bool]:
     """Is the article actually ABOUT this matched org, or just mentioning it?
 
-    True if the org is in the (normalized) title, appears in the lede
-    (min offset ≤ GKG_LEDE_CHARS), or is mentioned ≥2×. False if it appears once,
-    deep in the body (incidental). None when we have no offsets to judge (only V1
-    orgs) — treated as "unknown, allow" so we don't blindly drop title-less rows."""
-    # Token-boundary match, not substring: "at t" (AT&T) must not "match" inside
-    # "flat terrain", and "sap" must not match inside "sapphire".
-    if title_norm and set(k.split()) <= set(title_norm.split()):
+    True if the org's tokens form a contiguous run in the (normalized) title,
+    appears in the lede (min offset ≤ GKG_LEDE_CHARS), or is mentioned ≥2×. False if
+    it appears once, deep in the body (incidental). None when we have no offsets to
+    judge (only V1 orgs) — treated as "unknown, allow" so title-less rows survive."""
+    # Contiguous token run, not an unordered subset: a company's tokens merely
+    # scattered through an unrelated title ("at" … "t" …) must NOT read as salient.
+    if title_norm and _tokens_contiguous(k.split(), title_norm.split()):
         return True
     if offsets:
         return min(offsets) <= GKG_LEDE_CHARS or len(offsets) >= 2
@@ -516,6 +529,7 @@ def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
     title_norm = gkg.normalize_name(rec.title) if rec.title else ""
     biz_offsets = [off for code, off in rec.v2themes if gkg.is_business_theme(code)]
     amt_offsets = [off for _, obj, off in rec.amounts if gkg.amount_is_currency(obj)]
+    v1_biz = any(gkg.is_business_theme(c) for c in rec.themes)   # V1 themes carry no offsets
     best = None
     for surface in surfaces:
         k = gkg.normalize_name(surface)
@@ -526,7 +540,7 @@ def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
             continue
         nid, nname, ntype, ambiguous = hit
         offs = org_offsets.get(k)
-        if ambiguous and not _proximity_ok(offs or [], biz_offsets, amt_offsets):
+        if ambiguous and not _proximity_ok(offs or [], biz_offsets, amt_offsets, v1_biz):
             continue
         if _org_salience(k, offs, title_norm) is False:
             continue   # incidental mention, not what the article is about

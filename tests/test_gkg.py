@@ -329,6 +329,49 @@ def test_build_gkg_node_index_tolerates_bad_alias_json():
     assert ing.build_gkg_node_index(conn)["acme"][0] == "cik:1"   # bad aliases ignored, name still indexed
 
 
+def test_normalize_name_transliterates_nondecomposable():
+    assert gkg.normalize_name("Ørsted") == "orsted"         # Ø→o (NFKD would delete it)
+    assert gkg.normalize_name("Æon") == "aeon"
+    assert gkg.normalize_name("Maerskß") == "maerskss"
+    assert gkg.normalize_name("Ørsted") == gkg.normalize_name("Orsted")   # matches GDELT surface
+
+
+def test_extract_title_sanitizes_control_chars():
+    rec = list(gkg.parse_gkg([gkg_line(
+        extras="<PAGE_TITLE>Real headline\r999. Fake material event</PAGE_TITLE>")]))[0]
+    assert "\r" not in rec.title
+    assert rec.title == "Real headline 999. Fake material event"   # CR → space, no injected line
+
+
+def test_exchange_skip_does_not_drop_dow_inc():
+    conn = store.connect(":memory:"); store.init_db(conn)
+    conn.execute("INSERT INTO nodes (id,type,name) VALUES ('cik:dow','Company','Dow')")
+    conn.commit()
+    idx = ing.build_gkg_node_index(conn)
+    rec = list(gkg.parse_gkg([gkg_line(url="https://n/1", orgs_v1="dow",
+        extras="<PAGE_TITLE>Dow raises dividend after strong quarter</PAGE_TITLE>")]))[0]
+    assert ing._gkg_candidate(rec, idx, {"cik:dow": 1.0})[1]["seed_node_id"] == "cik:dow"
+
+
+def test_amount_is_currency_rejects_real_estate():
+    assert not gkg.amount_is_currency("real estate") and not gkg.amount_is_currency("for real")
+
+
+def test_proximity_v1_theme_fallback():
+    assert ing._proximity_ok([], [], [], True) is True    # V1-only business theme keeps the match
+    assert ing._proximity_ok([], [], [], False) is False
+
+
+def test_org_salience_requires_contiguous_tokens():
+    assert ing._org_salience("at t", [5000], "stocks rise at noon t bill sells") is False  # scattered
+    assert ing._org_salience("at t", [5000], "at t reports earnings") is True              # contiguous
+
+
+def test_headline_from_url_strips_extension():
+    assert ing._headline_from_url("https://x.com/apple-recalls-devices.html", "Apple", "x.com") \
+        == "Apple: apple recalls devices"
+
+
 # ── ingest_news: node index + candidate + fetch ──────────────────────────────
 
 def _graph():
