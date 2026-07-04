@@ -20,6 +20,13 @@ def _zip_bytes(text="row\n"):
     return buf.getvalue()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_gkg_cache(tmp_path, monkeypatch):
+    # fetch_gkg_bulk prunes GKG_CACHE_DIR at the end — point it at a temp dir so the
+    # tests never touch (or delete from) the real production cache.
+    monkeypatch.setattr(ing, "GKG_CACHE_DIR", tmp_path / "_isolated_gkg_cache")
+
+
 # ── helper: build a synthetic 27-column GKG 2.1 row ─────────────────────────
 
 def gkg_line(record_id="20260704011500-0", date="20260704011500", srccoll="1",
@@ -370,6 +377,31 @@ def test_org_salience_requires_contiguous_tokens():
 def test_headline_from_url_strips_extension():
     assert ing._headline_from_url("https://x.com/apple-recalls-devices.html", "Apple", "x.com") \
         == "Apple: apple recalls devices"
+
+
+def test_fetch_gkg_bulk_titleless_shared_image_not_collapsed(monkeypatch):
+    conn = _graph()
+    monkeypatch.setattr(ing, "GKG_SLICES", 1)
+    monkeypatch.setattr(ing, "_centrality", lambda c: {"cik:1": 1.0})
+    # two DIFFERENT title-less Walmart stories sharing the publisher's default OG
+    # image must BOTH survive — the image dedup layer must honor _no_collapse.
+    lines = [
+        gkg_line(url="w1", orgs_v1="walmart", sharingimage="default-logo.png", extras=""),
+        gkg_line(url="w2", orgs_v1="walmart", sharingimage="default-logo.png", extras=""),
+    ]
+    monkeypatch.setattr("pipeline.gkg.latest_gkg_url", lambda: ("20260704011500", "u"))
+    monkeypatch.setattr("pipeline.gkg.download_slice", lambda url, cache: Path("d"))
+    monkeypatch.setattr("pipeline.gkg.read_gkg_lines", lambda p: lines)
+    assert sorted(c["url"] for c in ing.fetch_gkg_bulk(conn)) == ["w1", "w2"]
+
+
+def test_prune_slice_cache(tmp_path):
+    for ts in ("20260704000000", "20260704001500", "20260704003000",
+               "20260704004500", "20260704010000"):
+        (tmp_path / f"{ts}.gkg.csv.zip").write_bytes(_zip_bytes())
+    assert gkg.prune_slice_cache(tmp_path, keep=2) == 3           # 5 → keep 2 newest
+    assert sorted(p.name for p in tmp_path.glob("*.gkg.csv.zip")) == \
+        ["20260704004500.gkg.csv.zip", "20260704010000.gkg.csv.zip"]
 
 
 # ── ingest_news: node index + candidate + fetch ──────────────────────────────

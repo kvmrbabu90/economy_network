@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -72,8 +73,14 @@ GKG_PROXIMITY_CHARS = int(os.environ.get("GKG_PROXIMITY_CHARS", "400"))
 # mention (e.g. "posted on Instagram", "NVIDIA (NASDAQ:NVDA)") and pure noise.
 GKG_LEDE_CHARS = int(os.environ.get("GKG_LEDE_CHARS", "800"))
 GKG_WALLCLOCK_S = float(os.environ.get("GKG_WALLCLOCK_S", "240"))
-# Cache raw slice zips beside the (relocated, non-OneDrive) DB by default.
-GKG_CACHE_DIR = Path(os.environ.get("GKG_CACHE_DIR") or (DB_PATH.parent / "gkg_cache"))
+# Cache raw slice zips on a GUARANTEED-LOCAL path (LOCALAPPDATA/tempdir) — never the
+# OneDrive repo, whose sync/lock hazard would corrupt partial downloads. Independent
+# of DB_PATH so it stays local even when ECONGRAPH_DB is unset. In the production
+# layout (ECONGRAPH_DB=%LOCALAPPDATA%\econgraph\...) this is the same folder as the DB.
+GKG_CACHE_DIR = Path(os.environ.get("GKG_CACHE_DIR") or (
+    Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "econgraph" / "gkg_cache"))
+# Prune cached slices beyond the newest N each cycle (cap unbounded disk growth).
+GKG_CACHE_KEEP = int(os.environ.get("GKG_CACHE_KEEP", "48"))
 
 
 def _safe_float(value: Any) -> float:
@@ -587,7 +594,7 @@ def fetch_gkg_bulk(conn) -> list[dict]:
         return []
     timestamps = gkg.recent_slice_timestamps(latest[0], GKG_SLICES)
 
-    collected: list[tuple[float, dict, str, bool]] = []   # (score, cand, image, has_title)
+    collected: list[tuple[float, dict, str]] = []   # (score, cand, image)
     for ts in timestamps:
         if time.monotonic() >= deadline:
             log.warning("gkg: wall-clock budget spent; stopping at slice %s", ts)
@@ -613,6 +620,8 @@ def fetch_gkg_bulk(conn) -> list[dict]:
     # default/logo image must never collapse two DIFFERENT companies); and the
     # (seed,date,first-6-words) collapse key — which returns None for the URL-derived
     # title-less headlines (`_no_collapse`), so distinct title-less stories survive.
+    # The image layer ALSO skips `_no_collapse` rows: two title-less stories sharing a
+    # publisher's default OG image must not collapse (they're distinct events).
     collected.sort(key=lambda t: -t[0])
     seen_urls: set[str] = set()
     seen_images: set[tuple[str, str]] = set()
@@ -621,7 +630,7 @@ def fetch_gkg_bulk(conn) -> list[dict]:
     for score, cand, image in collected:
         if cand["url"] in seen_urls:
             continue
-        img_key = (cand["seed_node_id"], image) if image else None
+        img_key = (cand["seed_node_id"], image) if (image and not cand.get("_no_collapse")) else None
         if img_key is not None and img_key in seen_images:
             continue
         key = _collapse_key(cand)
@@ -636,6 +645,9 @@ def fetch_gkg_bulk(conn) -> list[dict]:
         if len(kept) >= GKG_PRECAP:
             break
     log.info("gkg: %d matched → kept %d (pre-cap %d)", len(collected), len(kept), GKG_PRECAP)
+    pruned = gkg.prune_slice_cache(GKG_CACHE_DIR, GKG_CACHE_KEEP)   # cap cache disk growth
+    if pruned:
+        log.info("gkg: pruned %d old cached slices (keep %d)", pruned, GKG_CACHE_KEEP)
     return kept
 
 

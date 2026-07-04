@@ -219,7 +219,7 @@ def download_slice(url: str, cache_dir: Path) -> Optional[Path]:
     except requests.RequestException as exc:
         log.warning("gkg: download failed for %s: %s", url, exc)
         return None
-    tmp = cache_dir / (name + ".part")
+    tmp = cache_dir / f"{name}.{os.getpid()}.part"   # pid-unique: overlapping runs don't collide
     tmp.write_bytes(resp.content)
     if not zipfile.is_zipfile(tmp):
         log.warning("gkg: downloaded slice %s is not a valid zip; discarding", name)
@@ -227,6 +227,26 @@ def download_slice(url: str, cache_dir: Path) -> Optional[Path]:
         return None
     os.replace(tmp, out)   # atomic: a killed write leaves only the .part file
     return out
+
+
+def prune_slice_cache(cache_dir: Path, keep: int) -> int:
+    """Delete cached slice zips beyond the `keep` newest (by embedded
+    YYYYMMDDHHMMSS timestamp), capping otherwise-unbounded disk growth. A slice is
+    only ever re-read within the current poll window, so a generous `keep` still
+    honors invariant #6 (no re-fetch of in-window slices). Returns count removed."""
+    cache_dir = Path(cache_dir)
+    if not cache_dir.exists():
+        return 0
+    # Filenames start with the 14-digit timestamp, so lexicographic == chronological.
+    files = sorted(cache_dir.glob("*.gkg.csv.zip"), key=lambda p: p.name, reverse=True)
+    removed = 0
+    for p in files[max(0, keep):]:
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def read_gkg_lines(zip_path: Path) -> list[str]:
