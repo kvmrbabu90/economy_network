@@ -448,6 +448,12 @@ let currentLayout: "ball" | "globe" = "ball";
 // instead of framing the full globe.
 let _globeCameraInitialized = false;
 
+// Global "hide edges" declutter flag, mirrored from FilterState. The
+// linkVisibility() accessor reads it live; update3D()/start3D() keep it in sync.
+// When true, 3d-force-graph excludes every link (and its custom arc tube) from
+// the scene, so buildArcs()/_applyLinkTint() find nothing to build or tint.
+let _hideEdges = false;
+
 export function start3D(
   container: HTMLElement,
   g: EconGraph,
@@ -457,6 +463,7 @@ export function start3D(
   if (instance) stop3D();
   mountedContainer = container;
   currentLayout = opts.layout ?? "ball";
+  _hideEdges = !!opts.filterState?.hideEdges;
 
   instance = ForceGraph3D({ controlType: "orbit" })(container)
     .backgroundColor("#14171a")  // match --bg in styles.css
@@ -506,6 +513,7 @@ export function start3D(
     .nodeResolution(12)
     .nodeOpacity(0.95)
     .linkColor((l: ForceLink) => l.color)
+    .linkVisibility(() => !_hideEdges)
     .linkWidth((l: ForceLink) => (l.below ? 0.4 : 1.2))
     .linkOpacity((l: ForceLink) => (l.below ? 0.18 : 0.5))
     // Arrows disabled (monochrome theme, per user request).
@@ -949,6 +957,9 @@ export function start3D(
 
 export function update3D(g: EconGraph, filterState?: FilterState | null): void {
   if (!instance) return;
+  // Keep the declutter flag current before graphData() re-digests links so
+  // linkVisibility() re-evaluates with the new value (hidden links build no arcs).
+  _hideEdges = !!filterState?.hideEdges;
   // In globe mode, dispose any custom TubeGeometry arc objects before
   // replacing graphData. 3d-force-graph handles teardown of its own internal
   // primitives but our linkThreeObject meshes are external — leaking them
@@ -1142,6 +1153,10 @@ function _applyLinkTint(state: ImpactState | null): void {
     // THREE.Mesh (TubeGeometry). Both get __graphObjType === "link" and
     // have an obj.material with a .color property.
     if (obj.__graphObjType !== "link" || !obj.material?.color) return;
+    // Declutter toggle wins over impact tinting: if edges are hidden, keep every
+    // arc invisible even for in-chain links (linkVisibility should already have
+    // dropped them, but this is authoritative regardless of library internals).
+    if (_hideEdges) { obj.visible = false; obj.material.needsUpdate = true; return; }
     const data = obj.__data;
     if (state) {
       const src = data?.source?.id as string | undefined;

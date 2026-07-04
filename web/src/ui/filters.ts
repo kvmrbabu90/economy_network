@@ -46,6 +46,8 @@ export interface FilterState {
   includeInferred: boolean;
   /** null = all markets; string[] = only these market keys */
   markets: string[] | null;
+  /** Hide all edges in both 2D and 3D — a pure-visual declutter toggle. */
+  hideEdges: boolean;
 }
 
 export type FilterListener = (state: FilterState) => void;
@@ -58,6 +60,7 @@ export function wireFilters(onChange: FilterListener): FilterState {
   );
   const provisional = document.getElementById("toggle-provisional") as HTMLInputElement | null;
   const inferred    = document.getElementById("toggle-inferred")    as HTMLInputElement | null;
+  const hideEdges   = document.getElementById("toggle-hide-edges")  as HTMLInputElement | null;
   const marketAll   = document.getElementById("market-all")         as HTMLInputElement | null;
   const marketCbs   = Array.from(
     document.querySelectorAll<HTMLInputElement>(".market-cb"),
@@ -113,6 +116,7 @@ export function wireFilters(onChange: FilterListener): FilterState {
       includeProvisional: provisional?.checked ?? false,
       includeInferred:    inferred?.checked    ?? false,
       markets,
+      hideEdges: hideEdges?.checked ?? false,
     };
   }
 
@@ -120,6 +124,7 @@ export function wireFilters(onChange: FilterListener): FilterState {
   chips.forEach((c) => c.addEventListener("change", fire));
   provisional?.addEventListener("change", fire);
   inferred?.addEventListener("change", fire);
+  hideEdges?.addEventListener("change", fire);
 
   return readState();
 }

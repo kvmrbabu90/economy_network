@@ -156,7 +156,7 @@ window.__ec = {
 
 // Current filter state -- declared so all callbacks can read it without
 // dragging it through arguments.
-let filters: FilterState = { types: [], includeProvisional: false, includeInferred: false, markets: null };
+let filters: FilterState = { types: [], includeProvisional: false, includeInferred: false, markets: null, hideEdges: false };
 
 // Layout mode for the 2D view. Force = FA2; sector = GICS clusters;
 // bubble = each sector collapsed into a clickable hub with expand/collapse.
@@ -254,6 +254,8 @@ function refreshEdgeVisibility(): void {
     renderer.setSetting("defaultNodeColor", "#c8ccd2");
   }
   renderer.setSetting("edgeReducer", (eid, eattrs) => {
+    // Global declutter toggle: hide every edge regardless of type / impact state.
+    if (filters.hideEdges) return { ...eattrs, hidden: true };
     // Aggregated bubble<->bubble edges only belong in Bubbles layout.
     const isVirtualBubbleEdge = eid.startsWith("bubble-edge:");
     if (isVirtualBubbleEdge && layoutMode !== "bubble") {
