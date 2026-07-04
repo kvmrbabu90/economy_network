@@ -431,19 +431,15 @@ def build_gkg_node_index(conn) -> dict[str, tuple[str, str, str, bool]]:
     return index
 
 
-def _proximity_ok(org_off: Optional[int], biz_offsets: list[int], amt_offsets: list[int]) -> bool:
-    """Gate an ambiguous (common-word) org match: the org must sit near a business
-    theme or a currency amount. With no offset for the org, fall back to requiring
-    ANY business signal in the record."""
-    if org_off is None:
-        return bool(biz_offsets or amt_offsets)
-    for off in biz_offsets:
-        if abs(off - org_off) <= GKG_PROXIMITY_CHARS:
-            return True
-    for off in amt_offsets:
-        if abs(off - org_off) <= GKG_PROXIMITY_CHARS:
-            return True
-    return False
+def _proximity_ok(org_offs: list[int], biz_offsets: list[int], amt_offsets: list[int]) -> bool:
+    """Gate an ambiguous (common-word) org match: ANY of the org's mentions must
+    sit near a business theme or a currency amount (GDELT does not order mentions,
+    so checking only the first would drop a genuine near-signal mention). With no
+    offsets, fall back to requiring ANY business signal in the record."""
+    signal = biz_offsets + amt_offsets
+    if not org_offs:
+        return bool(signal)
+    return any(abs(o - s) <= GKG_PROXIMITY_CHARS for o in org_offs for s in signal)
 
 
 def _gkg_materiality_prior(rec, centrality: float) -> float:
@@ -470,7 +466,9 @@ def _org_salience(k: str, offsets: Optional[list[int]], title_norm: str) -> Opti
     (min offset ≤ GKG_LEDE_CHARS), or is mentioned ≥2×. False if it appears once,
     deep in the body (incidental). None when we have no offsets to judge (only V1
     orgs) — treated as "unknown, allow" so we don't blindly drop title-less rows."""
-    if title_norm and k in title_norm:
+    # Token-boundary match, not substring: "at t" (AT&T) must not "match" inside
+    # "flat terrain", and "sap" must not match inside "sapphire".
+    if title_norm and set(k.split()) <= set(title_norm.split()):
         return True
     if offsets:
         return min(offsets) <= GKG_LEDE_CHARS or len(offsets) >= 2
@@ -503,7 +501,7 @@ def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
             continue
         nid, nname, ntype, ambiguous = hit
         offs = org_offsets.get(k)
-        if ambiguous and not _proximity_ok(offs[0] if offs else None, biz_offsets, amt_offsets):
+        if ambiguous and not _proximity_ok(offs or [], biz_offsets, amt_offsets):
             continue
         if _org_salience(k, offs, title_norm) is False:
             continue   # incidental mention, not what the article is about
@@ -543,10 +541,7 @@ def fetch_gkg_bulk(conn) -> list[dict]:
         return []
     timestamps = gkg.recent_slice_timestamps(latest[0], GKG_SLICES)
 
-    seen_urls: set[str] = set()
-    seen_images: set[str] = set()
-    seen_keys: set = set()
-    scored: list[tuple[float, dict]] = []
+    collected: list[tuple[float, dict, str, bool]] = []   # (score, cand, image, has_title)
     for ts in timestamps:
         if time.monotonic() >= deadline:
             log.warning("gkg: wall-clock budget spent; stopping at slice %s", ts)
@@ -564,25 +559,38 @@ def fetch_gkg_bulk(conn) -> list[dict]:
             if res is None:
                 continue
             score, cand = res
-            # Three dedup layers, so syndication doesn't waste pre-cap slots:
-            # exact URL, exact SharingImage, then the (seed,date,first-6-words)
-            # collapse key that catches cross-outlet copies with distinct urls.
-            if cand["url"] in seen_urls:
-                continue
-            if rec.sharing_image and rec.sharing_image in seen_images:
-                continue
-            key = _collapse_key(cand)
-            if key is not None and key in seen_keys:
-                continue
-            seen_urls.add(cand["url"])
-            if rec.sharing_image:
-                seen_images.add(rec.sharing_image)
-            if key is not None:
-                seen_keys.add(key)
-            scored.append((score, cand))
-    scored.sort(key=lambda t: -t[0])
-    kept = [c for _, c in scored[:GKG_PRECAP]]
-    log.info("gkg: %d matched candidates → kept top %d", len(scored), len(kept))
+            collected.append((score, cand, rec.sharing_image, rec.title is not None))
+
+    # Dedup HIGHEST-SCORE-FIRST so the richest copy of a syndicated story wins its
+    # pre-cap slot (a bare copy iterated first must not evict a theme+amount copy).
+    # Three layers: exact URL; SharingImage scoped to the SEED (a shared publisher
+    # default/logo image must never collapse two DIFFERENT companies); and the
+    # (seed,date,first-6-words) collapse key — but only for REAL titles, since the
+    # synthesized "<name>: news from <domain>" headline would otherwise collapse
+    # every title-less story from one company+outlet+day into one.
+    collected.sort(key=lambda t: -t[0])
+    seen_urls: set[str] = set()
+    seen_images: set[tuple[str, str]] = set()
+    seen_keys: set = set()
+    kept: list[dict] = []
+    for score, cand, image, has_title in collected:
+        if cand["url"] in seen_urls:
+            continue
+        img_key = (cand["seed_node_id"], image) if image else None
+        if img_key is not None and img_key in seen_images:
+            continue
+        key = _collapse_key(cand) if has_title else None
+        if key is not None and key in seen_keys:
+            continue
+        seen_urls.add(cand["url"])
+        if img_key is not None:
+            seen_images.add(img_key)
+        if key is not None:
+            seen_keys.add(key)
+        kept.append(cand)
+        if len(kept) >= GKG_PRECAP:
+            break
+    log.info("gkg: %d matched → kept %d (pre-cap %d)", len(collected), len(kept), GKG_PRECAP)
     return kept
 
 

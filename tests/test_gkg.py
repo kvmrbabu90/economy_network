@@ -98,7 +98,13 @@ def test_is_business_theme():
 
 def test_amount_is_currency():
     assert gkg.amount_is_currency("in revenue") and gkg.amount_is_currency("billion deal")
+    assert gkg.amount_is_currency("$5") and gkg.amount_is_currency("5 million dollars")
+    assert gkg.amount_is_currency("50 tons of steel")            # whole word 'tons'
     assert not gkg.amount_is_currency("months") and not gkg.amount_is_currency("combat soldiers")
+    # word-boundary: currency substrings inside other words must NOT match
+    assert not gkg.amount_is_currency("Boston voters")           # contains 'ton'
+    assert not gkg.amount_is_currency("cotton bales")            # contains 'ton'
+    assert not gkg.amount_is_currency("eureka moment")           # contains 'eur'
 
 
 # ── slice discovery ──────────────────────────────────────────────────────────
@@ -188,11 +194,21 @@ def test_build_gkg_node_index_drops_collisions():
 
 
 def test_proximity_ok():
-    assert ing._proximity_ok(100, [300], []) is True          # theme within 400
-    assert ing._proximity_ok(100, [700], []) is False         # too far
-    assert ing._proximity_ok(100, [], [250]) is True          # amount within range
-    assert ing._proximity_ok(None, [10], []) is True          # no offset → any biz signal
-    assert ing._proximity_ok(None, [], []) is False           # no offset, no signal
+    assert ing._proximity_ok([100], [300], []) is True         # theme within 400
+    assert ing._proximity_ok([100], [700], []) is False        # too far
+    assert ing._proximity_ok([100], [], [250]) is True         # amount within range
+    assert ing._proximity_ok([], [10], []) is True             # no offsets → any biz signal
+    assert ing._proximity_ok([], [], []) is False              # no offsets, no signal
+    assert ing._proximity_ok([5000, 100], [150], []) is True   # 2nd mention near theme (not just offs[0])
+
+
+def test_org_salience_token_boundary():
+    assert ing._org_salience("at t", [5000], "flat terrain report") is False   # substring, not a token
+    assert ing._org_salience("walmart", [5000], "walmart cuts outlook") is True
+    assert ing._org_salience("apple", [100], "") is True        # lede offset
+    assert ing._org_salience("apple", [5000, 6000], "") is True  # >=2 mentions
+    assert ing._org_salience("apple", [5000], "") is False       # single deep mention
+    assert ing._org_salience("apple", None, "") is None          # no offsets → unknown/allow
 
 
 def _idx(conn):
@@ -277,6 +293,59 @@ def test_fetch_gkg_bulk_collapses_syndication(monkeypatch):
     monkeypatch.setattr("pipeline.gkg.read_gkg_lines", lambda p: lines)
     out = ing.fetch_gkg_bulk(conn)
     assert len(out) == 1 and out[0]["url"] == "w1"     # 3 syndicated copies → one
+
+
+def test_fetch_gkg_bulk_keeps_highest_score_copy(monkeypatch):
+    conn = _graph()
+    monkeypatch.setattr(ing, "GKG_SLICES", 1)
+    monkeypatch.setattr(ing, "_centrality", lambda c: {"cik:1": 0.0})
+    t = "Walmart reports record quarterly earnings beat"
+    # bare copy iterated FIRST, rich copy (ECON theme + $ amount) SECOND, same
+    # collapse key → the RICHER copy must win its pre-cap slot, not the first-seen.
+    lines = [
+        gkg_line(url="poor", orgs_v1="walmart", extras=f"<PAGE_TITLE>{t}</PAGE_TITLE>"),
+        gkg_line(url="rich", orgs_v1="walmart", themes_v1="ECON_EARNINGSREPORT",
+                 amounts="9000000000,in revenue,50", extras=f"<PAGE_TITLE>{t}</PAGE_TITLE>"),
+    ]
+    monkeypatch.setattr("pipeline.gkg.latest_gkg_url", lambda: ("20260704011500", "u"))
+    monkeypatch.setattr("pipeline.gkg.download_slice", lambda url, cache: Path("d"))
+    monkeypatch.setattr("pipeline.gkg.read_gkg_lines", lambda p: lines)
+    out = ing.fetch_gkg_bulk(conn)
+    assert len(out) == 1 and out[0]["url"] == "rich"
+
+
+def test_fetch_gkg_bulk_image_dedup_scoped_to_seed(monkeypatch):
+    conn = _graph()
+    monkeypatch.setattr(ing, "GKG_SLICES", 1)
+    monkeypatch.setattr(ing, "_centrality", lambda c: {"cik:1": 1.0, "cik:2": 0.9})
+    # Two DIFFERENT companies sharing one publisher default image must BOTH survive
+    # (a global image key would wrongly collapse them to one).
+    lines = [
+        gkg_line(url="wa", orgs_v1="walmart", sharingimage="logo.png",
+                 extras="<PAGE_TITLE>Walmart acquires grocery chain</PAGE_TITLE>"),
+        gkg_line(url="ap", orgs_v1="apple", orgs_v2="apple,20", themes_v2="ECON_STOCKMARKET,30",
+                 sharingimage="logo.png", extras="<PAGE_TITLE>Apple beats earnings</PAGE_TITLE>"),
+    ]
+    monkeypatch.setattr("pipeline.gkg.latest_gkg_url", lambda: ("20260704011500", "u"))
+    monkeypatch.setattr("pipeline.gkg.download_slice", lambda url, cache: Path("d"))
+    monkeypatch.setattr("pipeline.gkg.read_gkg_lines", lambda p: lines)
+    assert sorted(c["seed_node_id"] for c in ing.fetch_gkg_bulk(conn)) == ["cik:1", "cik:2"]
+
+
+def test_fetch_gkg_bulk_titleless_not_overcollapsed(monkeypatch):
+    conn = _graph()
+    monkeypatch.setattr(ing, "GKG_SLICES", 1)
+    monkeypatch.setattr(ing, "_centrality", lambda c: {"cik:1": 1.0})
+    # Two DIFFERENT title-less Walmart stories from the same domain/day synthesize
+    # an identical headline; they must NOT collapse (distinct urls → both kept).
+    lines = [
+        gkg_line(url="w-buy", orgs_v1="walmart", domain="reuters.com", extras=""),
+        gkg_line(url="w-recall", orgs_v1="walmart", domain="reuters.com", extras=""),
+    ]
+    monkeypatch.setattr("pipeline.gkg.latest_gkg_url", lambda: ("20260704011500", "u"))
+    monkeypatch.setattr("pipeline.gkg.download_slice", lambda url, cache: Path("d"))
+    monkeypatch.setattr("pipeline.gkg.read_gkg_lines", lambda p: lines)
+    assert sorted(c["url"] for c in ing.fetch_gkg_bulk(conn)) == ["w-buy", "w-recall"]
 
 
 def test_gkg_candidate_drops_incidental_and_exchange(monkeypatch):

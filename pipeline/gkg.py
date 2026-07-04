@@ -100,9 +100,16 @@ HARD_EVENT_THEMES = {
     "MANMADE_DISASTER", "NATURAL_DISASTER", "TAX_DISEASE",
 }
 
-_CURRENCY_TOKENS = ("$", "usd", "eur", "gbp", "dollar", "billion", "million",
-                    "trillion", "revenue", "deal", "fine", "penalty", "writedown",
-                    "buyback", "dividend", "barrel", "tonne", "ton")
+# Whole-word currency/market tokens. Matched on word boundaries — a substring
+# test would class "Boston"/"cotton" (contain "ton") or "eureka" (contains "eur")
+# as monetary and poison the materiality signal.
+_CURRENCY_WORDS = {
+    "usd", "eur", "gbp", "jpy", "cny", "dollar", "dollars", "euro", "euros",
+    "billion", "million", "trillion", "revenue", "sales", "profit", "profits",
+    "deal", "fine", "penalty", "writedown", "buyback", "dividend", "dividends",
+    "barrel", "barrels", "tonne", "tonnes", "ton", "tons",
+}
+_WORD_RE = re.compile(r"[a-z]+")
 
 
 def gkg_user_agent() -> str:
@@ -373,6 +380,9 @@ def is_hard_event_theme(code: str) -> bool:
 
 def amount_is_currency(obj: str) -> bool:
     """True when an Amounts object string looks monetary/market-relevant (the
-    Amounts field is dominated by non-monetary quantities like 'months'/'kg')."""
+    Amounts field is dominated by non-monetary quantities like 'months'/'kg').
+    Matches currency WORDS on boundaries, plus a literal currency symbol."""
     o = (obj or "").lower()
-    return any(tok in o for tok in _CURRENCY_TOKENS)
+    if "$" in o or "€" in o or "£" in o:   # $  €  £
+        return True
+    return bool(_CURRENCY_WORDS & set(_WORD_RE.findall(o)))
