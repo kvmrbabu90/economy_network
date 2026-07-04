@@ -57,6 +57,22 @@ _GDELT_CATEGORY_BY_TYPE = {
     "Region": "macro", "Regulator": "politics",
 }
 
+# ── GDELT bulk GKG source (primary; supersedes the per-node DOC fetcher) ─────
+# Pull the last GKG_SLICES 15-min Global-Knowledge-Graph files, match GDELT's
+# pre-extracted organizations against ALL nodes at once, and pre-cap by a cheap
+# materiality prior so the downstream single-call LLM gate stays small.
+GKG_SLICES = int(os.environ.get("GKG_SLICES", "4"))          # 4 x 15min = 1 hour
+GKG_PRECAP = int(os.environ.get("GKG_PRECAP", "40"))         # cap before the LLM gate
+GKG_ENGLISH_ONLY = os.environ.get("GKG_ENGLISH_ONLY", "1") != "0"
+GKG_PROXIMITY_CHARS = int(os.environ.get("GKG_PROXIMITY_CHARS", "400"))
+# Salience: an article is "about" a matched org only if it appears in the title,
+# near the top (lede), or is mentioned repeatedly — otherwise it's an incidental
+# mention (e.g. "posted on Instagram", "NVIDIA (NASDAQ:NVDA)") and pure noise.
+GKG_LEDE_CHARS = int(os.environ.get("GKG_LEDE_CHARS", "800"))
+GKG_WALLCLOCK_S = float(os.environ.get("GKG_WALLCLOCK_S", "240"))
+# Cache raw slice zips beside the (relocated, non-OneDrive) DB by default.
+GKG_CACHE_DIR = Path(os.environ.get("GKG_CACHE_DIR") or (DB_PATH.parent / "gkg_cache"))
+
 
 def _safe_float(value: Any) -> float:
     """Best-effort float; 0.0 on None / non-numeric (e.g. "N/A"). Never raises."""
@@ -344,7 +360,9 @@ def fetch_gdelt(conn, *, deadline: Optional[float] = None) -> list[dict]:
     budget (``GDELT_WALLCLOCK_S``) *at call time*, so a slow upstream 8-K crawl
     can't starve it. Each per-node query is isolated — one failing entity is
     logged and skipped, never aborting the batch (mirrors ``fetch_8k``)."""
-    if os.environ.get("INGEST_GDELT", "1") == "0":
+    # Off by default now that bulk GKG (fetch_gkg_bulk) is the primary GDELT
+    # surface; opt in with INGEST_GDELT=1 for on-demand per-node queries.
+    if os.environ.get("INGEST_GDELT", "0") == "0":
         return []
     from pipeline.gdelt import gdelt_search
 
@@ -374,6 +392,198 @@ def fetch_gdelt(conn, *, deadline: Optional[float] = None) -> list[dict]:
             c["id"] = _event_id(c)
             out.append(c)
     return out
+
+
+def build_gkg_node_index(conn) -> dict[str, tuple[str, str, str, bool]]:
+    """Map a normalized name/alias → (node_id, node_name, node_type, ambiguous).
+
+    Built from node NAMES + ALIASES only — never tickers-as-tokens (short tickers
+    like ALL/CAR/IT collide with everyday words). A normalized key that maps to
+    >1 node is DROPPED (we can't seed it confidently — precision over recall).
+    `ambiguous` flags single-token common-English-word names (shell/gap/apple…)
+    that require the offset-proximity gate before we trust an org match."""
+    from pipeline import gkg
+    keys: dict[str, set[str]] = {}
+    meta: dict[str, tuple[str, str]] = {}
+    for nid, name, ntype, aliases in conn.execute(
+            "SELECT id, name, type, aliases FROM nodes WHERE name IS NOT NULL AND name != ''"):
+        meta[nid] = (name, ntype)
+        cands = [name]
+        try:
+            cands += [a for a in json.loads(aliases or "[]") if a]
+        except Exception:
+            pass
+        for cand in cands:
+            k = gkg.normalize_name(cand)
+            if len(k) < 2:
+                continue
+            keys.setdefault(k, set()).add(nid)
+    index: dict[str, tuple[str, str, str, bool]] = {}
+    dropped = 0
+    for k, ids in keys.items():
+        if len(ids) != 1:
+            dropped += 1
+            continue
+        nid = next(iter(ids))
+        name, ntype = meta[nid]
+        index[k] = (nid, name, ntype, gkg.is_common_word(k))
+    log.info("gkg index: %d keys (%d ambiguous-collision keys dropped)", len(index), dropped)
+    return index
+
+
+def _proximity_ok(org_off: Optional[int], biz_offsets: list[int], amt_offsets: list[int]) -> bool:
+    """Gate an ambiguous (common-word) org match: the org must sit near a business
+    theme or a currency amount. With no offset for the org, fall back to requiring
+    ANY business signal in the record."""
+    if org_off is None:
+        return bool(biz_offsets or amt_offsets)
+    for off in biz_offsets:
+        if abs(off - org_off) <= GKG_PROXIMITY_CHARS:
+            return True
+    for off in amt_offsets:
+        if abs(off - org_off) <= GKG_PROXIMITY_CHARS:
+            return True
+    return False
+
+
+def _gkg_materiality_prior(rec, centrality: float) -> float:
+    """Cheap, LLM-free materiality score used only to PRE-CAP before the shared
+    LLM gate. Business-theme count + hard-event + currency amount + tone/polarity
+    + a centrality tiebreak."""
+    from pipeline import gkg
+    biz = sum(1 for code in rec.themes if gkg.is_business_theme(code))
+    hard = any(gkg.is_hard_event_theme(code) for code in rec.themes)
+    has_cur = any(gkg.amount_is_currency(obj) for _, obj, _ in rec.amounts)
+    score = min(biz, 3) * 1.0
+    score += 2.0 if has_cur else 0.0
+    score += 2.0 if hard else 0.0
+    score += min(abs(rec.tone) / 5.0, 2.0)
+    score += 0.5 if rec.polarity > 6 else 0.0
+    score += centrality
+    return score
+
+
+def _org_salience(k: str, offsets: Optional[list[int]], title_norm: str) -> Optional[bool]:
+    """Is the article actually ABOUT this matched org, or just mentioning it?
+
+    True if the org is in the (normalized) title, appears in the lede
+    (min offset ≤ GKG_LEDE_CHARS), or is mentioned ≥2×. False if it appears once,
+    deep in the body (incidental). None when we have no offsets to judge (only V1
+    orgs) — treated as "unknown, allow" so we don't blindly drop title-less rows."""
+    if title_norm and k in title_norm:
+        return True
+    if offsets:
+        return min(offsets) <= GKG_LEDE_CHARS or len(offsets) >= 2
+    return None
+
+
+def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
+    """One GKG record → (materiality_prior, candidate dict) if it matches a node
+    the article is plausibly ABOUT, else None. Picks the highest-centrality
+    salient match as the single seed."""
+    from pipeline import gkg
+    if not rec.is_web or not rec.url:
+        return None
+    if GKG_ENGLISH_ONLY and rec.is_translingual:
+        return None
+    org_offsets: dict[str, list[int]] = {}
+    for name, off in rec.v2orgs:
+        org_offsets.setdefault(gkg.normalize_name(name), []).append(off)
+    surfaces = rec.orgs or [n for n, _ in rec.v2orgs]
+    title_norm = gkg.normalize_name(rec.title) if rec.title else ""
+    biz_offsets = [off for code, off in rec.v2themes if gkg.is_business_theme(code)]
+    amt_offsets = [off for _, obj, off in rec.amounts if gkg.amount_is_currency(obj)]
+    best = None
+    for surface in surfaces:
+        k = gkg.normalize_name(surface)
+        if not k or k in gkg.EXCHANGE_NAMES:
+            continue
+        hit = index.get(k)
+        if not hit:
+            continue
+        nid, nname, ntype, ambiguous = hit
+        offs = org_offsets.get(k)
+        if ambiguous and not _proximity_ok(offs[0] if offs else None, biz_offsets, amt_offsets):
+            continue
+        if _org_salience(k, offs, title_norm) is False:
+            continue   # incidental mention, not what the article is about
+        c = cen.get(nid, 0.0)
+        if best is None or c > best[0]:
+            best = (c, nid, nname, ntype)
+    if best is None:
+        return None
+    c, nid, nname, ntype = best
+    headline = rec.title or f"{nname}: news from {rec.domain}"
+    cand = {"headline": headline[:200], "source": "GDELT-GKG", "url": rec.url,
+            "category": _GDELT_CATEGORY_BY_TYPE.get(ntype, "other"),
+            "published_at": rec.published_at, "seed_entity": nname, "seed_node_id": nid}
+    cand["id"] = _event_id(cand)
+    return _gkg_materiality_prior(rec, c), cand
+
+
+def fetch_gkg_bulk(conn) -> list[dict]:
+    """Bulk GKG ingestion (primary GDELT surface). Download the last GKG_SLICES
+    15-min GKG files, match GDELT's pre-extracted organizations against ALL nodes,
+    apply the cheap LLM-free relevance/noise/dedup cascade, and return the top
+    GKG_PRECAP candidates by materiality prior (so the shared single-call LLM gate
+    stays small). Disabled with INGEST_GKG='0'. Each slice is isolated so one bad
+    download can't lose the others."""
+    if os.environ.get("INGEST_GKG", "1") == "0":
+        return []
+    from pipeline import gkg
+    deadline = time.monotonic() + GKG_WALLCLOCK_S
+    index = build_gkg_node_index(conn)
+    cen = _centrality(conn)
+    try:
+        latest = gkg.latest_gkg_url()
+    except Exception as exc:
+        log.warning("gkg: lastupdate poll failed: %s", exc)
+        return []
+    if not latest:
+        return []
+    timestamps = gkg.recent_slice_timestamps(latest[0], GKG_SLICES)
+
+    seen_urls: set[str] = set()
+    seen_images: set[str] = set()
+    seen_keys: set = set()
+    scored: list[tuple[float, dict]] = []
+    for ts in timestamps:
+        if time.monotonic() >= deadline:
+            log.warning("gkg: wall-clock budget spent; stopping at slice %s", ts)
+            break
+        try:
+            path = gkg.download_slice(gkg.gkg_slice_url(ts), GKG_CACHE_DIR)
+            if path is None:
+                continue
+            records = gkg.parse_gkg(gkg.read_gkg_lines(path))
+        except Exception as exc:
+            log.warning("gkg: slice %s failed, continuing: %s", ts, exc)
+            continue
+        for rec in records:
+            res = _gkg_candidate(rec, index, cen)
+            if res is None:
+                continue
+            score, cand = res
+            # Three dedup layers, so syndication doesn't waste pre-cap slots:
+            # exact URL, exact SharingImage, then the (seed,date,first-6-words)
+            # collapse key that catches cross-outlet copies with distinct urls.
+            if cand["url"] in seen_urls:
+                continue
+            if rec.sharing_image and rec.sharing_image in seen_images:
+                continue
+            key = _collapse_key(cand)
+            if key is not None and key in seen_keys:
+                continue
+            seen_urls.add(cand["url"])
+            if rec.sharing_image:
+                seen_images.add(rec.sharing_image)
+            if key is not None:
+                seen_keys.add(key)
+            scored.append((score, cand))
+    scored.sort(key=lambda t: -t[0])
+    kept = [c for _, c in scored[:GKG_PRECAP]]
+    log.info("gkg: %d matched candidates → kept top %d", len(scored), len(kept))
+    return kept
 
 
 _RSS_EXTRACT_PROMPT = """You are extracting market-moving EVENTS from raw news headlines for a
@@ -431,7 +641,9 @@ plant/mine closures, defaults, large capex/JV, major executive departures.
 
 DROP (material=false): opinion / analysis / "how/why" explainers, price-move-only stories
 ("stock rises 3%"), analyst rating or price-target changes, rumor / "could/may/reportedly",
-routine product launches, and celebrity/sports/lifestyle.
+routine product launches, celebrity/sports/lifestyle, and law-firm "investigation" /
+class-action-solicitation / "shareholder alert" notices (these are legal advertising, not
+events), and stories where the company is only mentioned incidentally.
 
 ITEMS (numbered):
 {items}
@@ -500,10 +712,11 @@ def run_ingest(db_path: Path = DB_PATH) -> dict[str, int]:
             ("8k", lambda: fetch_8k(conn, deadline=deadline)),
             ("marketaux", lambda: fetch_marketaux(idx)),
             ("alphavantage", lambda: fetch_alphavantage(idx)),
-            # GDELT after the high-provenance sources: first-wins cross-feed
-            # collapse must keep the authoritative 8-K / tickered story over
-            # GDELT's title-only one. GDELT self-budgets its own wall clock.
-            ("gdelt", lambda: fetch_gdelt(conn)),
+            # GKG (bulk GDELT) after the high-provenance sources: first-wins
+            # cross-feed collapse must keep the authoritative 8-K / tickered story
+            # over GKG's title-only one. Supersedes the per-node DOC fetch_gdelt,
+            # which is now opt-in (INGEST_GDELT default off) for on-demand use.
+            ("gkg", lambda: fetch_gkg_bulk(conn)),
             ("rss", fetch_rss_broad),
         ):
             try:

@@ -14,6 +14,9 @@ from schema import store
 def _no_throttle(monkeypatch):
     # Never actually sleep between calls in the test suite.
     monkeypatch.setenv("GDELT_MIN_INTERVAL_S", "0")
+    # The DOC fetcher is opt-in now (bulk GKG is primary); enable it for its
+    # direct tests. test_fetch_gdelt_disabled_by_env overrides this back to 0.
+    monkeypatch.setenv("INGEST_GDELT", "1")
 
 
 class _Resp:
