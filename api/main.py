@@ -476,6 +476,10 @@ def post_impact_stream(payload: dict = Body(...)):
             status_code=400,
             detail=f"unknown provider {provider_override!r}; use 'claude' or 'ollama'",
         )
+    # Optional: ground the trace at a KNOWN node (e.g. "Sharpen with Claude" on a
+    # commodity/region/regulator, which the Company-only text seed extractor can't
+    # resolve). The engine injects it as a hop-0 seed after text extraction.
+    seed_hint = (payload.get("seed_hint_id") or "").strip() or None
 
     def gen():
         # Open the SQLite connection INSIDE the generator (not via
@@ -483,7 +487,8 @@ def post_impact_stream(payload: dict = Body(...)):
         # returns, so a Depends-managed connection would already be closed.
         conn = connect(_DB_PATH)
         try:
-            for ev in impact_mod.run_impact_stream(text, conn=conn, provider=provider_override):
+            for ev in impact_mod.run_impact_stream(text, conn=conn, provider=provider_override,
+                                                   seed_hint_id=seed_hint):
                 yield json.dumps(ev, separators=(",", ":")) + "\n"
         finally:
             conn.close()

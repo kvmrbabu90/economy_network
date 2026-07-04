@@ -376,6 +376,28 @@ def test_impact_stream_ndjson(client, monkeypatch):
     assert "impacts" in events[-1]["result"]
 
 
+def test_impact_stream_forwards_seed_hint(client, monkeypatch):
+    # "Sharpen with Claude" on a commodity/region node passes seed_hint_id so the
+    # trace grounds at the known node instead of failing Company-only extraction.
+    from api import impact as impact_mod
+    captured = {}
+
+    def fake_stream(text, *, conn, provider=None, seed_hint_id=None, **kw):
+        captured["seed_hint_id"] = seed_hint_id
+        yield {"event": "seeds", "seeds": []}
+        yield {"event": "done", "result": {"impacts": [], "seed": None}}
+
+    monkeypatch.setattr(impact_mod, "run_impact_stream", fake_stream)
+    r = client.post("/impact/stream",
+                    json={"text": "cocoa squeeze", "seed_hint_id": "commodity:cocoa"})
+    assert r.status_code == 200
+    assert captured["seed_hint_id"] == "commodity:cocoa"
+
+    # Absent hint → None (on-demand search box behavior is unchanged).
+    r2 = client.post("/impact/stream", json={"text": "cocoa squeeze"})
+    assert r2.status_code == 200 and captured["seed_hint_id"] is None
+
+
 def test_impact_stream_requires_text(client):
     r = client.post("/impact/stream", json={"text": "   "})
     assert r.status_code == 400

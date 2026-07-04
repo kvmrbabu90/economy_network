@@ -1304,7 +1304,7 @@ if (impactAddNewsBtn) {
 // mechanism but an extra flag makes the guard explicit for both paths.
 let _impactInFlight = false;
 
-async function handleImpactRun(): Promise<void> {
+async function handleImpactRun(opts: { seedHintId?: string } = {}): Promise<void> {
   if (!impactRunBtn) return;
   // Guard: prevent a second concurrent impact run (e.g. rapid double-click
   // on the Run button or Enter key). The button is disabled below, but the
@@ -1345,6 +1345,7 @@ async function handleImpactRun(): Promise<void> {
       const resp: ImpactResponse = await runImpactStream(texts[0], {
         provider,
         signal: _impactAbortController.signal,
+        seedHintId: opts.seedHintId,
         onEvent: (ev) => {
           if (ev.event === "seeds") {
             ev.seeds.forEach((v) => acc.set(v.node_id, v));
@@ -1662,28 +1663,37 @@ function showCombinedImpact(nodeId: string): void {
     .then((resp) => {
       if (nodeId !== latestImpactNodeId) return;   // a newer node was clicked; drop this stale response
       const inspectorRoot = document.getElementById("inspector-body");
-      if (inspectorRoot) renderCombinedImpactInto(inspectorRoot, resp, { onSharpen: sharpenWithClaude });
+      if (inspectorRoot) renderCombinedImpactInto(inspectorRoot, resp, {
+        onSharpen: (headlines) => sharpenWithClaude(nodeId, headlines),
+      });
     })
     .catch((err) => console.error("combined impact fetch failed", err));
 }
 
-/** "Sharpen with Claude": re-run the full V1 streaming trace on the strongest
- *  contributing event. Reuses the EXISTING on-demand trigger (handleImpactRun)
- *  — no duplicated stream loop — by loading the headline into the impact bar's
- *  input and invoking the same handler the Run button / Enter key use. The full
- *  trace overlays the live baseline (on-demand impactState takes reducer
- *  precedence). */
-function sharpenWithClaude(headline: string): void {
+/** "Sharpen with Claude": re-run the full V1 streaming trace for the CLICKED
+ *  node at full strength. Two fixes over the old behavior:
+ *   1. Grounds the trace at `nodeId` via seed_hint_id, so a commodity/region/
+ *      regulator (which the Company-only on-demand seed extractor can't resolve)
+ *      still traces — previously it failed with "Could not identify any seed
+ *      nodes from the news text".
+ *   2. Feeds ALL contributing headlines (not just the strongest), so the full
+ *      trace reflects the same event set that produced the precomputed verdict.
+ *  Reuses the EXISTING on-demand trigger (handleImpactRun) — no duplicated
+ *  stream loop. The full trace overlays the live baseline (on-demand impactState
+ *  takes reducer precedence). */
+function sharpenWithClaude(nodeId: string, headlines: string[]): void {
+  const text = headlines.map((h) => h.trim()).filter(Boolean).join(" • ");
+  if (!text) return;
   // Reset the impact bar to a single clean row (handleImpactClear rebuilds the
-  // first .impact-news-input), then seed it with the headline so getNewsTexts()
-  // picks it up on the single-event streaming path.
+  // first .impact-news-input), then seed it with the combined headlines so
+  // getNewsTexts() picks them up on the single-event streaming path.
   handleImpactClear();
   const firstInput =
     impactInputsList?.querySelector<HTMLInputElement>(".impact-news-input") ?? impactInput;
-  if (firstInput) firstInput.value = headline;
+  if (firstInput) firstInput.value = text;
   // handleImpactRun() is the exact function the search/impact box uses: it runs
   // runImpactStream(...) and sets impactState. Do NOT re-implement streaming.
-  handleImpactRun().catch(console.error);
+  handleImpactRun({ seedHintId: nodeId }).catch(console.error);
 }
 
 // ---------------------------------------------------------------------------

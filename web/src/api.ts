@@ -418,7 +418,12 @@ export type ImpactStreamEvent =
  *  Resolves to the final `done` event's result (same shape as runImpact). */
 export async function runImpactStream(
   text: string,
-  opts: { provider?: ImpactProvider; signal?: AbortSignal; onEvent: (ev: ImpactStreamEvent) => void },
+  opts: {
+    provider?: ImpactProvider;
+    signal?: AbortSignal;
+    seedHintId?: string;
+    onEvent: (ev: ImpactStreamEvent) => void;
+  },
 ): Promise<ImpactResponse> {
   const url = new URL("/impact/stream", API_BASE_URL);
   inflight += 1;
@@ -426,6 +431,9 @@ export async function runImpactStream(
   try {
     const body: Record<string, string> = { text };
     if (opts.provider) body.provider = opts.provider;
+    // Ground the trace at a known node id (used by "Sharpen with Claude" so a
+    // commodity/region node still traces instead of failing seed extraction).
+    if (opts.seedHintId) body.seed_hint_id = opts.seedHintId;
     const resp = await fetch(url.toString(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },

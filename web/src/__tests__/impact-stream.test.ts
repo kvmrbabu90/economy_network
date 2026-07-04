@@ -102,6 +102,22 @@ describe("runImpactStream", () => {
     expect(result.verification?.refuted).toBe(1);
   });
 
+  it("includes seed_hint_id in the request body when provided (and omits it otherwise)", async () => {
+    const doneChunk = ['{"event":"done","result":{"impacts":[]}}\n'];
+
+    const withHint = vi.fn().mockResolvedValue(readerFrom(doneChunk));
+    vi.stubGlobal("fetch", withHint);
+    await runImpactStream("cocoa squeeze", { seedHintId: "commodity:cocoa", onEvent: () => {} });
+    const sentWith = JSON.parse((withHint.mock.calls[0][1] as RequestInit).body as string);
+    expect(sentWith.seed_hint_id).toBe("commodity:cocoa");
+
+    const noHint = vi.fn().mockResolvedValue(readerFrom(doneChunk));
+    vi.stubGlobal("fetch", noHint);
+    await runImpactStream("cocoa squeeze", { onEvent: () => {} });
+    const sentWithout = JSON.parse((noHint.mock.calls[0][1] as RequestInit).body as string);
+    expect(sentWithout.seed_hint_id).toBeUndefined();
+  });
+
   it("throws ApiError (with status) on non-OK", async () => {
     vi.stubGlobal(
       "fetch",

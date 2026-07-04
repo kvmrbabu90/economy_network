@@ -9,7 +9,7 @@ export interface NodeExtras {
   impact?: ImpactVerdict;
   onDescribe?: (nodeId: string) => Promise<string>;
   combinedImpact?: import("../api").NodeImpact | null;   // resolved verdict, or null = no recent impact
-  onSharpen?: (headline: string) => void;                // run full V1 trace on the strongest event
+  onSharpen?: (headlines: string[]) => void;             // run full V1 trace over all contributing events
 }
 
 // Point at the BODY div, not the outer <section>.  This keeps the toggle
@@ -342,7 +342,7 @@ export function buildTimelineRows(impact: import("../api").NodeImpact): Timeline
 export function renderCombinedImpactInto(
   root: HTMLElement,
   resp: import("../api").NodeImpactResponse,
-  handlers: { onSharpen?: (headline: string) => void } = {},
+  handlers: { onSharpen?: (headlines: string[]) => void } = {},
 ): void {
   root.querySelector(".combined-impact-box")?.remove();
   const imp = resp.impact;
@@ -379,8 +379,10 @@ export function renderCombinedImpactInto(
   }
   if (handlers.onSharpen && rows.length) {
     const btn = el("button", { class: "sharpen-btn", type: "button" }, "Sharpen with Claude");
-    const strongest = imp.top_events[0].headline;
-    btn.addEventListener("click", () => handlers.onSharpen!(strongest));
+    // Pass every displayed event headline (not just the strongest) so the
+    // full-strength re-trace covers the same event set as the precomputed verdict.
+    const headlines = rows.map((r) => r.headline).filter(Boolean);
+    btn.addEventListener("click", () => handlers.onSharpen!(headlines));
     box.appendChild(btn);
   }
   root.appendChild(box);
