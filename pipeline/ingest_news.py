@@ -29,6 +29,10 @@ HUBS_PATH = REPO_ROOT / "data" / "hubs.jsonl"
 
 INGEST_CAP = int(os.environ.get("INGEST_CAP", "25"))
 INGEST_MAX_AGE_DAYS = int(os.environ.get("INGEST_MAX_AGE_DAYS", "3"))
+# Cross-time story dedup window: a candidate whose story signature matches a stored
+# event within this many days is dropped (same story from a different source, days
+# apart). Matches the impact window — a fully-faded (older) story may re-enter.
+DEDUP_STORY_DAYS = int(os.environ.get("DEDUP_STORY_DAYS", "7"))
 # Hard wall-clock ceiling for one ingestion cycle (seconds). A slow SEC crawl
 # must not eat the whole hourly slot — fetch_8k stops enqueuing new CIKs once
 # this budget is spent. Default 15 min.
@@ -227,26 +231,41 @@ def cap(ranked: list[dict[str, Any]], *, cap: int = INGEST_CAP) -> list[dict[str
 
 
 def dedupe(cands: list[dict[str, Any]], conn) -> list[dict[str, Any]]:
-    """Drop candidates whose id already exists in `events` (any prior cycle), and
-    collapse in-cycle duplicates. Two collapse layers, first-wins:
+    """Drop duplicate candidates. Three collapse layers, first-wins:
 
-      1. url-hash id (`_event_id`) — the primary key.
-      2. cross-feed key (`_collapse_key`) — same (seed, publish-date,
-         first-6-headline-words) via a different feed has a *different* url and
-         thus a different id, so without this one real story becomes N queued
-         events (8-K + Marketaux + AV + RSS)."""
-    from schema.store import event_exists
+      1. url-hash id (`_event_id`) — cross-time, exact URL, via `event_exists`.
+      2. story signature (`story_signature`) — cross-time AND cross-source: the
+         SAME story from a *different outlet* days apart has a different url (so a
+         different id) and possibly a different publish date, which layers 1+3
+         miss. This drops a candidate whose (seed, first-6-words) signature matches
+         a still-in-window stored event (or an earlier candidate this cycle).
+      3. cross-feed key (`_collapse_key`) — same (seed, publish-date, first-6-words)
+         via a different feed in the SAME cycle (in-cycle, date-scoped).
+
+    The surviving candidate's `story_sig` is stashed on the dict so `insert_event`
+    persists it. Layer 2 honors `_no_collapse` (returns None) like `_collapse_key`."""
+    from schema import store
+    story_dedup = os.environ.get("INGEST_STORY_DEDUP", "1") != "0"
     seen: set[str] = set()
     seen_keys: set[tuple[str, str, str]] = set()
+    seen_sigs: set[str] = set()
     out = []
     for c in cands:
         cid = c["id"]
-        if cid in seen or event_exists(conn, cid):
+        if cid in seen or store.event_exists(conn, cid):
+            continue
+        sig = None if c.get("_no_collapse") else store.story_signature(
+            c.get("seed_node_id"), c.get("headline"))
+        if story_dedup and sig is not None and (
+                sig in seen_sigs or store.story_sig_seen(conn, sig, DEDUP_STORY_DAYS)):
             continue
         key = _collapse_key(c)
         if key is not None and key in seen_keys:
             continue
+        c["story_sig"] = sig            # persist whatever we computed (may be None)
         seen.add(cid)
+        if sig is not None:
+            seen_sigs.add(sig)
         if key is not None:
             seen_keys.add(key)
         out.append(c)

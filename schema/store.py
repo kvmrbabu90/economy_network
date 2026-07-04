@@ -10,9 +10,12 @@ happens at the boundary between in-memory dicts and persisted rows.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import sqlite3
+import unicodedata
 from pathlib import Path
 from typing import Any, Iterable, Optional, Union
 
@@ -119,9 +122,15 @@ CREATE TABLE IF NOT EXISTS events (
     ingested_at  TEXT NOT NULL DEFAULT (datetime('now')),
     seed_entity  TEXT,
     seed_node_id TEXT,
-    status       TEXT NOT NULL DEFAULT 'queued'
+    status       TEXT NOT NULL DEFAULT 'queued',
+    -- Date-independent story signature (seed + first-6 headline words) for
+    -- cross-time / cross-source dedup; see story_signature().
+    story_sig    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
+-- NOTE: idx_events_story_sig is created in _migrate_story_sig (not here) — on a
+-- pre-existing DB the story_sig column is added by ALTER first, so an index in this
+-- DDL would fail against the not-yet-migrated table.
 
 CREATE TABLE IF NOT EXISTS event_impacts (
     event_id   TEXT NOT NULL,
@@ -169,25 +178,117 @@ def connect(db_path: PathLike = "econgraph.db") -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create tables and indexes if they do not already exist."""
+    """Create tables and indexes if they do not already exist, then run migrations."""
     conn.executescript(DDL)
     conn.commit()
+    _migrate_story_sig(conn)
+
+
+# ---------------------------------------------------------------------------
+# Story signature (cross-time / cross-source dedup)
+# ---------------------------------------------------------------------------
+
+_SIG_TOKENS = 8          # first-N *distinctive* tokens kept in the signature
+_SIG_MIN_TOKENS = 3      # need this many distinctive tokens, else too generic → None
+_SIG_NONALNUM = re.compile(r"[^a-z0-9]+")
+# Function words + news/finance FRAME words carry no story identity. Stripping them
+# BEFORE taking the first-N tokens is what makes the signature specific: otherwise a
+# boilerplate prefix ("<co> stock price target raised to …") is identical across
+# genuinely different stories and the distinguishing number/name (at word 7+) never
+# enters the key — collapsing distinct items. Numbers are kept (they differentiate).
+_STORY_STOPWORDS = frozenset("""
+a an and or but the to of in on at for with as by from is are was were be been being
+it its this that these those will would has have had after over amid into out up down
+off per than then about against s not no more most
+stock stocks shares share price prices target says said say report reports reported
+update updates breaking exclusive news amp
+""".split())
+
+
+def story_signature(seed_node_id: Optional[str], headline: Optional[str]) -> Optional[str]:
+    """Date-independent story key: sha1('<seed>|<first-8 distinctive headline tokens>').
+
+    Distinctive = headline words minus stopwords/frame boilerplate, numbers kept, in
+    order. Returns None when there's no seed, no headline, or fewer than
+    _SIG_MIN_TOKENS distinctive tokens (too generic to collapse across a multi-day
+    window — those rely on URL-exact dedup instead). The SAME function is used at
+    insert, lookup, and backfill so they always agree."""
+    if not seed_node_id or not headline:
+        return None
+    # ASCII-fold accents FIRST (Nestlé→Nestle, Telefónica→Telefonica) so different
+    # sources' spellings agree and no token is truncated ('nestlé'→'nestl'); an
+    # ASCII-only strip would mangle or drop the identifying foreign token.
+    folded = unicodedata.normalize("NFKD", headline).encode("ascii", "ignore").decode("ascii")
+    tokens = [w for w in _SIG_NONALNUM.sub(" ", folded.lower()).split()
+              if w and w not in _STORY_STOPWORDS]
+    if len(tokens) < _SIG_MIN_TOKENS:
+        return None
+    basis = f"{seed_node_id}|{' '.join(tokens[:_SIG_TOKENS])}"
+    return "sig:" + hashlib.sha1(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def _migrate_story_sig(conn: sqlite3.Connection) -> None:
+    """Add events.story_sig to a pre-existing DB and backfill it once (idempotent).
+
+    Fresh DBs already have the column from the DDL, so this is a no-op for them.
+    An older DB gets the column + index added and every existing row's signature
+    computed, so a story already in the window is immediately matchable."""
+    if not conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='events'").fetchone():
+        return
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()]
+    if "story_sig" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN story_sig TEXT")
+        for row in conn.execute("SELECT id, seed_node_id, headline FROM events").fetchall():
+            sig = story_signature(row["seed_node_id"], row["headline"])
+            if sig:
+                conn.execute("UPDATE events SET story_sig = ? WHERE id = ?", (sig, row["id"]))
+    # Create the index unconditionally (safe now that the column is guaranteed) so
+    # BOTH fresh DBs (column from DDL) and migrated ones get it.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_story_sig ON events(story_sig)")
+    conn.commit()
+
+
+def story_sig_seen(conn: sqlite3.Connection, sig: Optional[str], within_days: int) -> bool:
+    """True if an event with this signature exists whose age (published_at, else
+    ingested_at) is within `within_days` days — i.e. the story is still active in
+    the impact window, so a fresh copy would double-count. A fully-faded (older)
+    match is ignored so the story can legitimately re-enter."""
+    if not sig:
+        return False
+    cutoff = f"-{int(within_days)} days"
+    # Fall back to ingested_at's date when published_at is absent OR unparseable
+    # (a non-ISO 'YYYYMMDD'/localized string makes SQLite date() return NULL, which
+    # would silently exclude the row from the window — a fail-open dedup miss).
+    row = conn.execute(
+        "SELECT 1 FROM events WHERE story_sig = ? AND "
+        "COALESCE(date(NULLIF(published_at, '')), date(ingested_at)) >= date('now', ?) LIMIT 1",
+        (sig, cutoff),
+    ).fetchone()
+    return row is not None
+
+
+_MISSING = object()   # distinguish "story_sig explicitly None" from "not provided"
 
 
 def insert_event(conn: sqlite3.Connection, ev: dict[str, Any]) -> None:
     """Insert one event; INSERT OR IGNORE so a re-seen id is a no-op (idempotent)."""
+    # story_sig: use what ingest computed (None for _no_collapse rows), else derive.
+    sig = ev.get("story_sig", _MISSING)
+    if sig is _MISSING:
+        sig = story_signature(ev.get("seed_node_id"), ev.get("headline"))
     conn.execute(
         """
         INSERT OR IGNORE INTO events
-          (id, headline, source, url, category, published_at, seed_entity, seed_node_id, status)
+          (id, headline, source, url, category, published_at, seed_entity, seed_node_id, status, story_sig)
         VALUES (:id, :headline, :source, :url, :category, :published_at,
-                :seed_entity, :seed_node_id, :status)
+                :seed_entity, :seed_node_id, :status, :story_sig)
         """,
         {
             "id": ev["id"], "headline": ev["headline"], "source": ev.get("source"),
             "url": ev.get("url"), "category": ev.get("category"),
             "published_at": ev.get("published_at"), "seed_entity": ev.get("seed_entity"),
             "seed_node_id": ev.get("seed_node_id"), "status": ev.get("status", "queued"),
+            "story_sig": sig,
         },
     )
     conn.commit()

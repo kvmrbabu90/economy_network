@@ -55,6 +55,94 @@ def test_set_event_status():
     assert conn.execute("SELECT status FROM events WHERE id='e1'").fetchone()["status"] == "traced"
 
 
+# ── story signature (cross-time / cross-source dedup) ───────────────────────
+
+def test_story_signature_deterministic_and_seed_scoped():
+    a = store.story_signature("cik:1", "Walmart acquires regional grocery chain today")
+    assert a and a.startswith("sig:")
+    assert a == store.story_signature("cik:1", "WALMART!!  acquires  regional Grocery chain TODAY")  # normalized
+    assert a != store.story_signature("cik:2", "Walmart acquires regional grocery chain today")      # seed-scoped
+    assert a != store.story_signature("cik:1", "Walmart recalls faulty product line nationwide")     # diff story
+
+
+def test_story_signature_none_cases():
+    assert store.story_signature(None, "Walmart acquires regional grocery chain") is None
+    assert store.story_signature("cik:1", None) is None
+    assert store.story_signature("cik:1", "") is None
+    assert store.story_signature("cik:1", "Its shares slip today") is None      # <3 distinctive tokens
+    assert store.story_signature("cik:1", "Stock report update") is None        # all boilerplate → none
+
+
+def test_story_signature_keys_on_distinctive_tokens_not_boilerplate():
+    # Distinct analyst notes sharing a boilerplate prefix must NOT collapse — the
+    # differentiating number/broker (beyond word 6) now enters the signature.
+    a = store.story_signature("cik:1", "Apple stock price target raised to 250 at Morgan Stanley")
+    b = store.story_signature("cik:1", "Apple stock price target raised to 240 at Wedbush")
+    assert a and b and a != b
+    # a verbatim cross-source copy still collapses (case/punct/whitespace-insensitive)
+    assert a == store.story_signature("cik:1", "Apple  STOCK price target Raised to 250 at Morgan Stanley!")
+
+
+def test_story_signature_ascii_folds_accents():
+    assert store.story_signature("cik:1", "Nestlé raises full-year sales guidance") == \
+           store.story_signature("cik:1", "Nestle raises full-year sales guidance")
+
+
+def test_story_sig_seen_falls_back_on_nonISO_published_at():
+    conn = _mem()
+    sig = store.story_signature("cik:1", "Acme acquires Beta in landmark cash deal")
+    # compact non-ISO published_at → SQLite date() is NULL → must fall back to ingested_at
+    conn.execute("INSERT INTO events (id, headline, seed_node_id, published_at, ingested_at, status, story_sig) "
+                 "VALUES ('e','h','cik:1','20260704', datetime('now','-1 days'), 'traced', ?)", (sig,))
+    conn.commit()
+    assert store.story_sig_seen(conn, sig, 7) is True
+
+
+def test_insert_event_persists_and_computes_story_sig():
+    conn = _mem()
+    hl = "Nvidia unveils new AI chip architecture"
+    # explicit story_sig honored — incl. None for a _no_collapse-style row
+    store.insert_event(conn, {"id": "e1", "headline": hl, "seed_node_id": "cik:9",
+                              "status": "queued", "story_sig": None})
+    assert conn.execute("SELECT story_sig FROM events WHERE id='e1'").fetchone()[0] is None
+    # absent → computed from seed + headline
+    store.insert_event(conn, {"id": "e2", "headline": hl, "seed_node_id": "cik:9", "status": "queued"})
+    assert conn.execute("SELECT story_sig FROM events WHERE id='e2'").fetchone()[0] == \
+        store.story_signature("cik:9", hl)
+
+
+def test_story_sig_seen_windowed():
+    conn = _mem()
+    sig = store.story_signature("cik:1", "Walmart acquires regional grocery chain today")
+    conn.execute("INSERT INTO events (id, headline, seed_node_id, published_at, status, story_sig) "
+                 "VALUES ('old','h','cik:1', date('now','-6 days'), 'traced', ?)", (sig,))
+    conn.commit()
+    assert store.story_sig_seen(conn, sig, 7) is True      # 6 days old, within 7-day window
+    assert store.story_sig_seen(conn, sig, 3) is False     # outside a 3-day window
+    assert store.story_sig_seen(conn, "sig:unknown", 7) is False
+    assert store.story_sig_seen(conn, None, 7) is False
+
+
+def test_migration_adds_and_backfills_story_sig():
+    import sqlite3
+    conn = sqlite3.connect(":memory:"); conn.row_factory = sqlite3.Row
+    # OLD-shape events table (no story_sig column, no index)
+    conn.execute("CREATE TABLE events (id TEXT PRIMARY KEY, headline TEXT NOT NULL, source TEXT, "
+                 "url TEXT, category TEXT, published_at TEXT, ingested_at TEXT DEFAULT (datetime('now')), "
+                 "seed_entity TEXT, seed_node_id TEXT, status TEXT NOT NULL DEFAULT 'queued')")
+    conn.execute("INSERT INTO events (id, headline, seed_node_id) VALUES "
+                 "('e1','Walmart acquires regional grocery chain today','cik:1')")
+    conn.commit()
+    store.init_db(conn)   # DDL is a no-op on the existing table; _migrate_story_sig adds+backfills
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()]
+    assert "story_sig" in cols
+    got = conn.execute("SELECT story_sig FROM events WHERE id='e1'").fetchone()["story_sig"]
+    assert got == store.story_signature("cik:1", "Walmart acquires regional grocery chain today")
+    idx = [r["name"] for r in conn.execute("PRAGMA index_list(events)").fetchall()]
+    assert "idx_events_story_sig" in idx
+    store.init_db(conn)   # idempotent second run must not raise
+
+
 def test_replace_node_impact_atomic_swap():
     conn = _mem()
     store.replace_node_impact(conn, [

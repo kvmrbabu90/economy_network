@@ -157,6 +157,82 @@ def test_dedupe_no_seed_falls_back_to_id_only():
     assert [c["id"] for c in out] == ["n1", "n2"]
 
 
+# ── cross-time / cross-source story dedup ───────────────────────────────────
+
+def _stored_event(conn, headline, days_ago, node="cik:1"):
+    from schema import store
+    sig = store.story_signature(node, headline)
+    conn.execute("INSERT INTO events (id, headline, seed_node_id, source, url, published_at, status, story_sig) "
+                 f"VALUES ('old-{days_ago}', ?, ?, 'RSS', 'http://a/old', date('now','-{int(days_ago)} days'), 'traced', ?)",
+                 (headline, node, sig))
+    conn.commit()
+
+
+def _fresh(headline, url="http://b/new", node="cik:1", **kw):
+    c = {"headline": headline, "seed_node_id": node, "source": "Marketaux",
+         "url": url, "published_at": "2026-07-04", **kw}
+    c["id"] = ing._event_id(c)
+    return c
+
+
+def test_dedupe_drops_cross_time_story_from_another_source():
+    # THE case: a story ingested today whose different-source copy is already stored
+    # from 6 days ago (same seed + first-6-words, DIFFERENT url) is dropped.
+    conn = _graph()
+    hl = "Acme acquires Beta in landmark cash deal"
+    _stored_event(conn, hl, days_ago=6)
+    assert ing.dedupe([_fresh(hl)], conn) == []
+
+
+def test_dedupe_keeps_faded_story_beyond_window():
+    # A match older than the 7-day window (~0 impact weight) lets the story re-enter.
+    conn = _graph()
+    hl = "Acme acquires Beta in landmark cash deal"
+    _stored_event(conn, hl, days_ago=10)
+    assert len(ing.dedupe([_fresh(hl)], conn)) == 1
+
+
+def test_dedupe_keeps_distinct_story_same_seed_cross_time():
+    conn = _graph()
+    _stored_event(conn, "Acme acquires Beta in landmark cash deal", days_ago=2)
+    # different headline about the same company → different signature → kept
+    assert len(ing.dedupe([_fresh("Acme recalls faulty product line nationwide today")], conn)) == 1
+
+
+def test_dedupe_story_dedup_honors_no_collapse():
+    conn = _graph()
+    hl = "Acme launches new product line for enterprise buyers"
+    _stored_event(conn, hl, days_ago=1)
+    out = ing.dedupe([_fresh(hl, _no_collapse=True)], conn)   # GKG title-less → never story-deduped
+    assert len(out) == 1 and out[0].get("story_sig") is None
+
+
+def test_dedupe_in_cycle_story_dedup_across_dates():
+    # Same story, DIFFERENT published dates, SAME cycle: the date-scoped collapse key
+    # misses them but the date-independent story signature collapses to one.
+    conn = _graph()
+    hl = "Acme acquires Beta in landmark cash deal"
+    out = ing.dedupe([_fresh(hl, url="http://a", published_at="2026-07-04"),
+                      _fresh(hl, url="http://b", published_at="2026-07-01")], conn)
+    assert len(out) == 1
+
+
+def test_dedupe_sets_story_sig_on_survivor():
+    from schema import store
+    conn = _graph()
+    hl = "Acme acquires Beta in landmark cash deal"
+    out = ing.dedupe([_fresh(hl)], conn)
+    assert out[0]["story_sig"] == store.story_signature("cik:1", hl)
+
+
+def test_dedupe_story_dedup_disabled_by_env(monkeypatch):
+    conn = _graph()
+    hl = "Acme acquires Beta in landmark cash deal"
+    _stored_event(conn, hl, days_ago=2)
+    monkeypatch.setenv("INGEST_STORY_DEDUP", "0")
+    assert len(ing.dedupe([_fresh(hl)], conn)) == 1          # disabled → not deduped
+
+
 def test_run_ingest_isolates_a_failing_fetcher(monkeypatch, tmp_path):
     # One fetcher raising must NOT discard the others' candidates (esp. 8-K).
     db = tmp_path / "iso.db"
