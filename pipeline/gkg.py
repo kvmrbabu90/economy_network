@@ -20,10 +20,10 @@ Codebook: http://data.gdeltproject.org/documentation/GDELT-Global_Knowledge_Grap
 from __future__ import annotations
 
 import html
-import io
 import logging
 import os
 import re
+import unicodedata
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -104,12 +104,16 @@ HARD_EVENT_THEMES = {
 # test would class "Boston"/"cotton" (contain "ton") or "eureka" (contains "eur")
 # as monetary and poison the materiality signal.
 _CURRENCY_WORDS = {
-    "usd", "eur", "gbp", "jpy", "cny", "dollar", "dollars", "euro", "euros",
+    "usd", "eur", "gbp", "jpy", "cny", "chf", "cad", "aud", "inr", "krw", "brl",
+    "dollar", "dollars", "euro", "euros", "yen", "yuan", "renminbi", "won", "rupee",
+    "rupees", "franc", "francs", "peso", "pesos", "real", "reais", "krona", "krone",
+    "pound", "pounds", "sterling", "rand", "ruble", "rouble", "lira", "crore", "lakh",
     "billion", "million", "trillion", "revenue", "sales", "profit", "profits",
     "deal", "fine", "penalty", "writedown", "buyback", "dividend", "dividends",
     "barrel", "barrels", "tonne", "tonnes", "ton", "tons",
 }
 _WORD_RE = re.compile(r"[a-z]+")
+_CURRENCY_SYMBOLS = ("$", "€", "£", "¥", "₩", "₹", "₽", "₨", "﷼")
 
 
 def gkg_user_agent() -> str:
@@ -138,7 +142,8 @@ def latest_gkg_url() -> Optional[tuple[str, str]]:
         if parts and parts[-1].endswith("gkg.csv.zip"):
             url = parts[-1]
             ts = url.rsplit("/", 1)[-1].split(".", 1)[0]  # YYYYMMDDHHMMSS
-            return ts, url
+            if len(ts) == 14 and ts.isdigit():            # ignore a garbage/HTML line
+                return ts, url
     return None
 
 
@@ -187,28 +192,56 @@ def recent_slice_timestamps(latest_ts: str, n: int) -> list[str]:
 
 def download_slice(url: str, cache_dir: Path) -> Optional[Path]:
     """Cache-first download of a .gkg.csv.zip → local path (invariant #6: never
-    re-fetch a cached file). Returns None on transport failure (caller isolates)."""
+    re-fetch a VALID cached file).
+
+    Hardened for an unattended job: a cached file is trusted only if it is a valid
+    zip (a partial/corrupt file left by a killed mid-write is re-downloaded, not
+    poisoned forever); the download is written atomically (temp + os.replace) and
+    zip-verified before it becomes the cache entry. Returns None on a 404 (slice
+    not yet published) or ANY transport failure (caller isolates the slice)."""
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     name = url.rsplit("/", 1)[-1]
     out = cache_dir / name
     if out.exists() and out.stat().st_size > 0:
-        return out
-    resp = requests.get(url, headers={"User-Agent": gkg_user_agent()}, timeout=_TIMEOUT_S)
-    if resp.status_code == 404:
-        log.info("gkg: slice not yet published: %s", url)
+        if zipfile.is_zipfile(out):
+            return out
+        log.warning("gkg: cached slice %s is corrupt; re-downloading", name)
+        out.unlink(missing_ok=True)
+    try:
+        resp = requests.get(url, headers={"User-Agent": gkg_user_agent()}, timeout=_TIMEOUT_S)
+        if resp.status_code == 404:
+            log.info("gkg: slice not yet published: %s", url)
+            return None
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        log.warning("gkg: download failed for %s: %s", url, exc)
         return None
-    resp.raise_for_status()
-    out.write_bytes(resp.content)
+    tmp = cache_dir / (name + ".part")
+    tmp.write_bytes(resp.content)
+    if not zipfile.is_zipfile(tmp):
+        log.warning("gkg: downloaded slice %s is not a valid zip; discarding", name)
+        tmp.unlink(missing_ok=True)
+        return None
+    os.replace(tmp, out)   # atomic: a killed write leaves only the .part file
     return out
 
 
 def read_gkg_lines(zip_path: Path) -> list[str]:
-    """Unzip a cached .gkg.csv.zip and return its lines (tab-delimited rows)."""
+    """Unzip a cached .gkg.csv.zip → its rows.
+
+    Splits ONLY on newline (str.splitlines() would also break on a bare CR / NEL /
+    line-separator that survives inside a scraped <PAGE_TITLE> or org surface, which
+    would shred a valid 27-col row into sub-27-col fragments and silently drop it).
+    Raises BadZipFile / ValueError on a corrupt or empty zip — the caller isolates
+    the slice and download_slice re-fetches it next cycle."""
     with zipfile.ZipFile(zip_path) as z:
-        name = z.namelist()[0]
-        raw = z.read(name)
-    return raw.decode("utf-8", errors="replace").splitlines()
+        names = z.namelist()
+        if not names:
+            raise ValueError("empty gkg zip")
+        raw = z.read(names[0])
+    text = raw.decode("utf-8", errors="replace")
+    return [ln.rstrip("\r") for ln in text.split("\n") if ln.rstrip("\r")]
 
 
 # ---------------------------------------------------------------------------
@@ -354,8 +387,11 @@ def normalize_name(s: str) -> str:
     """Lowercase, punctuation→space, collapse, strip leading/trailing corp suffixes.
 
     'Procter & Gamble Co.' → 'procter gamble'; 'AT&T Inc' → 'at t'. Empty if the
-    string is only punctuation/suffixes."""
-    s = _NONALNUM.sub(" ", (s or "").lower()).strip()
+    string is only punctuation/suffixes. ASCII-folds accents FIRST so a node named
+    'Estée Lauder'/'Telefónica'/'Nestlé' matches GDELT's folded surface form
+    'Estee Lauder'/'Telefonica'/'Nestle' (else é/ó/etc. become spaces and split)."""
+    folded = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
+    s = _NONALNUM.sub(" ", folded.lower()).strip()
     toks = [t for t in s.split() if t]
     while toks and toks[-1] in CORP_SUFFIXES:
         toks.pop()
@@ -383,6 +419,6 @@ def amount_is_currency(obj: str) -> bool:
     Amounts field is dominated by non-monetary quantities like 'months'/'kg').
     Matches currency WORDS on boundaries, plus a literal currency symbol."""
     o = (obj or "").lower()
-    if "$" in o or "€" in o or "£" in o:   # $  €  £
+    if any(sym in o for sym in _CURRENCY_SYMBOLS):
         return True
     return bool(_CURRENCY_WORDS & set(_WORD_RE.findall(o)))

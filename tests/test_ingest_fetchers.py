@@ -222,3 +222,21 @@ def test_materiality_gate_structurally_junk_failopen(monkeypatch):
     cands = [_cand(1, "Acme buys rival"), _cand(2, "y")]
     monkeypatch.setattr(ing, "_claude_call", lambda p: json.dumps([{"foo": "bar"}, "nonsense"]))
     assert ing._materiality_filter(cands) == cands
+
+
+def test_materiality_gate_chunks_large_batches(monkeypatch):
+    # >INGEST_MATERIALITY_BATCH candidates → multiple bounded _claude_call chunks
+    # (guards the Windows argv-overflow → fail-open bug). Each chunk is numbered from
+    # 1, so a per-chunk verdict for index 1 keeps exactly one candidate per chunk.
+    monkeypatch.setattr(ing, "INGEST_MATERIALITY_BATCH", 2)
+    cands = [_cand(i, f"headline {i}") for i in range(1, 6)]   # 5 cands, batch 2 → 3 chunks
+    calls = {"n": 0}
+
+    def fake(prompt):
+        calls["n"] += 1
+        return json.dumps([{"index": 1, "material": True}]
+                          + [{"index": j, "material": False} for j in range(2, 20)])
+
+    monkeypatch.setattr(ing, "_claude_call", fake)
+    out = ing._materiality_filter(cands)
+    assert calls["n"] == 3 and len(out) == 3     # 3 chunks, one kept per chunk, no overflow

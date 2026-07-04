@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -8,6 +10,14 @@ import requests
 from pipeline import gkg
 from pipeline import ingest_news as ing
 from schema import store
+
+
+def _zip_bytes(text="row\n"):
+    """A real .gkg.csv.zip payload for download/read tests."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("x.gkg.csv", text)
+    return buf.getvalue()
 
 
 # ── helper: build a synthetic 27-column GKG 2.1 row ─────────────────────────
@@ -147,22 +157,176 @@ def test_gkg_slice_url():
 
 
 def test_download_slice_cache_first(tmp_path, monkeypatch):
-    # pre-existing cached file → returned without any request
+    # a VALID cached zip → returned without any request
     cached = tmp_path / "20260704011500.gkg.csv.zip"
-    cached.write_bytes(b"zip")
+    cached.write_bytes(_zip_bytes())
     monkeypatch.setattr(requests, "get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no fetch")))
     assert gkg.download_slice("http://x/20260704011500.gkg.csv.zip", tmp_path) == cached
 
 
 def test_download_slice_fetches_and_caches(tmp_path, monkeypatch):
-    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(content=b"payload"))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(content=_zip_bytes("hello")))
     out = gkg.download_slice("http://x/20260704013000.gkg.csv.zip", tmp_path)
-    assert out.read_bytes() == b"payload"
+    assert out is not None and zipfile.is_zipfile(out)
 
 
 def test_download_slice_404_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(status=404))
     assert gkg.download_slice("http://x/future.gkg.csv.zip", tmp_path) is None
+
+
+def test_download_slice_refetches_corrupt_cache(tmp_path, monkeypatch):
+    # a poisoned (non-zip, size>0) cache file must be discarded + re-downloaded,
+    # not trusted forever.
+    bad = tmp_path / "20260704011500.gkg.csv.zip"
+    bad.write_bytes(b"partial-not-a-zip")
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(content=_zip_bytes("ok")))
+    out = gkg.download_slice("http://x/20260704011500.gkg.csv.zip", tmp_path)
+    assert out is not None and zipfile.is_zipfile(out)
+
+
+def test_download_slice_discards_nonzip_download(tmp_path, monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(content=b"<html>rate limited</html>"))
+    assert gkg.download_slice("http://x/bad.gkg.csv.zip", tmp_path) is None
+    assert not list(tmp_path.glob("*"))                    # nothing (incl. .part) left behind
+
+
+def test_download_slice_transport_error_returns_none(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise requests.ConnectionError("boom")
+    monkeypatch.setattr(requests, "get", boom)
+    assert gkg.download_slice("http://x/x.gkg.csv.zip", tmp_path) is None   # matches docstring
+
+
+def test_read_gkg_lines_real_zip_preserves_row_with_embedded_cr(tmp_path):
+    # A valid 27-col row whose PAGE_TITLE carries a bare CR must NOT be split into
+    # sub-27-col fragments (str.splitlines would). Round-trip a real zip.
+    row = gkg_line(url="https://n/1", orgs_v1="walmart",
+                   extras="<PAGE_TITLE>Walmart cuts\routlook</PAGE_TITLE>")
+    z = tmp_path / "s.gkg.csv.zip"
+    z.write_bytes(_zip_bytes(row + "\n"))
+    lines = gkg.read_gkg_lines(z)
+    assert len(lines) == 1 and len(lines[0].split("\t")) == 27   # not shredded
+
+
+def test_read_gkg_lines_empty_zip_raises(tmp_path):
+    z = tmp_path / "empty.zip"
+    with zipfile.ZipFile(z, "w"):
+        pass
+    with pytest.raises(ValueError):
+        gkg.read_gkg_lines(z)
+
+
+def test_latest_gkg_url_ignores_garbage_timestamp(monkeypatch):
+    body = ("0 h http://data.gdeltproject.org/gdeltv2/proxy-notice-gkg.csv.zip\n"
+            "0 h http://data.gdeltproject.org/gdeltv2/20260704011500.gkg.csv.zip\n")
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(text=body))
+    ts, url = gkg.latest_gkg_url()
+    assert ts == "20260704011500"        # the garbage 'proxy-notice' line is skipped
+
+
+def test_normalize_name_ascii_folds_accents():
+    assert gkg.normalize_name("Estée Lauder Companies (The)") == "estee lauder"  # 'companies'/'the' stripped
+    assert gkg.normalize_name("Telefónica") == "telefonica"
+    assert gkg.normalize_name("Nestlé") == "nestle"
+    assert gkg.normalize_name("América Móvil") == "america movil"
+    # the folded node name matches GDELT's ASCII surface form
+    assert gkg.normalize_name("Estée Lauder") == gkg.normalize_name("Estee Lauder")
+
+
+def test_amount_is_currency_non_western():
+    assert gkg.amount_is_currency("100 billion yen") and gkg.amount_is_currency("50 yuan")
+    assert gkg.amount_is_currency("₹500 crore") and gkg.amount_is_currency("¥900")
+    assert gkg.amount_is_currency("₩1 trillion") and gkg.amount_is_currency("500 rupees")
+
+
+def test_headline_from_url():
+    assert ing._headline_from_url("https://reuters.com/walmart-buys-chain-2026", "Walmart", "reuters.com") \
+        == "Walmart: walmart buys chain"                    # slug words, digit dropped
+    assert ing._headline_from_url("https://reuters.com/", "Walmart", "reuters.com") \
+        == "Walmart: news from reuters.com"                 # no usable slug → domain fallback
+
+
+def test_dedupe_shared_keeps_titleless_gkg_stories():
+    # The finding-3 fix at the SHARED dedupe layer: two distinct title-less GKG
+    # stories share an identical synthetic headline but carry _no_collapse, so the
+    # shared dedupe() must NOT merge them.
+    conn = _graph()
+
+    def mk(url):
+        c = {"headline": "Walmart: news from reuters.com", "source": "GDELT-GKG", "url": url,
+             "category": "company", "published_at": "2026-07-04", "seed_entity": "Walmart",
+             "seed_node_id": "cik:1", "_no_collapse": True}
+        c["id"] = ing._event_id(c)
+        return c
+
+    assert len(ing.dedupe([mk("u1"), mk("u2")], conn)) == 2
+
+
+def test_gkg_materiality_prior_components():
+    def rec(**kw):
+        return list(gkg.parse_gkg([gkg_line(**kw)]))[0]
+    plain = rec(orgs_v1="x")
+    assert ing._gkg_materiality_prior(rec(orgs_v1="x", themes_v1="ECON_BANKRUPTCY"), 0.0) \
+        > ing._gkg_materiality_prior(plain, 0.0)            # hard-event bumps the prior
+    assert ing._gkg_materiality_prior(rec(orgs_v1="x", amounts="9000000000,in revenue,10"), 0.0) \
+        > ing._gkg_materiality_prior(plain, 0.0)            # currency bumps the prior
+    three = rec(orgs_v1="x", themes_v1="ECON_STOCKMARKET;ECON_IPO;ECON_DEBT")
+    four = rec(orgs_v1="x", themes_v1="ECON_STOCKMARKET;ECON_IPO;ECON_DEBT;ECON_INFLATION")
+    assert ing._gkg_materiality_prior(three, 0.0) == ing._gkg_materiality_prior(four, 0.0)  # biz saturates at 3
+
+
+def test_fetch_gkg_bulk_multislice_isolates_and_dedups(monkeypatch):
+    conn = _graph()
+    monkeypatch.setattr(ing, "GKG_SLICES", 3)
+    monkeypatch.setattr(ing, "_centrality", lambda c: {"cik:1": 1.0})
+    story = "<PAGE_TITLE>Walmart earnings beat estimates today</PAGE_TITLE>"
+    per_ts = {
+        "20260704011500": None,   # newest slice RAISES → must be isolated
+        "20260704010000": [gkg_line(url="shared", orgs_v1="walmart", extras=story)],
+        "20260704004500": [gkg_line(url="shared", orgs_v1="walmart", extras=story)],  # same url next slice
+    }
+    monkeypatch.setattr("pipeline.gkg.latest_gkg_url", lambda: ("20260704011500", "u"))
+    monkeypatch.setattr("pipeline.gkg.download_slice",
+                        lambda url, cache: Path(url.rsplit("/", 1)[-1].split(".", 1)[0]))
+
+    def rd(path):
+        lines = per_ts.get(Path(path).name)
+        if lines is None:
+            raise ValueError("bad slice")
+        return lines
+
+    monkeypatch.setattr("pipeline.gkg.read_gkg_lines", rd)
+    out = ing.fetch_gkg_bulk(conn)
+    assert [c["url"] for c in out] == ["shared"]     # bad slice skipped; url deduped across slices
+
+
+def test_fetch_gkg_bulk_deadline_stops(monkeypatch):
+    conn = _graph()
+    monkeypatch.setattr(ing, "GKG_SLICES", 3)
+    monkeypatch.setattr(ing, "_centrality", lambda c: {"cik:1": 1.0})
+    calls = {"n": 0}
+    monkeypatch.setattr("pipeline.gkg.latest_gkg_url", lambda: ("20260704011500", "u"))
+
+    def dl(url, cache):
+        calls["n"] += 1
+        return Path("d")
+
+    monkeypatch.setattr("pipeline.gkg.download_slice", dl)
+    monkeypatch.setattr("pipeline.gkg.read_gkg_lines",
+                        lambda p: [gkg_line(url=f"u{calls['n']}", orgs_v1="walmart",
+                                            extras="<PAGE_TITLE>Walmart news today right here</PAGE_TITLE>")])
+    seq = iter([0.0, 0.0, 2000.0])   # deadline compute, iter1 check (ok), iter2 check (past)
+    monkeypatch.setattr(ing.time, "monotonic", lambda: next(seq, 2000.0))
+    ing.fetch_gkg_bulk(conn)
+    assert calls["n"] == 1           # only slice 1 downloaded before the deadline tripped
+
+
+def test_build_gkg_node_index_tolerates_bad_alias_json():
+    conn = store.connect(":memory:"); store.init_db(conn)
+    conn.execute("INSERT INTO nodes (id,type,name,aliases) VALUES ('cik:1','Company','Acme','not-json{')")
+    conn.commit()
+    assert ing.build_gkg_node_index(conn)["acme"][0] == "cik:1"   # bad aliases ignored, name still indexed
 
 
 # ── ingest_news: node index + candidate + fetch ──────────────────────────────

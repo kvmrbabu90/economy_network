@@ -11,10 +11,12 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +94,12 @@ def _collapse_key(cand: dict[str, Any]) -> Optional[tuple[str, str, str]]:
     """Secondary cross-feed dedupe key: (seed_node_id, published-date, first-6
     normalized words of the headline). The same story arriving via 8-K +
     Marketaux + AV + RSS has distinct urls (so distinct _event_id) but collapses
-    here to one queued event. Returns None when we lack a seed to key on."""
+    here to one queued event. Returns None when we lack a seed to key on, or when
+    the candidate opts out (`_no_collapse`) — GKG rows with a URL-derived synthetic
+    headline set this so two distinct title-less stories about the same company /
+    outlet / day are not wrongly merged by their identical fallback headline."""
+    if cand.get("_no_collapse"):
+        return None
     seed = cand.get("seed_node_id")
     if not seed:
         return None
@@ -475,6 +482,24 @@ def _org_salience(k: str, offsets: Optional[list[int]], title_norm: str) -> Opti
     return None
 
 
+_URL_EXT_RE = re.compile(r"\.(s?html?|php|aspx?|jsp)$", re.IGNORECASE)
+_URL_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _headline_from_url(url: str, name: str, domain: str) -> str:
+    """Fallback headline for a title-less GKG row, derived from the URL's last path
+    segment (news URLs usually embed the headline as a slug, e.g.
+    /walmart-acquires-grocery-chain). URL-distinct, so two different title-less
+    stories don't collapse on an identical synthetic headline. Falls back to the
+    domain when there's no usable multi-word slug."""
+    seg = urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1]
+    seg = _URL_EXT_RE.sub("", seg)
+    words = [w for w in _URL_SLUG_RE.sub(" ", seg.lower()).split() if not w.isdigit()]
+    if len(words) >= 3:
+        return f"{name}: {' '.join(words)}"[:200]
+    return f"{name}: news from {domain}"[:200]
+
+
 def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
     """One GKG record → (materiality_prior, candidate dict) if it matches a node
     the article is plausibly ABOUT, else None. Picks the highest-centrality
@@ -511,10 +536,17 @@ def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
     if best is None:
         return None
     c, nid, nname, ntype = best
-    headline = rec.title or f"{nname}: news from {rec.domain}"
-    cand = {"headline": headline[:200], "source": "GDELT-GKG", "url": rec.url,
+    cand = {"source": "GDELT-GKG", "url": rec.url,
             "category": _GDELT_CATEGORY_BY_TYPE.get(ntype, "other"),
             "published_at": rec.published_at, "seed_entity": nname, "seed_node_id": nid}
+    if rec.title:
+        cand["headline"] = rec.title[:200]
+    else:
+        # No <PAGE_TITLE>: derive a URL-distinct fallback and mark it so the
+        # collapse-key dedup (here AND in the shared dedupe) won't merge two
+        # different title-less stories that share the same synthetic headline.
+        cand["headline"] = _headline_from_url(rec.url, nname, rec.domain)
+        cand["_no_collapse"] = True
     cand["id"] = _event_id(cand)
     return _gkg_materiality_prior(rec, c), cand
 
@@ -559,27 +591,26 @@ def fetch_gkg_bulk(conn) -> list[dict]:
             if res is None:
                 continue
             score, cand = res
-            collected.append((score, cand, rec.sharing_image, rec.title is not None))
+            collected.append((score, cand, rec.sharing_image))
 
     # Dedup HIGHEST-SCORE-FIRST so the richest copy of a syndicated story wins its
     # pre-cap slot (a bare copy iterated first must not evict a theme+amount copy).
     # Three layers: exact URL; SharingImage scoped to the SEED (a shared publisher
     # default/logo image must never collapse two DIFFERENT companies); and the
-    # (seed,date,first-6-words) collapse key — but only for REAL titles, since the
-    # synthesized "<name>: news from <domain>" headline would otherwise collapse
-    # every title-less story from one company+outlet+day into one.
+    # (seed,date,first-6-words) collapse key — which returns None for the URL-derived
+    # title-less headlines (`_no_collapse`), so distinct title-less stories survive.
     collected.sort(key=lambda t: -t[0])
     seen_urls: set[str] = set()
     seen_images: set[tuple[str, str]] = set()
     seen_keys: set = set()
     kept: list[dict] = []
-    for score, cand, image, has_title in collected:
+    for score, cand, image in collected:
         if cand["url"] in seen_urls:
             continue
         img_key = (cand["seed_node_id"], image) if image else None
         if img_key is not None and img_key in seen_images:
             continue
-        key = _collapse_key(cand) if has_title else None
+        key = _collapse_key(cand)
         if key is not None and key in seen_keys:
             continue
         seen_urls.add(cand["url"])
@@ -661,14 +692,35 @@ Return ONLY a JSON array (no prose):
 """
 
 
+# Chunk the materiality gate so the prompt never exceeds the OS command-line limit.
+# _claude_call passes the whole prompt as ONE argv element and Windows caps a command
+# line at ~32K chars; a busy cycle (unbounded 8-K + GKG_PRECAP + APIs + RSS) can produce
+# well over 150 candidates, which would overflow → the CLI launch fails → the gate
+# fails OPEN and floods noise. Chunking bounds every call's size.
+INGEST_MATERIALITY_BATCH = int(os.environ.get("INGEST_MATERIALITY_BATCH", "60"))
+
+
 def _materiality_filter(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep only candidates the LLM judges to be concrete, deterministic market-moving /
-    business-impact events. One batched call. Fail-open (empty/garbled → keep all).
-    Disabled when INGEST_MATERIALITY_GATE='0'."""
+    business-impact events. Split into <=INGEST_MATERIALITY_BATCH chunks (each a
+    separate Claude call, each fail-open) so the prompt can't overflow the OS
+    command line. Disabled when INGEST_MATERIALITY_GATE='0'."""
     if not cands:
         return cands
     if os.environ.get("INGEST_MATERIALITY_GATE", "1") == "0":
         return cands
+    if len(cands) <= INGEST_MATERIALITY_BATCH:
+        return _materiality_batch(cands)
+    kept: list[dict[str, Any]] = []
+    for i in range(0, len(cands), INGEST_MATERIALITY_BATCH):
+        kept.extend(_materiality_batch(cands[i:i + INGEST_MATERIALITY_BATCH]))
+    log.info("materiality gate: kept %d/%d across %d chunks", len(kept), len(cands),
+             -(-len(cands) // INGEST_MATERIALITY_BATCH))
+    return kept
+
+
+def _materiality_batch(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One batched LLM call over a single chunk. Fail-open (empty/garbled → keep all)."""
     block = "\n".join(f"{i+1}. {c.get('headline','')} — {c.get('seed_entity','')}"
                       for i, c in enumerate(cands))
     parsed = _parse_llm_json(_claude_call(_MATERIALITY_PROMPT.format(items=block)))
@@ -693,9 +745,7 @@ def _materiality_filter(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return cands
     # Trust a well-formed verdict set even when it keeps zero: a valid "nothing
     # material this cycle" must NOT fall back to tracing noise.
-    kept = [c for i, c in enumerate(cands) if i in keep_idx]
-    log.info("materiality gate: kept %d/%d material", len(kept), len(cands))
-    return kept
+    return [c for i, c in enumerate(cands) if i in keep_idx]
 
 
 def fetch_rss_broad() -> list[dict]:
