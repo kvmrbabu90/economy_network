@@ -121,6 +121,17 @@ def test_fetch_8k_caps_per_cik(monkeypatch):
     assert len(out) == 3    # capped, not 20
 
 
+def test_fetch_8k_marks_no_collapse(monkeypatch):
+    # 8-K synthetic headlines ("<cik> 8-K item X") must opt out of story/collapse
+    # dedup — distinct filings of the same item from one filer share the headline.
+    conn = _graph_with_ciks(1)
+    from pipeline import sec_8k
+    monkeypatch.setattr(sec_8k, "fetch_recent_8k_meta",
+                        lambda cik, **kw: [{"url": "http://sec/1", "filing_date": "2026-07-01", "items": "8.01"}])
+    out = ing.fetch_8k(conn)
+    assert out and all(c.get("_no_collapse") is True for c in out)
+
+
 def test_fetch_8k_wallclock_stops_new_ciks(monkeypatch):
     # Once the wall-clock deadline is spent, no NEW CIK is crawled.
     conn = _graph_with_ciks(5)

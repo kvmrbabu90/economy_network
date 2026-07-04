@@ -312,9 +312,14 @@ def fetch_8k(conn, *, deadline: Optional[float] = None) -> list[dict]:
             # fetch_recent_8k_meta returns EDGAR recent-first; keep the newest few.
             for m in fetch_recent_8k_meta(cik, since_days=INGEST_MAX_AGE_DAYS)[:INGEST_8K_PER_CIK]:
                 item0 = (m.get("items", "") or "").split(",")[0].strip()
+                # `_no_collapse`: the 8-K headline is synthetic ("<cik> 8-K item X"),
+                # NOT a story title — two distinct filings of the same item type from
+                # one filer share it. Dedup 8-Ks by accession/url (event_exists) only,
+                # never by the story signature / collapse key (would drop a real event).
                 c = {"headline": f"{node_id} 8-K item {item0}"[:200], "source": "SEC 8-K",
                      "url": m.get("url", ""), "category": _category_for_8k(item0),
-                     "published_at": m.get("filing_date"), "seed_entity": node_id, "seed_node_id": node_id}
+                     "published_at": m.get("filing_date"), "seed_entity": node_id,
+                     "seed_node_id": node_id, "_no_collapse": True}
                 c["id"] = _event_id(c)
                 out.append(c)
         except Exception as exc:
