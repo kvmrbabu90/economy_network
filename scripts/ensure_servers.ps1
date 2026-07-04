@@ -13,8 +13,12 @@
 # short pause guards against killing a server that is merely busy for a moment.
 $ErrorActionPreference = 'SilentlyContinue'
 $repo = 'C:\Users\konda\OneDrive\econgraph_repo'
-# The DB lives OUTSIDE OneDrive (WAL corrupts under sync); every process must agree.
-$env:ECONGRAPH_DB = 'C:\Users\konda\AppData\Local\econgraph\econgraph.db'
+# The DB lives at a SHARED local path — NOT OneDrive (WAL corrupts under sync) and NOT
+# %LOCALAPPDATA% (the Claude app's AppContainer redirects that to a package-private
+# LocalCache the scheduled cycle task can't see). C:\Users\Public is un-redirected, so
+# the tool-launched backend and the real Windows cycle task open the SAME file.
+$env:ECONGRAPH_DB = 'C:\Users\Public\econgraph\econgraph.db'
+$env:GKG_CACHE_DIR = 'C:\Users\Public\econgraph\gkg_cache'
 
 function Test-Url([string]$url) {
     try { return (Invoke-WebRequest $url -TimeoutSec 6 -UseBasicParsing).StatusCode -eq 200 }

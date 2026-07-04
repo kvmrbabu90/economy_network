@@ -9,7 +9,10 @@ echo.
 :: The graph DB lives OUTSIDE OneDrive (WAL + continuous sync corrupts). Point every
 :: launched process at it. Child windows started below inherit this. Also set as a
 :: persistent user env var, but the logged-on session may predate it, so set it here.
-set "ECONGRAPH_DB=%LOCALAPPDATA%\econgraph\econgraph.db"
+:: Shared local path — NOT OneDrive (WAL), NOT %LOCALAPPDATA% (Claude AppContainer
+:: redirects it to a package-private LocalCache the scheduled cycle task can't see).
+set "ECONGRAPH_DB=C:\Users\Public\econgraph\econgraph.db"
+set "GKG_CACHE_DIR=C:\Users\Public\econgraph\gkg_cache"
 
 :: Kill any stale processes on these ports
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8101" ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
