@@ -627,49 +627,60 @@ def test_fetch_gkg_bulk_precap_limits(monkeypatch):
 
 
 # ── context capsule (grounding) ─────────────────────────────────────────────
+# build_gkg_context is now pure formatting: it receives a PRE-RANKED list of
+# other-org names (the matching + salience ranking is done by _gkg_candidate).
 
-def _ctx_rec(orgs=None, tone=0.0, amounts=None):
+def _ctx_rec(tone=0.0, amounts=None):
     return gkg.GkgRecord(
         record_id="r", published_at="2026-07-05", is_translingual=False, is_web=True,
-        domain="x.com", url="http://x/1",
-        orgs=orgs or [], v2orgs=[], tone=tone, amounts=amounts or [])
-
-
-_CTX_INDEX = {
-    "google":   ("slug:google",        "Google",    "Company", False),
-    "alexbank": ("wikidata:Q4856020",  "Alexbank",  "Company", False),
-    "safaricom": ("slug:safaricom",    "Safaricom", "Company", False),
-}
+        domain="x.com", url="http://x/1", orgs=[], v2orgs=[], tone=tone, amounts=amounts or [])
 
 
 def test_build_gkg_context_orgs_money_tone():
-    rec = _ctx_rec(orgs=["google", "alexbank", "safaricom", "acme-not-in-graph"],
-                   tone=3.2, amounts=[(1_000_000_000.0, "in revenue", 10), (3.0, "months", 20)])
-    ctx = gkg.build_gkg_context(rec, _CTX_INDEX, "slug:google")
-    assert ctx == "[involves: Alexbank, Safaricom | $1B | positive tone]"
-
-
-def test_build_gkg_context_excludes_seed_and_unmatched():
-    # seed (google) and non-graph orgs never appear → nothing left → None.
-    rec = _ctx_rec(orgs=["google", "acme-not-in-graph"], tone=0.0)
-    assert gkg.build_gkg_context(rec, _CTX_INDEX, "slug:google") is None
+    rec = _ctx_rec(tone=3.2, amounts=[(1_000_000_000.0, "in revenue", 10), (3.0, "months", 20)])
+    assert gkg.build_gkg_context(rec, ["Alexbank", "Safaricom"]) == \
+        "[involves: Alexbank, Safaricom | $1B | positive tone]"
 
 
 def test_build_gkg_context_none_when_nothing_useful():
-    # unmatched org, near-neutral tone, non-currency amount → None.
-    rec = _ctx_rec(orgs=["acme-not-in-graph"], tone=0.5, amounts=[(3.0, "months", 1)])
-    assert gkg.build_gkg_context(rec, _CTX_INDEX, "slug:x") is None
+    # no other orgs, near-neutral tone, non-currency amount → None.
+    rec = _ctx_rec(tone=0.5, amounts=[(3.0, "months", 1)])
+    assert gkg.build_gkg_context(rec, []) is None
 
 
 def test_build_gkg_context_negative_tone_and_largest_amount_wins():
-    rec = _ctx_rec(orgs=["alexbank"], tone=-4.0,
-                   amounts=[(500_000_000.0, "dollars", 1), (12000.0, "usd", 2)])
-    assert gkg.build_gkg_context(rec, _CTX_INDEX, "slug:seed") == \
-        "[involves: Alexbank | $500M | negative tone]"
+    rec = _ctx_rec(tone=-4.0, amounts=[(500_000_000.0, "dollars", 1), (12000.0, "usd", 2)])
+    assert gkg.build_gkg_context(rec, ["Alexbank"]) == "[involves: Alexbank | $500M | negative tone]"
 
 
 def test_build_gkg_context_caps_orgs_at_five():
-    idx = {f"c{i}": (f"n{i}", f"C{i}", "Company", False) for i in range(8)}
-    rec = _ctx_rec(orgs=[f"c{i}" for i in range(8)], tone=0.0)
-    ctx = gkg.build_gkg_context(rec, idx, "seed")
+    rec = _ctx_rec(tone=0.0)
+    ctx = gkg.build_gkg_context(rec, [f"C{i}" for i in range(8)])
     assert ctx.count(",") == 4          # 5 orgs listed → 4 comma separators
+
+
+# ── GKG-native salience: seed = most salient org, capsule ranked by salience ──
+
+def test_org_salience_score_ranks_title_over_body():
+    # Title mention beats a deep single body mention; lede beats deep.
+    s_title = ing._org_salience_score("target", [30], "target opens stores")
+    s_body  = ing._org_salience_score("walmart", [5000, 5200], "target opens stores")
+    s_lede  = ing._org_salience_score("apple", [50], "")
+    s_deep  = ing._org_salience_score("apple", [5000, 6000], "")
+    assert s_title > s_body and s_lede > s_deep and s_title > 0
+
+
+def test_gkg_candidate_seed_is_most_salient_not_most_central():
+    # Article is ABOUT Target (in the title); Walmart is far more central but only
+    # mentioned deep in the body. Salience must win → Target is the seed, and
+    # Walmart appears in the capsule's "involves:" list.
+    idx = {"target": ("cik:9", "Target", "Company", False),
+           "walmart": ("cik:1", "Walmart", "Company", False)}
+    cen = {"cik:1": 5.0, "cik:9": 0.1}          # Walmart far more central
+    rec = list(gkg.parse_gkg([gkg_line(
+        url="https://n/1", orgs_v1="target;walmart",
+        orgs_v2="target,30;walmart,5000;walmart,5200",
+        extras="<PAGE_TITLE>Target opens new stores</PAGE_TITLE>")]))[0]
+    _, cand = ing._gkg_candidate(rec, idx, cen)
+    assert cand["seed_node_id"] == "cik:9"                 # salience beats centrality
+    assert cand["gkg_context"] == "[involves: Walmart]"    # other matched org, salience-ranked

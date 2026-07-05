@@ -526,6 +526,23 @@ def _org_salience(k: str, offsets: Optional[list[int]], title_norm: str) -> Opti
     return None
 
 
+def _org_salience_score(k: str, offsets: Optional[list[int]], title_norm: str) -> float:
+    """GKG-native proxy for GEG's `avgSalience` (the neural GEG feed is dead — see
+    the 2026-07-05 investigation): how central is this org to the article? Used to
+    pick the seed among matched orgs and to rank the grounding capsule's `involves:`
+    list. Title mention dominates, then lede proximity (earlier = higher), then
+    mention frequency. Monotonic, unnormalized — only the RELATIVE order matters."""
+    score = 0.0
+    if title_norm and _tokens_contiguous(k.split(), title_norm.split()):
+        score += 3.0                                       # named in the title — strongest
+    if offsets:
+        earliest = min(offsets)
+        if earliest <= GKG_LEDE_CHARS:
+            score += 1.5 * (1.0 - earliest / GKG_LEDE_CHARS)   # lede proximity
+        score += min(len(offsets), 5) * 0.3                # mention frequency, capped
+    return score
+
+
 _URL_EXT_RE = re.compile(r"\.(s?html?|php|aspx?|jsp)$", re.IGNORECASE)
 _URL_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -561,7 +578,13 @@ def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
     biz_offsets = [off for code, off in rec.v2themes if gkg.is_business_theme(code)]
     amt_offsets = [off for _, obj, off in rec.amounts if gkg.amount_is_currency(obj)]
     v1_biz = any(gkg.is_business_theme(c) for c in rec.themes)   # V1 themes carry no offsets
-    best = None
+    # Collect every matched, salient org with a GKG-native salience score. The
+    # SEED is the most-salient org (GEG-style) with centrality as tiebreak — this
+    # picks the org the article is actually ABOUT rather than the biggest name that
+    # happens to be mentioned. The remaining matched orgs, salience-ranked, become
+    # the grounding capsule's "involves:" list.
+    matched: list[tuple[float, float, str, str, str]] = []   # (salience, centrality, id, name, type)
+    seen_nids: set[str] = set()
     for surface in surfaces:
         k = gkg.normalize_name(surface)
         if not k or k in gkg.EXCHANGE_NAMES:
@@ -570,17 +593,20 @@ def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
         if not hit:
             continue
         nid, nname, ntype, ambiguous = hit
+        if nid in seen_nids:
+            continue
         offs = org_offsets.get(k)
         if ambiguous and not _proximity_ok(offs or [], biz_offsets, amt_offsets, v1_biz):
             continue
         if _org_salience(k, offs, title_norm) is False:
             continue   # incidental mention, not what the article is about
-        c = cen.get(nid, 0.0)
-        if best is None or c > best[0]:
-            best = (c, nid, nname, ntype)
-    if best is None:
+        seen_nids.add(nid)
+        matched.append((_org_salience_score(k, offs, title_norm), cen.get(nid, 0.0), nid, nname, ntype))
+    if not matched:
         return None
-    c, nid, nname, ntype = best
+    matched.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    _, c, nid, nname, ntype = matched[0]
+    other_orgs = [m[3] for m in matched[1:]]
     cand = {"source": "GDELT-GKG", "url": rec.url,
             "category": _GDELT_CATEGORY_BY_TYPE.get(ntype, "other"),
             "published_at": rec.published_at, "seed_entity": nname, "seed_node_id": nid}
@@ -593,9 +619,9 @@ def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
         cand["headline"] = _headline_from_url(rec.url, nname, rec.domain)
         cand["_no_collapse"] = True
     cand["id"] = _event_id(cand)
-    # Grounding capsule (other article orgs + money + tone). Set AFTER the id so
-    # it never affects dedup; consumed only by the trace's seed selection.
-    cand["gkg_context"] = gkg.build_gkg_context(rec, index, nid)
+    # Grounding capsule (salience-ranked other orgs + money + tone). Set AFTER the
+    # id so it never affects dedup; consumed only by the trace's seed selection.
+    cand["gkg_context"] = gkg.build_gkg_context(rec, other_orgs)
     return _gkg_materiality_prior(rec, c), cand
 
 

@@ -475,49 +475,30 @@ def _fmt_amount(value: float) -> str:
     return f"${int(v)}"
 
 
-def build_gkg_context(rec, index, seed_id):
-    """Distill a GKG record into a one-line 'context capsule' that grounds the
+def build_gkg_context(rec, other_orgs):
+    """Format a GKG record into a one-line 'context capsule' that grounds the
     impact trace's SEED selection WITHOUT feeding the article body.
 
-    Format: '[involves: A, B | $1B | positive tone]', omitting empty sections;
-    returns None when there is nothing worth adding. Only organizations that
-    resolve to a graph node OTHER than the seed are listed — traceable, no noise.
+    `other_orgs` is a pre-ranked (most-salient-first) list of graph-matched org
+    NAMES other than the seed — the matching + salience ranking is done by the
+    caller (_gkg_candidate), which holds the char-offsets/title needed to score
+    salience. Format: '[involves: A, B | $1B | positive tone]', omitting empty
+    sections; None when nothing is worth adding. Length-capped so a pathological
+    record can never bloat the trace prompt."""
+    sections: list[str] = []
+    orgs = list(other_orgs or [])[:_MAX_CONTEXT_ORGS]
+    if orgs:
+        sections.append("involves: " + ", ".join(orgs))
 
-    `index` maps normalize_name(name) -> (node_id, node_name, node_type, ambiguous),
-    exactly as build_gkg_node_index() produces. The capsule is length-capped so a
-    pathological record can never bloat the trace prompt."""
-    surfaces = rec.orgs or [n for n, _ in rec.v2orgs]
-    other_orgs: list[str] = []
-    seen_ids: set[str] = {seed_id}
-    for surface in surfaces:
-        k = normalize_name(surface)
-        if not k or k in EXCHANGE_NAMES:
-            continue
-        hit = index.get(k)
-        if not hit:
-            continue
-        nid, nname = hit[0], hit[1]
-        if nid in seen_ids:
-            continue
-        seen_ids.add(nid)
-        other_orgs.append(nname)
-        if len(other_orgs) >= _MAX_CONTEXT_ORGS:
-            break
-
-    money = None
     cur = [v for v, obj, _ in rec.amounts if amount_is_currency(obj)]
     if cur:
-        money = _fmt_amount(max(cur))
+        sections.append(_fmt_amount(max(cur)))
 
-    sections: list[str] = []
-    if other_orgs:
-        sections.append("involves: " + ", ".join(other_orgs))
-    if money:
-        sections.append(money)
     if rec.tone > 1.0:
         sections.append("positive tone")
     elif rec.tone < -1.0:
         sections.append("negative tone")
+
     if not sections:
         return None
     return ("[" + " | ".join(sections) + "]")[:_MAX_CONTEXT_CHARS]
