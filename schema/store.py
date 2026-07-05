@@ -125,7 +125,10 @@ CREATE TABLE IF NOT EXISTS events (
     status       TEXT NOT NULL DEFAULT 'queued',
     -- Date-independent story signature (seed + first-6 headline words) for
     -- cross-time / cross-source dedup; see story_signature().
-    story_sig    TEXT
+    story_sig    TEXT,
+    -- Compact GKG grounding capsule (other orgs + money + tone) that grounds the
+    -- trace's seed selection; NULL for non-GKG events. See build_gkg_context().
+    gkg_context  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
 -- NOTE: idx_events_story_sig is created in _migrate_story_sig (not here) — on a
@@ -182,6 +185,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(DDL)
     conn.commit()
     _migrate_story_sig(conn)
+    _migrate_gkg_context(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +271,20 @@ def story_sig_seen(conn: sqlite3.Connection, sig: Optional[str], within_days: in
     return row is not None
 
 
+def _migrate_gkg_context(conn: sqlite3.Connection) -> None:
+    """Add events.gkg_context to a pre-existing DB (idempotent). No backfill: the
+    capsule is built from raw GKG slices, which are pruned — existing events gain
+    a capsule only on re-ingest. Fresh DBs already have the column from the DDL."""
+    if not conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='events'"
+    ).fetchone():
+        return
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()]
+    if "gkg_context" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN gkg_context TEXT")
+        conn.commit()
+
+
 _MISSING = object()   # distinguish "story_sig explicitly None" from "not provided"
 
 
@@ -279,16 +297,16 @@ def insert_event(conn: sqlite3.Connection, ev: dict[str, Any]) -> None:
     conn.execute(
         """
         INSERT OR IGNORE INTO events
-          (id, headline, source, url, category, published_at, seed_entity, seed_node_id, status, story_sig)
+          (id, headline, source, url, category, published_at, seed_entity, seed_node_id, status, story_sig, gkg_context)
         VALUES (:id, :headline, :source, :url, :category, :published_at,
-                :seed_entity, :seed_node_id, :status, :story_sig)
+                :seed_entity, :seed_node_id, :status, :story_sig, :gkg_context)
         """,
         {
             "id": ev["id"], "headline": ev["headline"], "source": ev.get("source"),
             "url": ev.get("url"), "category": ev.get("category"),
             "published_at": ev.get("published_at"), "seed_entity": ev.get("seed_entity"),
             "seed_node_id": ev.get("seed_node_id"), "status": ev.get("status", "queued"),
-            "story_sig": sig,
+            "story_sig": sig, "gkg_context": ev.get("gkg_context"),
         },
     )
     conn.commit()

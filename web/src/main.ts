@@ -1306,7 +1306,7 @@ if (impactAddNewsBtn) {
 // mechanism but an extra flag makes the guard explicit for both paths.
 let _impactInFlight = false;
 
-async function handleImpactRun(opts: { seedHintId?: string } = {}): Promise<void> {
+async function handleImpactRun(opts: { seedHintId?: string; context?: string } = {}): Promise<void> {
   if (!impactRunBtn) return;
   // Guard: prevent a second concurrent impact run (e.g. rapid double-click
   // on the Run button or Enter key). The button is disabled below, but the
@@ -1348,6 +1348,7 @@ async function handleImpactRun(opts: { seedHintId?: string } = {}): Promise<void
         provider,
         signal: _impactAbortController.signal,
         seedHintId: opts.seedHintId,
+        context: opts.context,
         onEvent: (ev) => {
           if (ev.event === "seeds") {
             ev.seeds.forEach((v) => acc.set(v.node_id, v));
@@ -1666,7 +1667,7 @@ function showCombinedImpact(nodeId: string): void {
       if (nodeId !== latestImpactNodeId) return;   // a newer node was clicked; drop this stale response
       const inspectorRoot = document.getElementById("inspector-body");
       if (inspectorRoot) renderCombinedImpactInto(inspectorRoot, resp, {
-        onSharpen: (headlines) => sharpenWithClaude(nodeId, headlines),
+        onSharpen: (headlines, context) => sharpenWithClaude(nodeId, headlines, context),
       });
     })
     .catch((err) => console.error("combined impact fetch failed", err));
@@ -1683,7 +1684,7 @@ function showCombinedImpact(nodeId: string): void {
  *  Reuses the EXISTING on-demand trigger (handleImpactRun) — no duplicated
  *  stream loop. The full trace overlays the live baseline (on-demand impactState
  *  takes reducer precedence). */
-function sharpenWithClaude(nodeId: string, headlines: string[]): void {
+function sharpenWithClaude(nodeId: string, headlines: string[], context: string | null): void {
   const text = headlines.map((h) => h.trim()).filter(Boolean).join(" • ");
   if (!text) return;
   // Reset the impact bar to a single clean row (handleImpactClear rebuilds the
@@ -1695,7 +1696,9 @@ function sharpenWithClaude(nodeId: string, headlines: string[]): void {
   if (firstInput) firstInput.value = text;
   // handleImpactRun() is the exact function the search/impact box uses: it runs
   // runImpactStream(...) and sets impactState. Do NOT re-implement streaming.
-  handleImpactRun({ seedHintId: nodeId }).catch(console.error);
+  // `context` = the GKG grounding capsule (other orgs + money + tone) so the
+  // on-demand trace anchors on the same orgs the precompute did.
+  handleImpactRun({ seedHintId: nodeId, context: context ?? undefined }).catch(console.error);
 }
 
 // ---------------------------------------------------------------------------

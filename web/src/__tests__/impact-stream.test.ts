@@ -118,6 +118,18 @@ describe("runImpactStream", () => {
     expect(sentWithout.seed_hint_id).toBeUndefined();
   });
 
+  it("includes the GKG context capsule in the request body when provided", async () => {
+    const doneChunk = ['{"event":"done","result":{"impacts":[]}}\n'];
+    const f = vi.fn().mockResolvedValue(readerFrom(doneChunk));
+    vi.stubGlobal("fetch", f);
+    await runImpactStream("Google $1B Africa", {
+      context: "[involves: Alexbank | $1B | positive tone]",
+      onEvent: () => {},
+    });
+    const sent = JSON.parse((f.mock.calls[0][1] as RequestInit).body as string);
+    expect(sent.context).toBe("[involves: Alexbank | $1B | positive tone]");
+  });
+
   it("throws ApiError (with status) on non-OK", async () => {
     vi.stubGlobal(
       "fetch",

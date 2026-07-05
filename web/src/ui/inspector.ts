@@ -9,7 +9,7 @@ export interface NodeExtras {
   impact?: ImpactVerdict;
   onDescribe?: (nodeId: string) => Promise<string>;
   combinedImpact?: import("../api").NodeImpact | null;   // resolved verdict, or null = no recent impact
-  onSharpen?: (headlines: string[]) => void;             // run full V1 trace over all contributing events
+  onSharpen?: (headlines: string[], context: string | null) => void;   // run full V1 trace over all contributing events
 }
 
 // Point at the BODY div, not the outer <section>.  This keeps the toggle
@@ -342,7 +342,7 @@ export function buildTimelineRows(impact: import("../api").NodeImpact): Timeline
 export function renderCombinedImpactInto(
   root: HTMLElement,
   resp: import("../api").NodeImpactResponse,
-  handlers: { onSharpen?: (headlines: string[]) => void } = {},
+  handlers: { onSharpen?: (headlines: string[], context: string | null) => void } = {},
 ): void {
   root.querySelector(".combined-impact-box")?.remove();
   const imp = resp.impact;
@@ -380,9 +380,11 @@ export function renderCombinedImpactInto(
   if (handlers.onSharpen && rows.length) {
     const btn = el("button", { class: "sharpen-btn", type: "button" }, "Sharpen with Claude");
     // Pass every displayed event headline (not just the strongest) so the
-    // full-strength re-trace covers the same event set as the precomputed verdict.
+    // full-strength re-trace covers the same event set as the precomputed verdict,
+    // plus the first available GKG grounding capsule (other orgs + money + tone).
     const headlines = rows.map((r) => r.headline).filter(Boolean);
-    btn.addEventListener("click", () => handlers.onSharpen!(headlines));
+    const context = imp.top_events.map((e) => e.gkg_context).find((c) => c) ?? null;
+    btn.addEventListener("click", () => handlers.onSharpen!(headlines, context));
     box.appendChild(btn);
   }
   root.appendChild(box);

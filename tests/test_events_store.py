@@ -260,3 +260,32 @@ def test_read_helpers_reraise_lock_but_swallow_missing_table():
     assert store.read_all_node_impact(_MissingConn()) == []
     assert store.read_node_impact(_MissingConn(), "x") is None
     assert store.latest_node_impact_computed_at(_MissingConn()) is None
+
+
+# ── GKG context capsule persistence ─────────────────────────────────────────
+
+def test_insert_event_persists_gkg_context():
+    conn = store.connect(":memory:"); store.init_db(conn)
+    store.insert_event(conn, {"id": "e1", "headline": "h", "source": "GDELT-GKG",
+                              "seed_node_id": "slug:x",
+                              "gkg_context": "[involves: Alexbank | $1B | positive tone]"})
+    row = conn.execute("SELECT gkg_context FROM events WHERE id='e1'").fetchone()
+    assert row[0] == "[involves: Alexbank | $1B | positive tone]"
+
+
+def test_insert_event_gkg_context_defaults_null_for_non_gkg():
+    conn = store.connect(":memory:"); store.init_db(conn)
+    store.insert_event(conn, {"id": "e2", "headline": "h", "source": "SEC 8-K",
+                              "seed_node_id": "cik:1"})
+    assert conn.execute("SELECT gkg_context FROM events WHERE id='e2'").fetchone()[0] is None
+
+
+def test_migration_adds_gkg_context_column():
+    conn = store.connect(":memory:")
+    conn.execute("CREATE TABLE events (id TEXT PRIMARY KEY, headline TEXT NOT NULL, "
+                 "seed_node_id TEXT, story_sig TEXT)")
+    conn.commit()
+    store._migrate_gkg_context(conn)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()]
+    assert "gkg_context" in cols
+    store._migrate_gkg_context(conn)   # idempotent — second call must not raise

@@ -327,12 +327,15 @@ def node_impact(node_id: str, conn: sqlite3.Connection = Depends(get_conn)):
     ids = [e["event_id"] for e in top if e.get("event_id")]
     meta = {}
     if ids:
-        q_sql = "SELECT id, url, source FROM events WHERE id IN (%s)" % ",".join("?" * len(ids))
+        q_sql = "SELECT id, url, source, gkg_context FROM events WHERE id IN (%s)" % ",".join("?" * len(ids))
         meta = {r["id"]: r for r in conn.execute(q_sql, ids).fetchall()}
     for e in top:
         m = meta.get(e.get("event_id"))
         e["url"] = m["url"] if m else None
         e["source"] = m["source"] if m else None
+        # Grounding capsule (may be NULL for non-GKG events); the frontend forwards
+        # it on "Sharpen with Claude" so the on-demand trace anchors like precompute.
+        e["gkg_context"] = m["gkg_context"] if m else None
     return {"node_id": cid, "name": name, "type": ntype,
             "impact": {"direction": raw["direction"], "magnitude": raw["magnitude"],
                        "mixed_signals": raw["mixed_signals"], "event_count": raw["event_count"],
@@ -480,6 +483,8 @@ def post_impact_stream(payload: dict = Body(...)):
     # commodity/region/regulator, which the Company-only text seed extractor can't
     # resolve). The engine injects it as a hop-0 seed after text extraction.
     seed_hint = (payload.get("seed_hint_id") or "").strip() or None
+    # Optional: GKG grounding capsule appended to the seed-selection prompts.
+    context = (payload.get("context") or "").strip() or None
 
     def gen():
         # Open the SQLite connection INSIDE the generator (not via
@@ -488,7 +493,7 @@ def post_impact_stream(payload: dict = Body(...)):
         conn = connect(_DB_PATH)
         try:
             for ev in impact_mod.run_impact_stream(text, conn=conn, provider=provider_override,
-                                                   seed_hint_id=seed_hint):
+                                                   seed_hint_id=seed_hint, context=context):
                 yield json.dumps(ev, separators=(",", ":")) + "\n"
         finally:
             conn.close()

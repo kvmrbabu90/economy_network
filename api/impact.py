@@ -1032,7 +1032,7 @@ def _build_seeds_block(all_seeds: list[dict[str, Any]]) -> str:
 def run_impact_stream(
     text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None,
     max_hops: Optional[int] = None, refine: bool = True, verify: bool = True,
-    seed_hint_id: Optional[str] = None,
+    seed_hint_id: Optional[str] = None, context: Optional[str] = None,
 ):
     """Streaming variant of run_impact. Yields event dicts:
       {"event":"seeds", ...} once, then {"event":"hop", ...} per hop,
@@ -1067,6 +1067,10 @@ def run_impact_stream(
 
     try:
         effective_max_hops = max_hops if max_hops is not None else MAX_HOPS
+        # Grounding capsule (GKG orgs/money/tone) is appended ONLY to the two
+        # seed-selection inputs below — never to the hop/refine/verify prompts —
+        # so a thin headline anchors on the right orgs at minimal token cost.
+        seed_text = f"{text}\n{context}" if context else text
         # == Step 1: Build commodity/region seed prompt (no LLM yet) ==========
         candidates = _list_seed_candidates(conn)
         candidate_lines = []
@@ -1074,7 +1078,7 @@ def run_impact_stream(
             cat = c.get("category") or c["type"].lower()
             candidate_lines.append(f"  {c['id']} | {c['type']} | {c['name']} | {cat}")
         seed_prompt = _SEED_PROMPT_TEMPLATE.format(
-            news=text,
+            news=seed_text,
             candidates="\n".join(candidate_lines),
         )
 
@@ -1083,7 +1087,7 @@ def run_impact_stream(
         log.info("multi-seed: entity extraction + commodity seed in parallel")
         debug_log.append(f"seed_parallel: start (commodity candidates={len(candidate_lines)})")
         with ThreadPoolExecutor(max_workers=2) as pool:
-            f_entities = pool.submit(_extract_named_entities, text)
+            f_entities = pool.submit(_extract_named_entities, seed_text)
             f_seed_raw = pool.submit(_llm_call, seed_prompt)
             named_entities = f_entities.result()
             seed_raw = f_seed_raw.result()
@@ -1503,13 +1507,13 @@ def run_impact_stream(
 def run_impact(
     text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None,
     max_hops: Optional[int] = None, refine: bool = True, verify: bool = True,
-    seed_hint_id: Optional[str] = None,
+    seed_hint_id: Optional[str] = None, context: Optional[str] = None,
 ) -> dict[str, Any]:
     """Non-streaming wrapper: drain run_impact_stream, return the done payload."""
     final: dict[str, Any] = {}
     for ev in run_impact_stream(text, conn=conn, provider=provider,
                                 max_hops=max_hops, refine=refine, verify=verify,
-                                seed_hint_id=seed_hint_id):
+                                seed_hint_id=seed_hint_id, context=context):
         if ev["event"] == "done":
             final = ev["result"]
     return final

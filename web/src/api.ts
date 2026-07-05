@@ -422,6 +422,7 @@ export async function runImpactStream(
     provider?: ImpactProvider;
     signal?: AbortSignal;
     seedHintId?: string;
+    context?: string;
     onEvent: (ev: ImpactStreamEvent) => void;
   },
 ): Promise<ImpactResponse> {
@@ -434,6 +435,8 @@ export async function runImpactStream(
     // Ground the trace at a known node id (used by "Sharpen with Claude" so a
     // commodity/region node still traces instead of failing seed extraction).
     if (opts.seedHintId) body.seed_hint_id = opts.seedHintId;
+    // GKG grounding capsule — appended to the seed-selection prompt server-side.
+    if (opts.context) body.context = opts.context;
     const resp = await fetch(url.toString(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -529,6 +532,7 @@ export interface TopEvent {
   published_at: string | null;
   url: string | null;
   source: string | null;
+  gkg_context: string | null;   // grounding capsule; forwarded on "Sharpen with Claude"
 }
 export interface NodeImpact {
   direction: "positive" | "negative" | "no_effect";

@@ -624,3 +624,52 @@ def test_fetch_gkg_bulk_precap_limits(monkeypatch):
     monkeypatch.setattr("pipeline.gkg.read_gkg_lines", lambda p: lines)
     out = ing.fetch_gkg_bulk(conn)
     assert len(out) == 1 and out[0]["url"] == "ua"     # pre-cap keeps only the top-scored
+
+
+# ── context capsule (grounding) ─────────────────────────────────────────────
+
+def _ctx_rec(orgs=None, tone=0.0, amounts=None):
+    return gkg.GkgRecord(
+        record_id="r", published_at="2026-07-05", is_translingual=False, is_web=True,
+        domain="x.com", url="http://x/1",
+        orgs=orgs or [], v2orgs=[], tone=tone, amounts=amounts or [])
+
+
+_CTX_INDEX = {
+    "google":   ("slug:google",        "Google",    "Company", False),
+    "alexbank": ("wikidata:Q4856020",  "Alexbank",  "Company", False),
+    "safaricom": ("slug:safaricom",    "Safaricom", "Company", False),
+}
+
+
+def test_build_gkg_context_orgs_money_tone():
+    rec = _ctx_rec(orgs=["google", "alexbank", "safaricom", "acme-not-in-graph"],
+                   tone=3.2, amounts=[(1_000_000_000.0, "in revenue", 10), (3.0, "months", 20)])
+    ctx = gkg.build_gkg_context(rec, _CTX_INDEX, "slug:google")
+    assert ctx == "[involves: Alexbank, Safaricom | $1B | positive tone]"
+
+
+def test_build_gkg_context_excludes_seed_and_unmatched():
+    # seed (google) and non-graph orgs never appear → nothing left → None.
+    rec = _ctx_rec(orgs=["google", "acme-not-in-graph"], tone=0.0)
+    assert gkg.build_gkg_context(rec, _CTX_INDEX, "slug:google") is None
+
+
+def test_build_gkg_context_none_when_nothing_useful():
+    # unmatched org, near-neutral tone, non-currency amount → None.
+    rec = _ctx_rec(orgs=["acme-not-in-graph"], tone=0.5, amounts=[(3.0, "months", 1)])
+    assert gkg.build_gkg_context(rec, _CTX_INDEX, "slug:x") is None
+
+
+def test_build_gkg_context_negative_tone_and_largest_amount_wins():
+    rec = _ctx_rec(orgs=["alexbank"], tone=-4.0,
+                   amounts=[(500_000_000.0, "dollars", 1), (12000.0, "usd", 2)])
+    assert gkg.build_gkg_context(rec, _CTX_INDEX, "slug:seed") == \
+        "[involves: Alexbank | $500M | negative tone]"
+
+
+def test_build_gkg_context_caps_orgs_at_five():
+    idx = {f"c{i}": (f"n{i}", f"C{i}", "Company", False) for i in range(8)}
+    rec = _ctx_rec(orgs=[f"c{i}" for i in range(8)], tone=0.0)
+    ctx = gkg.build_gkg_context(rec, idx, "seed")
+    assert ctx.count(",") == 4          # 5 orgs listed → 4 comma separators

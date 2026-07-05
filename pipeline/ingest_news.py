@@ -593,6 +593,9 @@ def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
         cand["headline"] = _headline_from_url(rec.url, nname, rec.domain)
         cand["_no_collapse"] = True
     cand["id"] = _event_id(cand)
+    # Grounding capsule (other article orgs + money + tone). Set AFTER the id so
+    # it never affects dedup; consumed only by the trace's seed selection.
+    cand["gkg_context"] = gkg.build_gkg_context(rec, index, nid)
     return _gkg_materiality_prior(rec, c), cand
 
 

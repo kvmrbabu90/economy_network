@@ -382,20 +382,23 @@ def test_impact_stream_forwards_seed_hint(client, monkeypatch):
     from api import impact as impact_mod
     captured = {}
 
-    def fake_stream(text, *, conn, provider=None, seed_hint_id=None, **kw):
+    def fake_stream(text, *, conn, provider=None, seed_hint_id=None, context=None, **kw):
         captured["seed_hint_id"] = seed_hint_id
+        captured["context"] = context
         yield {"event": "seeds", "seeds": []}
         yield {"event": "done", "result": {"impacts": [], "seed": None}}
 
     monkeypatch.setattr(impact_mod, "run_impact_stream", fake_stream)
     r = client.post("/impact/stream",
-                    json={"text": "cocoa squeeze", "seed_hint_id": "commodity:cocoa"})
+                    json={"text": "cocoa squeeze", "seed_hint_id": "commodity:cocoa",
+                          "context": "[involves: Nestle | $2B | negative tone]"})
     assert r.status_code == 200
     assert captured["seed_hint_id"] == "commodity:cocoa"
+    assert captured["context"] == "[involves: Nestle | $2B | negative tone]"
 
-    # Absent hint → None (on-demand search box behavior is unchanged).
+    # Absent hint/context → None (on-demand search box behavior is unchanged).
     r2 = client.post("/impact/stream", json={"text": "cocoa squeeze"})
-    assert r2.status_code == 200 and captured["seed_hint_id"] is None
+    assert r2.status_code == 200 and captured["seed_hint_id"] is None and captured["context"] is None
 
 
 def test_impact_stream_requires_text(client):

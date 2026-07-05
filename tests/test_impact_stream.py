@@ -605,3 +605,41 @@ def test_score_seed_node_failopen_on_exception(monkeypatch):
         raise RuntimeError("provider down")
     monkeypatch.setattr(impact_mod, "_llm_call", boom)
     assert impact_mod._score_seed_node("some news", "Apple Inc.", "Company") is None
+
+
+# --- GKG context grounding: capsule injected ONLY into seed prompts -----------
+
+def test_context_injected_into_seed_prompts_only(conn, monkeypatch):
+    # The grounding capsule must reach entity-extraction + commodity-seed prompts
+    # (so a thin headline anchors on the right orgs) but NOT the hop-scoring
+    # prompts — that confinement is what keeps the token cost minimal.
+    cap = "[involves: ACME, Beta Corp | $1B | positive tone]"
+    prompts: list[str] = []
+
+    def capturing(prompt):
+        prompts.append(prompt)
+        return _fake_llm(prompt)
+
+    monkeypatch.setattr(impact_mod, "_llm_call", capturing)
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    list(impact_mod.run_impact_stream("global crude oil supply shock", conn=conn, context=cap))
+
+    extract = [p for p in prompts if "Extract ONLY investable companies" in p]
+    seed = [p for p in prompts if "Pick the ONE node" in p]
+    hop = [p for p in prompts if "propagating a news shock" in p]
+    assert extract and all(cap in p for p in extract)     # entity extraction grounded
+    assert seed and all(cap in p for p in seed)           # commodity seed grounded
+    assert hop and all(cap not in p for p in hop)         # hop scoring NOT grounded (lean)
+
+
+def test_context_none_leaves_prompts_capsule_free(conn, monkeypatch):
+    prompts: list[str] = []
+
+    def capturing(prompt):
+        prompts.append(prompt)
+        return _fake_llm(prompt)
+
+    monkeypatch.setattr(impact_mod, "_llm_call", capturing)
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+    list(impact_mod.run_impact_stream("global crude oil supply shock", conn=conn, context=None))
+    assert all("[involves:" not in p for p in prompts)

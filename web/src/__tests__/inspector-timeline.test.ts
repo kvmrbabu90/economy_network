@@ -10,9 +10,9 @@ describe("buildTimelineRows", () => {
   it("linkable when url present; plain when null; order preserved", () => {
     const rows = buildTimelineRows(imp([
       { event_id: "a", headline: "First", direction: "negative", magnitude: 0.7, weighted: -0.7, hop: 1,
-        published_at: "2026-06-29", url: "https://x/a", source: "SEC 8-K" },
+        published_at: "2026-06-29", url: "https://x/a", source: "SEC 8-K", gkg_context: null },
       { event_id: "b", headline: "Second", direction: "positive", magnitude: 0.2, weighted: 0.2, hop: 2,
-        published_at: "2026-06-20", url: null, source: null },
+        published_at: "2026-06-20", url: null, source: null, gkg_context: null },
     ]));
     expect(rows.map(r => r.headline)).toEqual(["First", "Second"]);
     expect(rows[0].linkUrl).toBe("https://x/a");
@@ -24,7 +24,7 @@ describe("buildTimelineRows", () => {
   });
   it("rejects non-http(s) urls (no javascript:/data: href — XSS guard)", () => {
     const mk = (url: string) => imp([{ event_id: "x", headline: "H", direction: "negative",
-      magnitude: 0.5, weighted: -0.5, hop: 1, published_at: null, url, source: "Feed" }]);
+      magnitude: 0.5, weighted: -0.5, hop: 1, published_at: null, url, source: "Feed", gkg_context: null }]);
     expect(buildTimelineRows(mk("javascript:alert(1)"))[0].linkUrl).toBeNull();
     expect(buildTimelineRows(mk("data:text/html,<script>1</script>"))[0].linkUrl).toBeNull();
     expect(buildTimelineRows(mk("not a url"))[0].linkUrl).toBeNull();
