@@ -176,9 +176,27 @@ def test_precompute_passes_known_seed_ids_from_seed_ids(tmp_path, monkeypatch):
         return {"seeds": [{"node_id": "cik:0"}],
                 "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.5, "hop": 0}]}
     monkeypatch.setattr(pc._impact, "run_impact", fake_run_impact)
+    # Default PRECOMPUTE_SEED_CAP=1 → only the primary seed is traced (best matches
+    # the LLM reference; secondaries ground via capsule + are reached by propagation).
+    monkeypatch.setattr(pc, "PRECOMPUTE_SEED_CAP", 1)
+    pc.run_precompute(db)
+    assert captured.get("known_seed_ids") == ["cik:0"]
+    assert captured.get("commodity_hint") is False       # primary is not a Commodity/Region node
+
+
+def test_precompute_seed_cap_zero_passes_full_set(tmp_path, monkeypatch):
+    db = tmp_path / "g.db"
+    conn = store.connect(db); store.init_db(conn)
+    store.insert_event(conn, {"id": "e0", "headline": "h", "source": "GDELT-GKG",
+                              "seed_node_id": "cik:0", "seed_ids": '["cik:0","cik:1"]', "status": "queued"})
+    conn.close()
+    captured = {}
+    monkeypatch.setattr(pc._impact, "run_impact",
+                        lambda text, **kw: captured.update(kw) or {"seed": {"node_id": "cik:0"},
+                        "impacts": [{"node_id": "n", "hop": 1, "direction": "negative", "magnitude": 0.5}]})
+    monkeypatch.setattr(pc, "PRECOMPUTE_SEED_CAP", 0)     # 0 = no cap → full GKG org set
     pc.run_precompute(db)
     assert captured.get("known_seed_ids") == ["cik:0", "cik:1"]
-    assert captured.get("commodity_hint") is False       # neither id is a Commodity/Region node
 
 
 def test_retrace_failure_clears_stale_impacts(tmp_path, monkeypatch):

@@ -144,9 +144,9 @@ def measure_endtoend(conn, cands: list[dict], n: int) -> dict:
             _os.environ["TRUST_KNOWN_SEEDS"] = "0"       # OLD: extraction + primary seed_hint
             a = impact_mod.run_impact(c["headline"], conn=conn, max_hops=1, refine=False,
                                       verify=False, seed_hint_id=det[0], context=c.get("gkg_context"))
-            _os.environ["TRUST_KNOWN_SEEDS"] = "1"       # NEW: deterministic seed set
+            _os.environ["TRUST_KNOWN_SEEDS"] = "1"       # NEW: deterministic seed (primary, per prod cap)
             b = impact_mod.run_impact(c["headline"], conn=conn, max_hops=1, refine=False,
-                                      verify=False, known_seed_ids=det, context=c.get("gkg_context"))
+                                      verify=False, known_seed_ids=det[:1], context=c.get("gkg_context"))
         except Exception as exc:
             print(f"  [skip] {c['headline'][:45]}: {exc}")
             continue
@@ -199,6 +199,28 @@ def measure_noisefloor(conn, cands: list[dict], n: int) -> dict:
     return {"direction_agreement": dir_agree / dir_shared if dir_shared else 1.0, "dir_shared": dir_shared}
 
 
+def measure_tone_direction(conn, cands: list[dict], n: int) -> dict:
+    """Could GKG article tone replace the _score_seed_set LLM call for the seed's
+    direction? Compare sign(tone) to the LLM's direction for the primary seed.
+    Only strongly-signed tone (|tone| >= 1) is counted (neutral gives no signal)."""
+    sample = [c for c in cands if c.get("seed_ids") and abs(c.get("_tone", 0.0)) >= 1.0][:n]
+    agree = total = 0
+    for c in sample:
+        det = json.loads(c["seed_ids"])
+        summ = impact_mod._node_summary(conn, det[0])
+        if not summ:
+            continue
+        scored = impact_mod._score_seed_set(c["headline"], [summ]).get(det[0])
+        if not scored or scored["direction"] == "no_effect":
+            continue
+        tone_dir = "positive" if c["_tone"] > 0 else "negative"
+        total += 1
+        agree += int(tone_dir == scored["direction"])
+        print(f"  tone={c['_tone']:+.1f}->{tone_dir:8} llm={scored['direction']:8} "
+              f"{'OK' if tone_dir == scored['direction'] else 'XX'}  {c['headline'][:40]}")
+    return {"n": total, "agreement": agree / total if total else 1.0}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=15, help="events to sample for seed agreement")
@@ -212,6 +234,7 @@ def main() -> int:
     ap.add_argument("--noisefloor", type=int, default=0,
                     help="LLM reproducibility floor: same config traced twice over N events (implies --nocache)")
     ap.add_argument("--nocache", action="store_true", help="do not cache LLM responses")
+    ap.add_argument("--tone", type=int, default=0, help="measure tone->seed-direction agreement over N events")
     args = ap.parse_args()
 
     if not (args.nocache or args.noisefloor):
@@ -244,6 +267,11 @@ def main() -> int:
     print(f"  n={seeds['n']}  jaccard={seeds['jaccard']:.3f}  "
           f"primary_match={seeds['primary_match_rate']:.3f}  "
           f"direction_agreement={seeds['direction_agreement']:.3f} (over {seeds['dir_shared']} shared)")
+
+    if args.tone:
+        print(f"\n== TONE -> SEED DIRECTION (sign(tone) vs LLM), N={args.tone} ==")
+        td = measure_tone_direction(conn, cands, args.tone)
+        print(f"  n={td['n']}  agreement={td['agreement']:.3f}  (>= 0.98 to replace _score_seed_set)")
 
     if args.e2e:
         print(f"\n== END-TO-END impact-map A/B (old LLM-extraction vs new deterministic), N={args.e2e} ==")

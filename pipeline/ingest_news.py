@@ -629,6 +629,7 @@ def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
     # Known seed set (salience-ranked, seed first) for the trusted-seed trace path,
     # + the materiality prior for the rule-based pre-filter. Both AFTER the id.
     cand["seed_ids"] = json.dumps([m[2] for m in matched[:5]])
+    cand["_tone"] = rec.tone   # ephemeral (not persisted); for tone->direction measurement
     prior = _gkg_materiality_prior(rec, c)
     cand["_prior"] = prior
     return prior, cand

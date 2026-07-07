@@ -30,6 +30,9 @@ PRECOMPUTE_MAX_EVENTS = int(os.environ.get("PRECOMPUTE_MAX_EVENTS", "25"))
 # var overrides this; a 12h cadence can safely raise it.
 PRECOMPUTE_WALLCLOCK_S = int(os.environ.get("PRECOMPUTE_WALLCLOCK_S", "3000"))
 BATCH_MAX_HOPS = int(os.environ.get("PRECOMPUTE_MAX_HOPS", "2"))
+# Cap on how many known seeds are handed to a trace. 1 = primary only (measured to
+# best match the LLM reference's direction axis); 0 = no cap (full GKG org set).
+PRECOMPUTE_SEED_CAP = int(os.environ.get("PRECOMPUTE_SEED_CAP", "1"))
 
 
 def _known_seed_ids(ev: dict) -> Optional[list[str]]:
@@ -88,6 +91,15 @@ def run_precompute(db_path: Path = DB_PATH, *, max_events: int = PRECOMPUTE_MAX_
             summary["processed"] += 1
             try:
                 known = _known_seed_ids(ev)
+                # MEASURED (ab_quality.py --e2e/--noisefloor, 2026-07-07): seeding the
+                # FULL GKG org set changes hop directions vs the old primary-only path
+                # (which the "LLM quality" target references) — below the LLM's own 0.94
+                # self-consistency floor on ambiguous events. Cap the TRACE seed to the
+                # primary; the secondary orgs still ground the trace via the gkg_context
+                # capsule AND are reached by propagation (node set unchanged, jaccard=1.0).
+                # PRECOMPUTE_SEED_CAP=0 restores full-set seeding.
+                if known and PRECOMPUTE_SEED_CAP > 0:
+                    known = known[:PRECOMPUTE_SEED_CAP]
                 r = _impact.run_impact(ev["headline"], conn=conn, provider=prov,
                                        max_hops=BATCH_MAX_HOPS, refine=False, verify=False,
                                        known_seed_ids=known,
