@@ -664,3 +664,46 @@ def test_score_seed_set_failopen(monkeypatch):
     monkeypatch.setattr(impact_mod, "_llm_call", lambda p: "")
     assert impact_mod._score_seed_set("n", [{"id": "a", "name": "A", "type": "Company"}]) == {}
     assert impact_mod._score_seed_set("n", []) == {}
+
+
+# --- LLM minimization: trusted-seed path skips extraction ----------------------
+
+def test_known_seeds_skip_extraction_and_score_once(conn, monkeypatch):
+    hint = _first_company(conn)
+    extract_calls = {"n": 0}
+    monkeypatch.setattr(impact_mod, "_extract_named_entities",
+                        lambda t: extract_calls.__setitem__("n", extract_calls["n"] + 1) or [])
+    monkeypatch.setattr(impact_mod, "_score_seed_set",
+                        lambda text, ents: {ents[0]["id"]: {"direction": "negative", "magnitude": 0.7, "reasoning": "t"}})
+    prompts = []
+    monkeypatch.setattr(impact_mod, "_llm_call", lambda p: (prompts.append(p), "")[1])
+    events = list(impact_mod.run_impact_stream("some news", conn=conn,
+                  known_seed_ids=[hint["id"]], commodity_hint=False))
+    seeds = next(e for e in events if e["event"] == "seeds")["seeds"]
+    assert extract_calls["n"] == 0                                  # no entity extraction
+    assert any(v["node_id"] == hint["id"] for v in seeds)          # known seed present
+    assert all("Pick the ONE node" not in p for p in prompts)      # commodity skipped (hint False)
+
+
+def test_known_seeds_commodity_hint_true_calls_commodity(conn, monkeypatch):
+    hint = _first_company(conn)
+    monkeypatch.setattr(impact_mod, "_extract_named_entities", lambda t: [])
+    monkeypatch.setattr(impact_mod, "_score_seed_set",
+                        lambda text, ents: {ents[0]["id"]: {"direction": "negative", "magnitude": 0.7, "reasoning": "t"}})
+    seen = {"commodity": False}
+    def fake(p):
+        if "Pick the ONE node" in p:
+            seen["commodity"] = True
+        return "[]"
+    monkeypatch.setattr(impact_mod, "_llm_call", fake)
+    list(impact_mod.run_impact_stream("oil shock", conn=conn, known_seed_ids=[hint["id"]], commodity_hint=True))
+    assert seen["commodity"] is True
+
+
+def test_known_seeds_unresolved_falls_back(conn, monkeypatch):
+    called = {"extract": False}
+    monkeypatch.setattr(impact_mod, "_extract_named_entities",
+                        lambda t: called.__setitem__("extract", True) or [])
+    monkeypatch.setattr(impact_mod, "_llm_call", lambda p: "[]")
+    list(impact_mod.run_impact_stream("news", conn=conn, known_seed_ids=["cik:doesnotexist"]))
+    assert called["extract"] is True                                # fell back to extraction

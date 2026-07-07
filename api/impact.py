@@ -1072,10 +1072,63 @@ def _build_seeds_block(all_seeds: list[dict[str, Any]]) -> str:
     return "\n".join(lines) if lines else "  (none)"
 
 
+def _commodity_candidate_prompt(conn: sqlite3.Connection, seed_text: str) -> str:
+    """Build the commodity/region seed-selection prompt (no LLM call)."""
+    candidate_lines = []
+    for c in _list_seed_candidates(conn):
+        cat = c.get("category") or c["type"].lower()
+        candidate_lines.append(f"  {c['id']} | {c['type']} | {c['name']} | {cat}")
+    return _SEED_PROMPT_TEMPLATE.format(news=seed_text, candidates="\n".join(candidate_lines))
+
+
+def _parse_commodity_seed(conn: sqlite3.Connection, seed_raw: str, text: str,
+                          seen_ids: set[str], verify: bool,
+                          debug_log: list[str]) -> Optional[dict[str, Any]]:
+    """Parse the commodity/region seed LLM response into a seed dict (or None).
+    Mutates `seen_ids`/`debug_log`. Shared by the extraction and trusted paths."""
+    seed_obj = _parse_llm_json(seed_raw) or {}
+    commodity_seed_id = seed_obj.get("node_id")
+    if not commodity_seed_id:
+        debug_log.append("commodity_seed: LLM returned no seed node")
+        return None
+    if commodity_seed_id in seen_ids:
+        debug_log.append(f"commodity_seed: {commodity_seed_id} already in named seeds — skipping duplicate")
+        return None
+    commodity_summary = _node_summary(conn, commodity_seed_id)
+    if not commodity_summary:
+        debug_log.append(f"commodity_seed: LLM picked unknown id {commodity_seed_id}")
+        return None
+    if verify and VERIFY_ENABLED and not _verify_seed_directness(
+        text, commodity_summary["name"], commodity_summary["type"], debug_log
+    ):
+        debug_log.append(f"commodity_seed: {commodity_seed_id} ({commodity_summary['name']}) "
+                         f"REJECTED as indirect — dropped")
+        return None
+    seed_direction = seed_obj.get("direction")
+    if seed_direction not in ("positive", "negative"):
+        debug_log.append(f"commodity_seed: {commodity_seed_id} ({commodity_summary['name']}) "
+                         f"invalid direction {seed_direction!r} — dropped")
+        return None
+    try:
+        m = max(0.0, min(1.0, float(seed_obj.get("magnitude"))))
+    except (TypeError, ValueError):
+        m = 0.9
+    seen_ids.add(commodity_seed_id)
+    debug_log.append(f"commodity_seed: {commodity_seed_id} ({commodity_summary['name']}) "
+                     f"{seed_direction} ({m:.2f})")
+    return {
+        "node_id": commodity_seed_id, "name": commodity_summary["name"],
+        "type": commodity_summary["type"], "direction": seed_direction, "magnitude": m,
+        "reasoning": seed_obj.get("reasoning") or "", "sector": commodity_summary.get("sector"),
+        "country": commodity_summary.get("country"), "is_named_entity": False,
+    }
+
+
 def run_impact_stream(
     text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None,
     max_hops: Optional[int] = None, refine: bool = True, verify: bool = True,
     seed_hint_id: Optional[str] = None, context: Optional[str] = None,
+    known_seed_ids: Optional[list[str]] = None, commodity_hint: Optional[bool] = None,
 ):
     """Streaming variant of run_impact. Yields event dicts:
       {"event":"seeds", ...} once, then {"event":"hop", ...} per hop,
@@ -1114,120 +1167,70 @@ def run_impact_stream(
         # seed-selection inputs below — never to the hop/refine/verify prompts —
         # so a thin headline anchors on the right orgs at minimal token cost.
         seed_text = f"{text}\n{context}" if context else text
-        # == Step 1: Build commodity/region seed prompt (no LLM yet) ==========
-        candidates = _list_seed_candidates(conn)
-        candidate_lines = []
-        for c in candidates:
-            cat = c.get("category") or c["type"].lower()
-            candidate_lines.append(f"  {c['id']} | {c['type']} | {c['name']} | {cat}")
-        seed_prompt = _SEED_PROMPT_TEMPLATE.format(
-            news=seed_text,
-            candidates="\n".join(candidate_lines),
-        )
-
-        # == Step 2: Run entity extraction + commodity seed selection in parallel ==
-        # Both are independent LLM calls; run them concurrently to cut latency.
-        log.info("multi-seed: entity extraction + commodity seed in parallel")
-        debug_log.append(f"seed_parallel: start (commodity candidates={len(candidate_lines)})")
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_entities = pool.submit(_extract_named_entities, seed_text)
-            f_seed_raw = pool.submit(_llm_call, seed_prompt)
-            named_entities = f_entities.result()
-            seed_raw = f_seed_raw.result()
-        debug_log.append(
-            f"seed_parallel: done — entity_extract returned {len(named_entities)} entities: "
-            f"{[e['company_name'] for e in named_entities]}"
-        )
-
-        # == Step 3: Resolve named entities to graph nodes (DB lookups, fast) ==
         resolved_seeds: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
-        for entity in named_entities:
-            node = _resolve_entity(conn, entity["company_name"])
-            if node:
-                nid = node["id"]
-                if nid not in seen_ids:
-                    seen_ids.add(nid)
-                    resolved_seeds.append({
-                        "node_id": nid,
-                        "name": node["name"],
-                        "type": node["type"],
-                        "direction": entity["direction"],
-                        "magnitude": entity["magnitude"],
-                        "reasoning": entity["reasoning"],
-                        "sector": node.get("sector"),
-                        "country": node.get("country"),
-                        "is_named_entity": True,
-                    })
-                    debug_log.append(
-                        f"entity_resolve: '{entity['company_name']}' → {nid} ({node['name']})"
-                    )
-            else:
-                debug_log.append(
-                    f"entity_resolve: '{entity['company_name']}' → not found in graph"
-                )
-
-        # == Step 4: Parse commodity/region seed ==============================
-        seed_obj = _parse_llm_json(seed_raw) or {}
-        commodity_seed_id = seed_obj.get("node_id")
         commodity_seed: Optional[dict[str, Any]] = None
-        if commodity_seed_id and commodity_seed_id not in seen_ids:
-            commodity_summary = _node_summary(conn, commodity_seed_id)
-            if commodity_summary and verify and VERIFY_ENABLED and not _verify_seed_directness(
-                text, commodity_summary["name"], commodity_summary["type"], debug_log
-            ):
-                # B: the picked commodity/region failed the adversarial directness
-                # audit (a speculative reach, e.g. an AI-chip story seeding on
-                # gallium). Drop it — better no commodity seed than a fabricated
-                # propagation chain. Named-entity seeds (if any) still anchor.
-                debug_log.append(
-                    f"commodity_seed: {commodity_seed_id} ({commodity_summary['name']}) "
-                    f"REJECTED as indirect — dropped"
-                )
-            elif commodity_summary:
-                # Validate direction: the seed prompt only ever asks for
-                # positive/negative. A garbage/empty direction from an
-                # untrusted or confused LLM must not be stored — drop the
-                # commodity seed rather than propagate a bad axis. Mirrors the
-                # _extract_named_entities direction guard.
-                seed_direction = seed_obj.get("direction")
-                if seed_direction not in ("positive", "negative"):
-                    debug_log.append(
-                        f"commodity_seed: {commodity_seed_id} ({commodity_summary['name']}) "
-                        f"invalid direction {seed_direction!r} — dropped"
-                    )
-                else:
-                    # Clamp + guard magnitude the same way _extract_named_entities /
-                    # _score_seed_node do: coerce to [0,1], fall back to 0.9 on junk.
-                    raw_mag = seed_obj.get("magnitude")
-                    try:
-                        m = max(0.0, min(1.0, float(raw_mag)))
-                    except (TypeError, ValueError):
-                        m = 0.9
-                    commodity_seed = {
-                        "node_id": commodity_seed_id,
-                        "name": commodity_summary["name"],
-                        "type": commodity_summary["type"],
-                        "direction": seed_direction,
-                        "magnitude": m,
-                        "reasoning": seed_obj.get("reasoning") or "",
-                        "sector": commodity_summary.get("sector"),
-                        "country": commodity_summary.get("country"),
-                        "is_named_entity": False,
-                    }
-                    seen_ids.add(commodity_seed_id)
-                    debug_log.append(
-                        f"commodity_seed: {commodity_seed_id} ({commodity_summary['name']}) "
-                        f"{commodity_seed['direction']} ({commodity_seed['magnitude']:.2f})"
-                    )
-            else:
-                debug_log.append(f"commodity_seed: LLM picked unknown id {commodity_seed_id}")
-        elif commodity_seed_id and commodity_seed_id in seen_ids:
-            debug_log.append(
-                f"commodity_seed: {commodity_seed_id} already in named seeds — skipping duplicate"
-            )
+
+        # LLM-MINIMIZATION: when the caller supplies a KNOWN seed set (GKG/8-K,
+        # resolved deterministically at ingest), skip the LLM entity-extraction +
+        # commodity re-discovery and score the whole set in ONE batched call.
+        trust = os.environ.get("TRUST_KNOWN_SEEDS", "1") != "0"
+        trusted_summaries: list[dict[str, Any]] = []
+        if known_seed_ids and trust:
+            trusted_summaries = [s for nid in known_seed_ids if (s := _node_summary(conn, nid))]
+
+        if trusted_summaries:
+            # == Trusted-seed path: 1 batched score, no entity/commodity extraction ==
+            scores = _score_seed_set(seed_text, trusted_summaries)
+            for s in trusted_summaries:
+                sc = scores.get(s["id"]) or {"direction": "no_effect", "magnitude": 0.3, "reasoning": ""}
+                seen_ids.add(s["id"])
+                resolved_seeds.append({
+                    "node_id": s["id"], "name": s["name"], "type": s["type"],
+                    "direction": sc["direction"], "magnitude": sc["magnitude"],
+                    "reasoning": sc["reasoning"], "sector": s.get("sector"),
+                    "country": s.get("country"), "is_named_entity": True,
+                })
+            debug_log.append(f"trusted_seeds: scored {[s['id'] for s in trusted_summaries]} in 1 call")
+            # Commodity seed only when a commodity/macro theme is present (Cut C).
+            if commodity_hint is True:
+                commodity_seed = _parse_commodity_seed(
+                    conn, _llm_call(_commodity_candidate_prompt(conn, seed_text)),
+                    text, seen_ids, verify, debug_log)
         else:
-            debug_log.append("commodity_seed: LLM returned no seed node")
+            # == Extraction path (on-demand / no known seeds): unchanged behavior ==
+            # == Step 1-2: entity extraction + commodity seed selection in parallel ==
+            seed_prompt = _commodity_candidate_prompt(conn, seed_text)
+            log.info("multi-seed: entity extraction + commodity seed in parallel")
+            debug_log.append("seed_parallel: start")
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                f_entities = pool.submit(_extract_named_entities, seed_text)
+                f_seed_raw = pool.submit(_llm_call, seed_prompt)
+                named_entities = f_entities.result()
+                seed_raw = f_seed_raw.result()
+            debug_log.append(
+                f"seed_parallel: done — entity_extract returned {len(named_entities)} entities: "
+                f"{[e['company_name'] for e in named_entities]}"
+            )
+            # == Step 3: Resolve named entities to graph nodes (DB lookups, fast) ==
+            for entity in named_entities:
+                node = _resolve_entity(conn, entity["company_name"])
+                if node:
+                    nid = node["id"]
+                    if nid not in seen_ids:
+                        seen_ids.add(nid)
+                        resolved_seeds.append({
+                            "node_id": nid, "name": node["name"], "type": node["type"],
+                            "direction": entity["direction"], "magnitude": entity["magnitude"],
+                            "reasoning": entity["reasoning"], "sector": node.get("sector"),
+                            "country": node.get("country"), "is_named_entity": True,
+                        })
+                        debug_log.append(f"entity_resolve: '{entity['company_name']}' → {nid} ({node['name']})")
+                else:
+                    debug_log.append(f"entity_resolve: '{entity['company_name']}' → not found in graph")
+            # == Step 4: Parse commodity/region seed (gate on hint; None ⇒ run) ==
+            if commodity_hint is not False:
+                commodity_seed = _parse_commodity_seed(conn, seed_raw, text, seen_ids, verify, debug_log)
 
         # == Step 5: Combine all seeds ========================================
         # Named entity seeds first (more specific); commodity/region seed appended.
@@ -1551,12 +1554,14 @@ def run_impact(
     text: str, *, conn: sqlite3.Connection, provider: Optional[str] = None,
     max_hops: Optional[int] = None, refine: bool = True, verify: bool = True,
     seed_hint_id: Optional[str] = None, context: Optional[str] = None,
+    known_seed_ids: Optional[list[str]] = None, commodity_hint: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Non-streaming wrapper: drain run_impact_stream, return the done payload."""
     final: dict[str, Any] = {}
     for ev in run_impact_stream(text, conn=conn, provider=provider,
                                 max_hops=max_hops, refine=refine, verify=verify,
-                                seed_hint_id=seed_hint_id, context=context):
+                                seed_hint_id=seed_hint_id, context=context,
+                                known_seed_ids=known_seed_ids, commodity_hint=commodity_hint):
         if ev["event"] == "done":
             final = ev["result"]
     return final
