@@ -262,3 +262,29 @@ def test_fetch_8k_sets_seed_ids_and_autokeep(monkeypatch):
     import json
     assert out and json.loads(out[0]["seed_ids"]) == ["cik:0000000000"]
     assert out[0]["_prior"] == ing._MATERIALITY_AUTOKEEP
+
+
+# ── Rule-based materiality prefilter (Cut B) ────────────────────────────────
+
+def test_materiality_prefilter_autokeep_autodrop_and_judge(monkeypatch):
+    monkeypatch.setattr(ing, "INGEST_MATERIALITY_KEEP", 5.0)
+    monkeypatch.setattr(ing, "INGEST_MATERIALITY_DROP", 1.5)
+    cands = [
+        {"id": "hi", "_prior": 8.0, "headline": "h", "seed_entity": "A"},     # auto-keep
+        {"id": "lo", "_prior": 0.5, "headline": "h", "seed_entity": "B"},     # auto-drop
+        {"id": "mid", "_prior": 3.0, "headline": "h", "seed_entity": "C"},    # judge
+        {"id": "rss", "headline": "h", "seed_entity": "D"},                   # no prior → judge
+        {"id": "8k", "_prior": ing._MATERIALITY_AUTOKEEP, "headline": "h", "seed_entity": "E"},  # keep
+    ]
+    monkeypatch.setattr(ing, "_materiality_filter",
+                        lambda judge: [c for c in judge if c["id"] == "mid"])
+    out = ing._materiality_prefilter(cands)
+    assert {c["id"] for c in out} == {"hi", "8k", "mid"}       # auto-keeps + judged-keep; lo/rss gone
+
+
+def test_materiality_prefilter_rules_off_defers_all(monkeypatch):
+    monkeypatch.setenv("INGEST_MATERIALITY_RULES", "0")
+    seen = {}
+    monkeypatch.setattr(ing, "_materiality_filter", lambda c: (seen.update(n=len(c)), c)[1])
+    ing._materiality_prefilter([{"id": "x", "_prior": 8.0, "headline": "h", "seed_entity": "A"}])
+    assert seen["n"] == 1               # rules off → everything goes to the LLM gate

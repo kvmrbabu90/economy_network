@@ -841,6 +841,29 @@ def _materiality_batch(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [c for i, c in enumerate(cands) if i in keep_idx]
 
 
+def _materiality_prefilter(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rule-based materiality: auto-keep high-prior / 8-K events, auto-drop clear
+    noise, and send ONLY the ambiguous middle band (and prior-less RSS) to the LLM
+    gate. Cuts gate calls AND removes whole downstream traces for auto-dropped
+    noise. INGEST_MATERIALITY_RULES='0' restores the old all-to-LLM behavior."""
+    if os.environ.get("INGEST_MATERIALITY_RULES", "1") == "0":
+        return _materiality_filter(cands)
+    keep: list[dict[str, Any]] = []
+    judge: list[dict[str, Any]] = []
+    for c in cands:
+        p = c.get("_prior")
+        if p == _MATERIALITY_AUTOKEEP or (isinstance(p, (int, float)) and p >= INGEST_MATERIALITY_KEEP):
+            keep.append(c)
+        elif isinstance(p, (int, float)) and p < INGEST_MATERIALITY_DROP:
+            continue   # auto-drop obvious noise — never reaches the LLM or a trace
+        else:
+            judge.append(c)   # ambiguous middle band + prior-less (RSS) → LLM gate
+    kept = keep + _materiality_filter(judge)
+    log.info("materiality prefilter: auto-keep %d, judged %d→%d, auto-drop %d",
+             len(keep), len(judge), len(kept) - len(keep), len(cands) - len(keep) - len(judge))
+    return kept
+
+
 def fetch_rss_broad() -> list[dict]:
     """Pull broad-category RSS via the news layer, then Claude-extract events."""
     from api.news import _fetch_raw
@@ -884,7 +907,7 @@ def run_ingest(db_path: Path = DB_PATH) -> dict[str, int]:
                 resolved.append(c)
 
         fresh = dedupe(resolved, conn)
-        material = _materiality_filter(fresh)
+        material = _materiality_prefilter(fresh)
         ranked = cap(rank(material, conn))
         # Persist ONLY the queued (top-cap) events. Over-cap material candidates are
         # deliberately NOT written: recording them as 'skipped' made event_exists()
