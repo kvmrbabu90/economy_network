@@ -731,3 +731,25 @@ def test_trusted_seed_eliminates_seed_stage_calls(conn, monkeypatch):
     assert seed_stage(extraction) >= 1        # extraction path issues seed-stage LLM calls
     assert seed_stage(trusted) == 0           # trusted path issues NONE
     assert len(trusted) < len(extraction)     # net fewer LLM calls
+
+
+def test_stranded_fallback_ring_is_capped(monkeypatch):
+    # A high-degree stranded hub (all below-threshold edges) must have its
+    # speculative ring capped to the top-K by weight, so the ring-scoring call
+    # can't time out. Below the cap, the ring is returned whole.
+    conn = connect(":memory:")
+    from schema.store import init_db
+    init_db(conn)
+    conn.execute("INSERT INTO nodes (id,type,name) VALUES ('slug:hub','Company','Hub')")
+    for i in range(10):
+        conn.execute("INSERT INTO nodes (id,type,name) VALUES (?,?,?)", (f"cik:{i:03d}", "Company", f"C{i}"))
+        conn.execute(
+            "INSERT INTO edges (id,source,target,type,confidence,weight,below_threshold,"
+            "prov_filing,prov_url,prov_snippet,prov_extracted_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (f"e{i}", "slug:hub", f"cik:{i:03d}", "competes_with", 0.5, 0.5 + i * 0.01, 1,
+             "", "", "snip", "inference:co-mention"))
+    conn.commit()
+    monkeypatch.setattr(impact_mod, "_STRANDED_FALLBACK_CAP", 3)
+    out = impact_mod._neighbors(conn, ["slug:hub"], set())
+    assert len(out) == 3                                   # capped to top-3 by weight
+    assert {n["id"] for n in out} == {"cik:009", "cik:008", "cik:007"}   # highest weights kept

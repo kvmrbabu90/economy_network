@@ -68,6 +68,11 @@ RING_PARALLELISM = int(os.environ.get("IMPACT_RING_PARALLELISM", "8"))
 # chunking, prioritising Companies over Regions/Commodities and keeping
 # representation across edge types. Overrideable via env var.
 MAX_FRONTIER = int(os.environ.get("IMPACT_MAX_FRONTIER", "36"))
+# Cap on the speculative below-threshold ring chased by the stranded-parent
+# fallback in _neighbors(); bounds the worst-case ring-scoring call so a
+# high-degree co-mention hub can't time it out. 0 disables (unbounded). See
+# _neighbors() for the rationale.
+_STRANDED_FALLBACK_CAP = int(os.environ.get("IMPACT_STRANDED_FALLBACK_CAP", "8"))
 # How many nodes to pack into a single refinement LLM call. Old code did
 # 1 per call (60 calls → 10 serial rounds at P=8). Batching 6 collapses
 # that to 10 calls → 2 rounds -- ~5x faster with identical quality since
@@ -679,7 +684,19 @@ def _neighbors(conn: sqlite3.Connection, node_ids: list[str], visited: set[str])
             stranded + stranded,
         ).fetchall()
         if fallback_rows:
-            log.info("neighbors: stranded-parent fallback for %s -> %d below-threshold edges",
+            # Cap the speculative below-threshold ring to the top-K by edge weight.
+            # A high-degree stranded hub (e.g. google: 72 co-mention competitors)
+            # otherwise builds a ring so large the LLM ring-scoring call TIMES OUT
+            # and returns nothing — a degraded, empty hop. Capping to the strongest
+            # K co-mentions lets the call COMPLETE (strictly better than a timeout)
+            # and drops only the weakest, noisiest speculative edges; the LLM still
+            # scores (and usually no-effects) what remains. IMPACT_STRANDED_FALLBACK_CAP=0
+            # disables the cap (old unbounded behavior).
+            if _STRANDED_FALLBACK_CAP and len(fallback_rows) > _STRANDED_FALLBACK_CAP:
+                fallback_rows = sorted(
+                    fallback_rows, key=lambda r: (r["weight"] if r["weight"] is not None else 0.0),
+                    reverse=True)[:_STRANDED_FALLBACK_CAP]
+            log.info("neighbors: stranded-parent fallback for %s -> %d below-threshold edges (capped from ring)",
                      stranded, len(fallback_rows))
             rows = list(rows) + list(fallback_rows)
     out: list[dict[str, Any]] = []
