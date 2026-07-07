@@ -266,20 +266,23 @@ def test_fetch_8k_sets_seed_ids_and_autokeep(monkeypatch):
 
 # ── Rule-based materiality prefilter (Cut B) ────────────────────────────────
 
-def test_materiality_prefilter_autokeep_autodrop_and_judge(monkeypatch):
-    monkeypatch.setattr(ing, "INGEST_MATERIALITY_KEEP", 5.0)
+def test_materiality_prefilter_sentinel_keep_lowdrop_rest_to_llm(monkeypatch):
+    # MEASURED design (scripts/ab_quality.py, 2026-07-07): the prior does NOT predict
+    # the LLM gate's keep decision, so only the 8-K sentinel auto-keeps; clear noise
+    # auto-drops; every GKG/RSS candidate (incl. high prior) goes to the LLM gate.
     monkeypatch.setattr(ing, "INGEST_MATERIALITY_DROP", 1.5)
     cands = [
-        {"id": "hi", "_prior": 8.0, "headline": "h", "seed_entity": "A"},     # auto-keep
+        {"id": "hi", "_prior": 8.0, "headline": "h", "seed_entity": "A"},     # high prior → still LLM
         {"id": "lo", "_prior": 0.5, "headline": "h", "seed_entity": "B"},     # auto-drop
         {"id": "mid", "_prior": 3.0, "headline": "h", "seed_entity": "C"},    # judge
         {"id": "rss", "headline": "h", "seed_entity": "D"},                   # no prior → judge
         {"id": "8k", "_prior": ing._MATERIALITY_AUTOKEEP, "headline": "h", "seed_entity": "E"},  # keep
     ]
+    # LLM keeps only 'mid' out of the judged set {hi, mid, rss}.
     monkeypatch.setattr(ing, "_materiality_filter",
                         lambda judge: [c for c in judge if c["id"] == "mid"])
     out = ing._materiality_prefilter(cands)
-    assert {c["id"] for c in out} == {"hi", "8k", "mid"}       # auto-keeps + judged-keep; lo/rss gone
+    assert {c["id"] for c in out} == {"8k", "mid"}       # sentinel keep + LLM-judged keep; hi/rss/lo gone
 
 
 def test_materiality_prefilter_rules_off_defers_all(monkeypatch):

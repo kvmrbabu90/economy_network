@@ -789,7 +789,13 @@ INGEST_MATERIALITY_BATCH = int(os.environ.get("INGEST_MATERIALITY_BATCH", "60"))
 # Sentinel materiality prior meaning "always auto-keep" (e.g. SEC 8-K, material by
 # construction). Larger than any real _gkg_materiality_prior score.
 _MATERIALITY_AUTOKEEP = 1e9
-INGEST_MATERIALITY_KEEP = float(os.environ.get("INGEST_MATERIALITY_KEEP", "5.0"))
+# MEASURED (2026-07-07, scripts/ab_quality.py): among GKG candidates that survive
+# the pre-cap, the prior does NOT predict the LLM gate's keep decision — the LLM
+# dropped 27/40 high-prior candidates as non-material (false-keep 0.68). And the
+# gate is a single batched call regardless, so prior-based auto-KEEP saves no calls
+# while flooding the trace queue with noise. So we do NOT auto-keep by prior; GKG
+# events always go to the LLM gate. Only the 8-K sentinel auto-keeps (definitionally
+# material) and clearly-low-prior noise auto-drops (removing whole downstream traces).
 INGEST_MATERIALITY_DROP = float(os.environ.get("INGEST_MATERIALITY_DROP", "1.5"))
 
 
@@ -852,12 +858,12 @@ def _materiality_prefilter(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
     judge: list[dict[str, Any]] = []
     for c in cands:
         p = c.get("_prior")
-        if p == _MATERIALITY_AUTOKEEP or (isinstance(p, (int, float)) and p >= INGEST_MATERIALITY_KEEP):
-            keep.append(c)
+        if p == _MATERIALITY_AUTOKEEP:
+            keep.append(c)    # only definitionally-material (8-K); preserves LLM precision
         elif isinstance(p, (int, float)) and p < INGEST_MATERIALITY_DROP:
-            continue   # auto-drop obvious noise — never reaches the LLM or a trace
+            continue          # auto-drop obvious noise — never reaches the LLM or a trace
         else:
-            judge.append(c)   # ambiguous middle band + prior-less (RSS) → LLM gate
+            judge.append(c)   # ALL other GKG/RSS candidates → LLM gate (measured: needed)
     kept = keep + _materiality_filter(judge)
     log.info("materiality prefilter: auto-keep %d, judged %d→%d, auto-drop %d",
              len(keep), len(judge), len(kept) - len(keep), len(cands) - len(keep) - len(judge))

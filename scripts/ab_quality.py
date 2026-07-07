@@ -74,7 +74,12 @@ def measure_materiality(cands: list[dict], keep_thr: float, drop_thr: float) -> 
     return conf
 
 
-def measure_seeds(conn, cands: list[dict], n: int) -> dict:
+def _name(conn, nid: str) -> str:
+    s = impact_mod._node_summary(conn, nid)
+    return s["name"] if s else nid
+
+
+def measure_seeds(conn, cands: list[dict], n: int, dump: bool = False) -> dict:
     sample = [c for c in cands if c.get("seed_ids")][:n]
     jacc: list[float] = []
     prim_hits = 0
@@ -96,8 +101,14 @@ def measure_seeds(conn, cands: list[dict], n: int) -> dict:
                 if e["magnitude"] > best_mag:
                     best_mag, llm_primary = e["magnitude"], nid
         jacc.append(qm.seed_jaccard(set(det), set(llm_ids)))
-        if qm.primary_match(llm_primary, det_primary):
+        matched = qm.primary_match(llm_primary, det_primary)
+        if matched:
             prim_hits += 1
+        if dump:
+            print(f"  [{'OK ' if matched else 'DIFF'}] {c['headline'][:55]}")
+            print(f"       det : {[_name(conn, x) for x in det]}")
+            print(f"       llm : {[_name(conn, x) for x in llm_ids]} "
+                  f"(raw: {[e['company_name'] for e in named]})")
         summaries = [s for nid in det if (s := impact_mod._node_summary(conn, nid))]
         det_dirs = {nid: sc["direction"]
                     for nid, sc in impact_mod._score_seed_set(c["headline"], summaries).items()}
@@ -117,8 +128,12 @@ def measure_seeds(conn, cands: list[dict], n: int) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=15, help="events to sample for seed agreement")
-    ap.add_argument("--keep", type=float, default=ing.INGEST_MATERIALITY_KEEP)
+    # Production no longer auto-keeps by prior (measured unsafe); default the sweep
+    # to "no prior auto-keep" (1e12) so the harness reflects production. Lower it to
+    # explore hypothetical auto-keep thresholds.
+    ap.add_argument("--keep", type=float, default=1e12)
     ap.add_argument("--drop", type=float, default=ing.INGEST_MATERIALITY_DROP)
+    ap.add_argument("--dump", action="store_true", help="print per-event seed comparison")
     args = ap.parse_args()
 
     _install_llm_cache()
@@ -136,7 +151,9 @@ def main() -> int:
     for h in mat["false_drop_examples"]:
         print(f"    dropped-but-material: {h}")
 
-    seeds = measure_seeds(conn, cands, args.seeds)
+    if args.dump:
+        print("\n== SEED COMPARISON (per event) ==")
+    seeds = measure_seeds(conn, cands, args.seeds, dump=args.dump)
     print("\n== SEEDS (deterministic seed_ids vs LLM extraction) ==")
     print(f"  n={seeds['n']}  jaccard={seeds['jaccard']:.3f}  "
           f"primary_match={seeds['primary_match_rate']:.3f}  "
