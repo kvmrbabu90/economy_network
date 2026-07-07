@@ -251,3 +251,14 @@ def test_materiality_gate_chunks_large_batches(monkeypatch):
     monkeypatch.setattr(ing, "_claude_call", fake)
     out = ing._materiality_filter(cands)
     assert calls["n"] == 3 and len(out) == 3     # 3 chunks, one kept per chunk, no overflow
+
+
+def test_fetch_8k_sets_seed_ids_and_autokeep(monkeypatch):
+    conn = _graph_with_ciks(1)
+    from pipeline import sec_8k
+    monkeypatch.setattr(sec_8k, "fetch_recent_8k_meta",
+        lambda cik, **kw: [{"url": "http://sec/1", "filing_date": "2026-07-01", "items": "8.01"}])
+    out = ing.fetch_8k(conn)
+    import json
+    assert out and json.loads(out[0]["seed_ids"]) == ["cik:0000000000"]
+    assert out[0]["_prior"] == ing._MATERIALITY_AUTOKEEP

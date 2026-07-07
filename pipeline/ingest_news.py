@@ -321,6 +321,10 @@ def fetch_8k(conn, *, deadline: Optional[float] = None) -> list[dict]:
                      "published_at": m.get("filing_date"), "seed_entity": node_id,
                      "seed_node_id": node_id, "_no_collapse": True}
                 c["id"] = _event_id(c)
+                # 8-K: the filer IS the known seed, and an SEC filing is material by
+                # construction → auto-keep in the rule-based materiality pre-filter.
+                c["seed_ids"] = json.dumps([node_id])
+                c["_prior"] = _MATERIALITY_AUTOKEEP
                 out.append(c)
         except Exception as exc:
             log.debug("8k: %s failed: %s", node_id, exc)
@@ -622,7 +626,12 @@ def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
     # Grounding capsule (salience-ranked other orgs + money + tone). Set AFTER the
     # id so it never affects dedup; consumed only by the trace's seed selection.
     cand["gkg_context"] = gkg.build_gkg_context(rec, other_orgs)
-    return _gkg_materiality_prior(rec, c), cand
+    # Known seed set (salience-ranked, seed first) for the trusted-seed trace path,
+    # + the materiality prior for the rule-based pre-filter. Both AFTER the id.
+    cand["seed_ids"] = json.dumps([m[2] for m in matched[:5]])
+    prior = _gkg_materiality_prior(rec, c)
+    cand["_prior"] = prior
+    return prior, cand
 
 
 def fetch_gkg_bulk(conn) -> list[dict]:
@@ -777,6 +786,11 @@ Return ONLY a JSON array (no prose):
 # well over 150 candidates, which would overflow → the CLI launch fails → the gate
 # fails OPEN and floods noise. Chunking bounds every call's size.
 INGEST_MATERIALITY_BATCH = int(os.environ.get("INGEST_MATERIALITY_BATCH", "60"))
+# Sentinel materiality prior meaning "always auto-keep" (e.g. SEC 8-K, material by
+# construction). Larger than any real _gkg_materiality_prior score.
+_MATERIALITY_AUTOKEEP = 1e9
+INGEST_MATERIALITY_KEEP = float(os.environ.get("INGEST_MATERIALITY_KEEP", "5.0"))
+INGEST_MATERIALITY_DROP = float(os.environ.get("INGEST_MATERIALITY_DROP", "1.5"))
 
 
 def _materiality_filter(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:

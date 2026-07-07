@@ -684,3 +684,17 @@ def test_gkg_candidate_seed_is_most_salient_not_most_central():
     _, cand = ing._gkg_candidate(rec, idx, cen)
     assert cand["seed_node_id"] == "cik:9"                 # salience beats centrality
     assert cand["gkg_context"] == "[involves: Walmart]"    # other matched org, salience-ranked
+
+
+def test_gkg_candidate_sets_seed_ids_and_prior():
+    idx = {"target": ("cik:9", "Target", "Company", False),
+           "walmart": ("cik:1", "Walmart", "Company", False)}
+    cen = {"cik:1": 5.0, "cik:9": 0.1}
+    rec = list(gkg.parse_gkg([gkg_line(
+        url="https://n/1", orgs_v1="target;walmart",
+        orgs_v2="target,30;walmart,5000;walmart,5200",
+        extras="<PAGE_TITLE>Target opens new stores</PAGE_TITLE>")]))[0]
+    prior, cand = ing._gkg_candidate(rec, idx, cen)
+    import json
+    assert json.loads(cand["seed_ids"]) == ["cik:9", "cik:1"]     # seed first, salience order
+    assert cand["_prior"] == prior and prior > 0
