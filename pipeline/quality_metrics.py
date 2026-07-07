@@ -36,6 +36,22 @@ def direction_agreement(a: dict[str, str], b: dict[str, str]) -> tuple[int, int]
     return agree, len(shared)
 
 
+def classify_materiality(items: list[tuple[str, float]], keep_thr: float,
+                         drop_thr: float, autokeep: float) -> dict[str, list[str]]:
+    """Partition (id, prior) pairs into the rule's three bands. `autokeep` is the
+    sentinel prior meaning always-keep (e.g. 8-K). Mirrors _materiality_prefilter's
+    logic so the harness measures exactly what production does."""
+    auto_keep, auto_drop, judge = [], [], []
+    for cid, p in items:
+        if p == autokeep or p >= keep_thr:
+            auto_keep.append(cid)
+        elif p < drop_thr:
+            auto_drop.append(cid)
+        else:
+            judge.append(cid)
+    return {"auto_keep": auto_keep, "auto_drop": auto_drop, "judge": judge}
+
+
 def materiality_confusion(rule_keep: set[str], llm_keep: set[str],
                           all_ids: set[str]) -> dict:
     """Confusion of the rule-based materiality decision vs the LLM gate (reference).

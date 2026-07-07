@@ -30,6 +30,12 @@ def test_direction_agreement_no_overlap():
     assert agree == 0 and shared == 0                            # nothing to compare
 
 
+def test_classify_materiality_bands():
+    items = [("hi", 8.0), ("mid", 3.0), ("lo", 0.5), ("k8", 1e9)]
+    b = qm.classify_materiality(items, keep_thr=5.0, drop_thr=1.5, autokeep=1e9)
+    assert b["auto_keep"] == ["hi", "k8"] and b["auto_drop"] == ["lo"] and b["judge"] == ["mid"]
+
+
 def test_materiality_confusion():
     all_ids = {"a", "b", "c", "d", "e"}
     rule_keep = {"a", "b", "c"}          # rule keeps a,b,c ; drops d,e
