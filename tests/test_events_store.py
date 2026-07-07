@@ -289,3 +289,28 @@ def test_migration_adds_gkg_context_column():
     cols = [r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()]
     assert "gkg_context" in cols
     store._migrate_gkg_context(conn)   # idempotent — second call must not raise
+
+
+# ── seed_ids (deterministic known-seed set for trusted-seed trace path) ──────
+
+def test_insert_event_persists_seed_ids():
+    conn = store.connect(":memory:"); store.init_db(conn)
+    store.insert_event(conn, {"id": "e1", "headline": "h", "source": "GDELT-GKG",
+                              "seed_node_id": "slug:x", "seed_ids": '["slug:x","cik:1"]'})
+    assert conn.execute("SELECT seed_ids FROM events WHERE id='e1'").fetchone()[0] == '["slug:x","cik:1"]'
+
+
+def test_insert_event_seed_ids_defaults_null():
+    conn = store.connect(":memory:"); store.init_db(conn)
+    store.insert_event(conn, {"id": "e2", "headline": "h", "source": "RSS", "seed_node_id": "cik:1"})
+    assert conn.execute("SELECT seed_ids FROM events WHERE id='e2'").fetchone()[0] is None
+
+
+def test_migration_adds_seed_ids_column():
+    conn = store.connect(":memory:")
+    conn.execute("CREATE TABLE events (id TEXT PRIMARY KEY, headline TEXT NOT NULL, seed_node_id TEXT)")
+    conn.commit()
+    store._migrate_seed_ids(conn)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()]
+    assert "seed_ids" in cols
+    store._migrate_seed_ids(conn)   # idempotent — must not raise

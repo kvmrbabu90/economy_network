@@ -128,7 +128,10 @@ CREATE TABLE IF NOT EXISTS events (
     story_sig    TEXT,
     -- Compact GKG grounding capsule (other orgs + money + tone) that grounds the
     -- trace's seed selection; NULL for non-GKG events. See build_gkg_context().
-    gkg_context  TEXT
+    gkg_context  TEXT,
+    -- JSON array of known seed node-ids (salience-ranked, seed first) for the
+    -- trusted-seed trace path; NULL for free-text events that need LLM extraction.
+    seed_ids     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
 -- NOTE: idx_events_story_sig is created in _migrate_story_sig (not here) — on a
@@ -186,6 +189,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
     _migrate_story_sig(conn)
     _migrate_gkg_context(conn)
+    _migrate_seed_ids(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +289,19 @@ def _migrate_gkg_context(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def _migrate_seed_ids(conn: sqlite3.Connection) -> None:
+    """Add events.seed_ids to a pre-existing DB (idempotent). Fresh DBs already have
+    the column from the DDL. Forward-only — existing events get it on re-ingest."""
+    if not conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='events'"
+    ).fetchone():
+        return
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()]
+    if "seed_ids" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN seed_ids TEXT")
+        conn.commit()
+
+
 _MISSING = object()   # distinguish "story_sig explicitly None" from "not provided"
 
 
@@ -297,9 +314,9 @@ def insert_event(conn: sqlite3.Connection, ev: dict[str, Any]) -> None:
     conn.execute(
         """
         INSERT OR IGNORE INTO events
-          (id, headline, source, url, category, published_at, seed_entity, seed_node_id, status, story_sig, gkg_context)
+          (id, headline, source, url, category, published_at, seed_entity, seed_node_id, status, story_sig, gkg_context, seed_ids)
         VALUES (:id, :headline, :source, :url, :category, :published_at,
-                :seed_entity, :seed_node_id, :status, :story_sig, :gkg_context)
+                :seed_entity, :seed_node_id, :status, :story_sig, :gkg_context, :seed_ids)
         """,
         {
             "id": ev["id"], "headline": ev["headline"], "source": ev.get("source"),
@@ -307,6 +324,7 @@ def insert_event(conn: sqlite3.Connection, ev: dict[str, Any]) -> None:
             "published_at": ev.get("published_at"), "seed_entity": ev.get("seed_entity"),
             "seed_node_id": ev.get("seed_node_id"), "status": ev.get("status", "queued"),
             "story_sig": sig, "gkg_context": ev.get("gkg_context"),
+            "seed_ids": ev.get("seed_ids"),
         },
     )
     conn.commit()
