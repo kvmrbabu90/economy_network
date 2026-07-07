@@ -793,6 +793,11 @@ async function recenterOn(id: string): Promise<void> {
   if (center) {
     showNode(center, g, inspectorExtrasFor(center.key));
     hideMorningBrief();
+    // Patch in the precomputed combined-impact section too, so a node reached
+    // via search-select or double-click shows WHY it's tinted — same as a
+    // single node click. Without this, a red/green node opened from search
+    // looks impacted but shows no news.
+    showCombinedImpact(center.key);
   }
 }
 
