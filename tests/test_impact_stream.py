@@ -643,3 +643,24 @@ def test_context_none_leaves_prompts_capsule_free(conn, monkeypatch):
     monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
     list(impact_mod.run_impact_stream("global crude oil supply shock", conn=conn, context=None))
     assert all("[involves:" not in p for p in prompts)
+
+
+# --- LLM minimization: batched seed-set scorer --------------------------------
+
+def test_score_seed_set_one_call_scores_all(monkeypatch):
+    calls = {"n": 0}
+    def fake(prompt):
+        calls["n"] += 1
+        return json.dumps([{"id": "a", "direction": "negative", "magnitude": 0.7, "reasoning": "t"},
+                           {"id": "b", "direction": "positive", "magnitude": 0.4, "reasoning": "t"}])
+    monkeypatch.setattr(impact_mod, "_llm_call", fake)
+    out = impact_mod._score_seed_set("news", [{"id": "a", "name": "A", "type": "Company"},
+                                              {"id": "b", "name": "B", "type": "Company"}])
+    assert calls["n"] == 1
+    assert out["a"]["direction"] == "negative" and out["b"]["magnitude"] == 0.4
+
+
+def test_score_seed_set_failopen(monkeypatch):
+    monkeypatch.setattr(impact_mod, "_llm_call", lambda p: "")
+    assert impact_mod._score_seed_set("n", [{"id": "a", "name": "A", "type": "Company"}]) == {}
+    assert impact_mod._score_seed_set("n", []) == {}
