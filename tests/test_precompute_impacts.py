@@ -150,7 +150,8 @@ def test_wallclock_budget_stops_immediately(tmp_path, monkeypatch):
     assert conn.execute("SELECT COUNT(*) c FROM events WHERE status='queued'").fetchone()["c"] == 2
 
 
-def test_precompute_passes_seed_hint(tmp_path, monkeypatch):
+def test_precompute_passes_known_seed_ids_fallback(tmp_path, monkeypatch):
+    # No seed_ids on the event → known_seed_ids falls back to [seed_node_id].
     db = _db_with_queued(tmp_path, 1)              # seeds an event e0 with seed_node_id 'cik:0'
     captured = {}
     def fake_run_impact(headline, **kwargs):
@@ -159,7 +160,25 @@ def test_precompute_passes_seed_hint(tmp_path, monkeypatch):
                 "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.5, "hop": 0}]}
     monkeypatch.setattr(pc._impact, "run_impact", fake_run_impact)
     pc.run_precompute(db)
-    assert captured.get("seed_hint_id") == "cik:0"     # ingest-resolved seed handed to the engine
+    assert captured.get("known_seed_ids") == ["cik:0"]   # ingest-resolved seed handed to the engine
+
+
+def test_precompute_passes_known_seed_ids_from_seed_ids(tmp_path, monkeypatch):
+    # seed_ids present → the full known set is passed (multi-seed), superseding seed_node_id.
+    db = tmp_path / "g.db"
+    conn = store.connect(db); store.init_db(conn)
+    store.insert_event(conn, {"id": "e0", "headline": "h", "source": "GDELT-GKG",
+                              "seed_node_id": "cik:0", "seed_ids": '["cik:0","cik:1"]', "status": "queued"})
+    conn.close()
+    captured = {}
+    def fake_run_impact(headline, **kwargs):
+        captured.update(kwargs)
+        return {"seeds": [{"node_id": "cik:0"}],
+                "impacts": [{"node_id": "cik:0", "direction": "negative", "magnitude": 0.5, "hop": 0}]}
+    monkeypatch.setattr(pc._impact, "run_impact", fake_run_impact)
+    pc.run_precompute(db)
+    assert captured.get("known_seed_ids") == ["cik:0", "cik:1"]
+    assert captured.get("commodity_hint") is False       # neither id is a Commodity/Region node
 
 
 def test_retrace_failure_clears_stale_impacts(tmp_path, monkeypatch):

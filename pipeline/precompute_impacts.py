@@ -9,6 +9,7 @@ idempotent (only 'queued' events), restartable (per-event transaction).
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import time
@@ -29,6 +30,33 @@ PRECOMPUTE_MAX_EVENTS = int(os.environ.get("PRECOMPUTE_MAX_EVENTS", "25"))
 # var overrides this; a 12h cadence can safely raise it.
 PRECOMPUTE_WALLCLOCK_S = int(os.environ.get("PRECOMPUTE_WALLCLOCK_S", "3000"))
 BATCH_MAX_HOPS = int(os.environ.get("PRECOMPUTE_MAX_HOPS", "2"))
+
+
+def _known_seed_ids(ev: dict) -> Optional[list[str]]:
+    """The event's deterministically-resolved seed set (GKG/8-K carry `seed_ids`
+    JSON), falling back to the single `seed_node_id`. None ⇒ the engine extracts
+    seeds with the LLM (free-text events)."""
+    raw = ev.get("seed_ids")
+    if raw:
+        try:
+            ids = [x for x in json.loads(raw) if isinstance(x, str)]
+            if ids:
+                return ids
+        except (ValueError, TypeError):
+            pass
+    sid = ev.get("seed_node_id")
+    return [sid] if sid else None
+
+
+def _any_commodity(conn, ids: Optional[list[str]]) -> bool:
+    """True if any seed id is a Commodity/Region node — gates the commodity-seed
+    LLM call so it fires only for commodity/macro-relevant stories."""
+    if not ids:
+        return False
+    ph = ",".join("?" * len(ids))
+    return conn.execute(
+        f"SELECT 1 FROM nodes WHERE id IN ({ph}) AND type IN ('Commodity','Region') LIMIT 1", ids
+    ).fetchone() is not None
 
 
 def run_precompute(db_path: Path = DB_PATH, *, max_events: int = PRECOMPUTE_MAX_EVENTS,
@@ -59,9 +87,11 @@ def run_precompute(db_path: Path = DB_PATH, *, max_events: int = PRECOMPUTE_MAX_
                 break
             summary["processed"] += 1
             try:
+                known = _known_seed_ids(ev)
                 r = _impact.run_impact(ev["headline"], conn=conn, provider=prov,
                                        max_hops=BATCH_MAX_HOPS, refine=False, verify=False,
-                                       seed_hint_id=ev.get("seed_node_id"),
+                                       known_seed_ids=known,
+                                       commodity_hint=_any_commodity(conn, known) if known else None,
                                        context=ev.get("gkg_context"))
             except Exception as exc:
                 log.warning("precompute: %s trace raised %s", ev["id"], exc)
