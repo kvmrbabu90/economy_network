@@ -707,3 +707,27 @@ def test_known_seeds_unresolved_falls_back(conn, monkeypatch):
     monkeypatch.setattr(impact_mod, "_llm_call", lambda p: "[]")
     list(impact_mod.run_impact_stream("news", conn=conn, known_seed_ids=["cik:doesnotexist"]))
     assert called["extract"] is True                                # fell back to extraction
+
+
+def test_trusted_seed_eliminates_seed_stage_calls(conn, monkeypatch):
+    # Guard: the trusted-seed path issues ZERO seed-stage LLM calls (no entity
+    # extraction, no commodity prompt) and fewer total calls than extraction.
+    hint = _first_company(conn)
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 9999)
+
+    def run(**kw):
+        calls = []
+        monkeypatch.setattr(impact_mod, "_llm_call", lambda p: calls.append(p) or _fake_llm(p))
+        list(impact_mod.run_impact_stream("global crude oil supply shock", conn=conn,
+             refine=False, verify=False, **kw))
+        return calls
+
+    extraction = run()
+    trusted = run(known_seed_ids=[hint["id"]], commodity_hint=False)
+
+    def seed_stage(cs):
+        return sum(1 for p in cs if "Extract ONLY investable companies" in p or "Pick the ONE node" in p)
+
+    assert seed_stage(extraction) >= 1        # extraction path issues seed-stage LLM calls
+    assert seed_stage(trusted) == 0           # trusted path issues NONE
+    assert len(trusted) < len(extraction)     # net fewer LLM calls
