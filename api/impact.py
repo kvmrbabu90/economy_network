@@ -73,6 +73,14 @@ MAX_FRONTIER = int(os.environ.get("IMPACT_MAX_FRONTIER", "36"))
 # high-degree co-mention hub can't time it out. 0 disables (unbounded). See
 # _neighbors() for the rationale.
 _STRANDED_FALLBACK_CAP = int(os.environ.get("IMPACT_STRANDED_FALLBACK_CAP", "8"))
+# Region aggregates (region:*-consumer) are market buckets, not causal conduits.
+# When a region is reached mid-propagation it is SCORED (a company genuinely moving
+# its market shows on the region node) but NOT expanded to every OTHER company that
+# supplies it — else the region fans a generic ripple onto unrelated nodes (measured
+# 2026-07-08: 39% of companies connect ONLY via regions, 26% of the impact map).
+# A region that is itself the SEED still expands (deliberate macro story), because
+# seeds are in the initial frontier, not the propagation ring. 0 disables.
+_SUPPRESS_REGION_EXPANSION = os.environ.get("IMPACT_SUPPRESS_REGION_EXPANSION", "1") != "0"
 # How many nodes to pack into a single refinement LLM call. Old code did
 # 1 per call (60 calls → 10 serial rounds at P=8). Batching 6 collapses
 # that to 10 calls → 2 rounds -- ~5x faster with identical quality since
@@ -1468,6 +1476,10 @@ def run_impact_stream(
                 hop_new_ids.append(nid)
                 visited.add(nid)
                 if direction in ("positive", "negative") and magnitude >= 0.15:
+                    # A region reached mid-propagation is scored (above) but is a LEAF
+                    # here — do NOT expand it to its co-suppliers (region-sink noise).
+                    if _SUPPRESS_REGION_EXPANSION and nb.get("type") == "Region":
+                        continue
                     new_frontier.append(nid)
 
             # === emit the hop event ===

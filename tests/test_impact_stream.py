@@ -753,3 +753,46 @@ def test_stranded_fallback_ring_is_capped(monkeypatch):
     out = impact_mod._neighbors(conn, ["slug:hub"], set())
     assert len(out) == 3                                   # capped to top-3 by weight
     assert {n["id"] for n in out} == {"cik:009", "cik:008", "cik:007"}   # highest weights kept
+
+
+def _mini_region_sink_graph():
+    from schema.store import init_db
+    conn = connect(":memory:"); init_db(conn)
+    for nid, typ, name in [("cik:seed", "Company", "SeedCo"),
+                           ("cik:sink", "Company", "SinkCo"),
+                           ("region:r", "Region", "Market R")]:
+        conn.execute("INSERT INTO nodes (id,type,name) VALUES (?,?,?)", (nid, typ, name))
+    for s, t in [("cik:seed", "region:r"), ("cik:sink", "region:r")]:   # both supply the region
+        conn.execute(
+            "INSERT INTO edges (id,source,target,type,confidence,weight,below_threshold,"
+            "prov_filing,prov_url,prov_snippet,prov_extracted_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (f"{s}-{t}", s, t, "supplies", 0.9, 1.0, 0, "", "", "snip", "rule"))
+    conn.commit()
+    return conn
+
+
+def _score_all_negative(prompt):
+    if "propagating a news shock" in prompt:
+        cand = prompt.split("CANDIDATES at hop", 1)[-1]
+        ids = re.findall(r"^\s{2}(\S+)\s*\|", cand, re.MULTILINE)
+        return json.dumps([{"node_id": i, "direction": "negative", "magnitude": 0.8, "reasoning": "t"} for i in ids])
+    return "[]"
+
+
+def test_region_scored_but_not_expanded(monkeypatch):
+    conn = _mini_region_sink_graph()
+    monkeypatch.setattr(impact_mod, "_score_seed_set",
+                        lambda text, ents: {e["id"]: {"direction": "negative", "magnitude": 0.8, "reasoning": "t"} for e in ents})
+    monkeypatch.setattr(impact_mod, "_llm_call", _score_all_negative)
+    monkeypatch.setattr(impact_mod, "MAX_FRONTIER", 999)
+
+    # Flag ON (default): region is scored but NOT expanded → sink never reached.
+    monkeypatch.setattr(impact_mod, "_SUPPRESS_REGION_EXPANSION", True)
+    r = impact_mod.run_impact("news", conn=conn, known_seed_ids=["cik:seed"], max_hops=3, refine=False, verify=False)
+    ids = {i["node_id"] for i in r["impacts"]}
+    assert "region:r" in ids and "cik:sink" not in ids
+
+    # Flag OFF: region expands → sink reached (old behavior).
+    monkeypatch.setattr(impact_mod, "_SUPPRESS_REGION_EXPANSION", False)
+    r2 = impact_mod.run_impact("news", conn=conn, known_seed_ids=["cik:seed"], max_hops=3, refine=False, verify=False)
+    assert "cik:sink" in {i["node_id"] for i in r2["impacts"]}
