@@ -186,6 +186,20 @@ def _claude_call(prompt: str) -> str:
     if envelope.get("is_error"):
         log.warning("claude CLI is_error=true: %s", envelope.get("result", ""))
         return ""
+    # Record EXACT token/cost usage from the CLI envelope for the Usage tab.
+    # Fail-safe (record_llm_usage swallows too) — usage metrics never block a trace.
+    try:
+        u = envelope.get("usage") or {}
+        from schema import store as _store
+        _store.record_llm_usage({
+            "model": envelope.get("model"),
+            "input_tokens": u.get("input_tokens"),
+            "output_tokens": u.get("output_tokens"),
+            "cache_read_tokens": u.get("cache_read_input_tokens"),
+            "cost_usd": envelope.get("total_cost_usd"),
+        })
+    except Exception:
+        pass
     return envelope.get("result", "") or ""
 
 

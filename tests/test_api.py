@@ -401,6 +401,18 @@ def test_impact_stream_forwards_seed_hint(client, monkeypatch):
     assert r2.status_code == 200 and captured["seed_hint_id"] is None and captured["context"] is None
 
 
+def test_usage_endpoint_shape_and_validation(client):
+    r = client.get("/usage?granularity=day&days=7")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["granularity"] == "day" and d["days"] == 7 and isinstance(d["buckets"], list)
+    for b in d["buckets"]:
+        assert set(b) >= {"bucket", "input_tokens", "output_tokens", "cache_read_tokens", "cost_usd", "calls"}
+    assert client.get("/usage?days=9999").json()["days"] == 365    # clamped high
+    assert client.get("/usage?days=0").json()["days"] == 1         # clamped low
+    assert client.get("/usage?granularity=minute").status_code == 400   # bad granularity
+
+
 def test_impact_stream_requires_text(client):
     r = client.post("/impact/stream", json={"text": "   "})
     assert r.status_code == 400

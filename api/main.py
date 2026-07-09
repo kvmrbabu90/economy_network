@@ -505,6 +505,23 @@ def post_impact_stream(payload: dict = Body(...)):
     )
 
 
+@app.get("/usage")
+def get_usage(
+    granularity: str = Query("day", description="hour | day | week"),
+    days: int = Query(30, description="lookback window (clamped 1..365)"),
+):
+    """LLM token/cost usage aggregated into time buckets for the Usage tab."""
+    days = max(1, min(365, days))
+    conn = connect(_DB_PATH)
+    try:
+        buckets = store.usage_buckets(conn, granularity, since_days=days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        conn.close()
+    return {"granularity": granularity, "days": days, "buckets": buckets}
+
+
 @app.get("/news/headlines")
 def get_headlines(force: bool = Query(False, description="Bypass the daily cache and re-fetch.")):
     """Return today's top-5 economic headlines, filtered by Claude for
