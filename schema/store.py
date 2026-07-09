@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -21,6 +22,7 @@ from typing import Any, Iterable, Optional, Union
 
 from .models import Edge, Node
 
+log = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -133,6 +135,19 @@ CREATE TABLE IF NOT EXISTS events (
     -- trusted-seed trace path; NULL for free-text events that need LLM extraction.
     seed_ids     TEXT
 );
+-- Per-LLM-call token/cost usage (exact, from the Claude CLI JSON envelope) for the
+-- Usage tab. Written by record_llm_usage() from _claude_call; aggregated by
+-- usage_buckets(). Fail-safe: recording never blocks a trace.
+CREATE TABLE IF NOT EXISTS llm_usage (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                TEXT NOT NULL DEFAULT (datetime('now')),
+    model             TEXT,
+    input_tokens      INTEGER NOT NULL DEFAULT 0,
+    output_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd          REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_ts ON llm_usage(ts);
 CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
 -- NOTE: idx_events_story_sig is created in _migrate_story_sig (not here) — on a
 -- pre-existing DB the story_sig column is added by ALTER first, so an index in this
@@ -190,6 +205,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     _migrate_story_sig(conn)
     _migrate_gkg_context(conn)
     _migrate_seed_ids(conn)
+    _migrate_llm_usage(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +316,83 @@ def _migrate_seed_ids(conn: sqlite3.Connection) -> None:
     if "seed_ids" not in cols:
         conn.execute("ALTER TABLE events ADD COLUMN seed_ids TEXT")
         conn.commit()
+
+
+def _migrate_llm_usage(conn: sqlite3.Connection) -> None:
+    """Create the llm_usage table on a pre-existing DB (idempotent)."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS llm_usage (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts                TEXT NOT NULL DEFAULT (datetime('now')),
+            model             TEXT,
+            input_tokens      INTEGER NOT NULL DEFAULT 0,
+            output_tokens     INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd          REAL NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_llm_usage_ts ON llm_usage(ts);
+        """
+    )
+    conn.commit()
+
+
+def record_llm_usage(usage: dict[str, Any], db_path: Optional[Union[str, Path]] = None) -> None:
+    """Insert one LLM-call usage row. Opens its own short-lived connection (default
+    the runtime DB) so it can be called from _claude_call which holds no connection.
+    FULLY FAIL-SAFE: any error is swallowed — usage recording must NEVER break a
+    trace. `usage` keys: input_tokens, output_tokens, cache_read_tokens, cost_usd, model."""
+    try:
+        conn = connect(db_path or default_db_path())
+        try:
+            conn.execute(
+                "INSERT INTO llm_usage (model, input_tokens, output_tokens, cache_read_tokens, cost_usd) "
+                "VALUES (?,?,?,?,?)",
+                (usage.get("model"), int(usage.get("input_tokens") or 0),
+                 int(usage.get("output_tokens") or 0), int(usage.get("cache_read_tokens") or 0),
+                 float(usage.get("cost_usd") or 0.0)))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:                       # best-effort metric — never propagate
+        log.debug("record_llm_usage skipped: %s", exc)
+
+
+_USAGE_FMT = {"hour": "%Y-%m-%dT%H:00", "day": "%Y-%m-%d", "week": "%Y-W%W"}
+
+
+def usage_buckets(conn: sqlite3.Connection, granularity: str, since_days: int = 30) -> list[dict[str, Any]]:
+    """Aggregate llm_usage into time buckets. `granularity` ∈ {hour, day, week}.
+    Returns per bucket (ascending): {bucket, input_tokens, output_tokens,
+    cache_read_tokens, cost_usd, calls}."""
+    fmt = _USAGE_FMT.get(granularity)
+    if fmt is None:
+        raise ValueError(f"granularity must be one of {sorted(_USAGE_FMT)}")
+    # fmt comes from a fixed dict (not user input) → safe to interpolate; since_days is bound.
+    rows = conn.execute(
+        f"""
+        SELECT strftime('{fmt}', ts) AS bucket,
+               SUM(input_tokens)      AS input_tokens,
+               SUM(output_tokens)     AS output_tokens,
+               SUM(cache_read_tokens) AS cache_read_tokens,
+               SUM(cost_usd)          AS cost_usd,
+               COUNT(*)               AS calls
+        FROM llm_usage
+        WHERE ts >= datetime('now', ?)
+        GROUP BY bucket
+        ORDER BY bucket ASC
+        """,
+        (f"-{int(since_days)} days",),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def prune_llm_usage(conn: sqlite3.Connection, older_than_days: int = 180) -> int:
+    """Delete usage rows older than the window. Returns rows deleted."""
+    cur = conn.execute("DELETE FROM llm_usage WHERE ts < datetime('now', ?)",
+                       (f"-{int(older_than_days)} days",))
+    conn.commit()
+    return cur.rowcount
 
 
 _MISSING = object()   # distinguish "story_sig explicitly None" from "not provided"
