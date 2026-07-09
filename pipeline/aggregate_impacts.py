@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -87,10 +88,15 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
     out = []
     for node_id, a in acc.items():
         pos, neg = a["pos"], a["neg"]
-        if pos > neg:
-            direction, magnitude = "positive", min(1.0, pos - neg)
-        elif neg > pos:
-            direction, magnitude = "negative", min(1.0, neg - pos)
+        # tanh-normalize the net so the cumulative signal stays bounded in (-1, 1)
+        # WITHOUT the old hard-clamp saturation (min(1.0, .) mapped both net=1.5 and
+        # net=4 to a flat 1.0). tanh is smooth + monotonic, so relative strength above
+        # the old ceiling is preserved. signed ∈ (-1,1); magnitude = |signed|.
+        signed = math.tanh(pos - neg)
+        if signed > 0:
+            direction, magnitude = "positive", signed
+        elif signed < 0:
+            direction, magnitude = "negative", -signed
         else:
             direction, magnitude = "no_effect", 0.0
         # Only flag MIXED for a node that actually carries mass: a net-zero (magnitude-0)

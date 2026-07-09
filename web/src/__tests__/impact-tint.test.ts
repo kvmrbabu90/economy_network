@@ -1,6 +1,6 @@
 import Graph from "graphology";
 import { describe, expect, it } from "vitest";
-import { tintColor, tintColorRGB, buildImpactState } from "../impact";
+import { tintColor, tintColorRGB, tintColorForCombined, buildImpactState } from "../impact";
 import type { ImpactResponse, ImpactVerdict } from "../api";
 
 function v(partial: Partial<ImpactVerdict>): ImpactVerdict {
@@ -62,5 +62,16 @@ describe("unscored tint", () => {
     const hi = tintColorRGB(v({ direction: "negative", magnitude: 0.6, confidence: 0.95 }))!;
     // low-confidence blends toward grey → higher blue channel for the red palette
     expect(lo.b).toBeGreaterThan(hi.b);
+  });
+});
+
+describe("mixed combined tint is golden (shifted toward yellow, not orange)", () => {
+  it("mixed_signals high-magnitude node tints golden amber (green raised vs old #ff9900, blue ~0)", () => {
+    const s = tintColorForCombined({ direction: "positive", magnitude: 0.8, mixed_signals: 1 })!;
+    const m = s.match(/rgb\((\d+), (\d+), (\d+)\)/)!;
+    const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    expect(r).toBeGreaterThanOrEqual(0xe0);   // still red-warm
+    expect(g).toBeGreaterThan(0x99);          // strictly more yellow than the old amber (g=153)
+    expect(b).toBeLessThanOrEqual(0x10);      // no blue → warm gold, not grey
   });
 });

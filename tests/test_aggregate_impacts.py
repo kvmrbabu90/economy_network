@@ -22,10 +22,26 @@ def test_nets_positive_and_negative_with_mixed_flag(tmp_path):
     store.write_event_impacts(conn, "e1", [{"node_id": "cik:9", "direction": "positive", "magnitude": 0.8, "hop": 1}])
     store.write_event_impacts(conn, "e2", [{"node_id": "cik:9", "direction": "negative", "magnitude": 0.3, "hop": 1}])
     agg.aggregate(conn, today=date(2026, 6, 17))
+    import math
     r = conn.execute("SELECT * FROM node_impact WHERE node_id='cik:9'").fetchone()
     assert r["direction"] == "positive"
-    assert abs(r["magnitude"] - 0.5) < 1e-6          # |0.8 - 0.3|, same-day weight = 1.0
+    assert abs(r["magnitude"] - math.tanh(0.5)) < 1e-3   # tanh(|0.8 - 0.3|); magnitude is round(,3)
     assert r["mixed_signals"] == 1 and r["event_count"] == 2
+
+
+def test_magnitude_is_tanh_bounded_no_saturation(tmp_path):
+    # Two nodes with net contributions above 1.0 must NOT both pin at 1.0 — tanh keeps
+    # them strictly under 1.0 and ordered (the old min(1.0,.) clamp saturated both to 1.0).
+    conn = _db(tmp_path)
+    for i in range(2):        # net 1.8 → tanh 0.947 (old clamp would be 1.0)
+        _event(conn, f"p{i}", "2026-06-17")
+        store.write_event_impacts(conn, f"p{i}", [{"node_id": "big", "direction": "positive", "magnitude": 0.9, "hop": 1}])
+    _event(conn, "q0", "2026-06-17")                     # net 0.9 → tanh 0.716
+    store.write_event_impacts(conn, "q0", [{"node_id": "med", "direction": "positive", "magnitude": 0.9, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    big = conn.execute("SELECT magnitude FROM node_impact WHERE node_id='big'").fetchone()["magnitude"]
+    med = conn.execute("SELECT magnitude FROM node_impact WHERE node_id='med'").fetchone()["magnitude"]
+    assert big < 1.0 and med < 1.0 and big > med    # bounded, unsaturated, ordered
 
 
 def test_recency_decay_favors_newer(tmp_path):
@@ -139,16 +155,18 @@ def test_future_dated_event_rejected(tmp_path):
 
 
 def test_magnitude_clamped_to_unit_range(tmp_path):
-    # An out-of-range stored magnitude (>1) is clamped to 1.0 before it enters the net.
+    # A per-event magnitude >1 is clamped to 1.0 BEFORE it enters the net (defense in
+    # depth), so net = 1.0 and the combined magnitude is tanh(1.0), not tanh(5.0).
+    import math
     conn = _db(tmp_path)
     _event(conn, "e1", "2026-06-17")
     store.write_event_impacts(conn, "e1", [{"node_id": "c", "direction": "positive", "magnitude": 5.0, "hop": 1}])
     agg.aggregate(conn, today=date(2026, 6, 17))        # same-day weight = 1.0
     r = conn.execute("SELECT * FROM node_impact WHERE node_id='c'").fetchone()
     assert r["direction"] == "positive"
-    assert abs(r["magnitude"] - 1.0) < 1e-6             # 5.0 clamped to 1.0, not 5.0
+    assert abs(r["magnitude"] - math.tanh(1.0)) < 1e-3  # net 1.0 (5.0 per-event clamped) → tanh(1.0)
     top = json.loads(r["top_events"])
-    assert abs(top[0]["magnitude"] - 1.0) < 1e-6        # clamp reflected in the surfaced driver too
+    assert abs(top[0]["magnitude"] - 1.0) < 1e-6        # per-event clamp still reflected in the driver
 
 
 def test_mixed_not_set_when_net_is_zero(tmp_path):

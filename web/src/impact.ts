@@ -29,12 +29,13 @@ const TIERS = {
     medLo:  { r: 0xbb, g: 0x16, b: 0x00 },  // #bb1600
     low:    { r: 0x99, g: 0x0d, b: 0x00 },  // #990d00
   },
-  // Mixed-signal nodes: amber/orange.
+  // Mixed-signal nodes: golden amber (shifted toward yellow — the old #ff9900 read
+  // as too orange next to the red negatives).
   mixed: {
-    high:   { r: 0xff, g: 0x99, b: 0x00 },  // #ff9900 amber
-    medHi:  { r: 0xdd, g: 0x7d, b: 0x00 },  // #dd7d00
-    medLo:  { r: 0xbb, g: 0x66, b: 0x00 },  // #bb6600
-    low:    { r: 0x99, g: 0x52, b: 0x00 },  // #995200
+    high:   { r: 0xff, g: 0xc2, b: 0x00 },  // #ffc200 golden amber
+    medHi:  { r: 0xdd, g: 0xa8, b: 0x00 },  // #dda800
+    medLo:  { r: 0xbb, g: 0x8e, b: 0x00 },  // #bb8e00
+    low:    { r: 0x99, g: 0x74, b: 0x00 },  // #997400
   },
 } as const;
 
