@@ -25,6 +25,11 @@ DB_PATH = store.default_db_path()
 IMPACT_WINDOW_DAYS = int(os.environ.get("IMPACT_WINDOW_DAYS", "7"))
 IMPACT_HALFLIFE_DAYS = float(os.environ.get("IMPACT_HALFLIFE_DAYS", "3"))
 TOP_EVENTS_PER_NODE = int(os.environ.get("TOP_EVENTS_PER_NODE", "5"))
+# A node is only MIXED (amber) when the WEAKER signal is a meaningful fraction of the
+# stronger one — genuinely conflicting news, not one small opposing event. Below this
+# ratio the node reads as its dominant direction (green/red). Flagging any minority
+# signal as mixed painted ~77% of the map amber, incl. strongly-net nodes.
+IMPACT_MIXED_SIGNAL_RATIO = float(os.environ.get("IMPACT_MIXED_SIGNAL_RATIO", "0.6"))
 
 
 def _age_days(row_date: Optional[str], today: date) -> Optional[int]:
@@ -99,10 +104,13 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
             direction, magnitude = "negative", -signed
         else:
             direction, magnitude = "no_effect", 0.0
-        # Only flag MIXED for a node that actually carries mass: a net-zero (magnitude-0)
-        # node must read neutral on the map, not MIXED. So require a non-zero net (or the
-        # mixed floor to have kicked in) before setting the flag.
-        mixed = 1 if (pos > 0 and neg > 0 and magnitude > 0.0) else 0
+        # Only flag MIXED when the signals genuinely conflict: the WEAKER side must be
+        # at least IMPACT_MIXED_SIGNAL_RATIO of the stronger. A node that is overwhelmingly
+        # one direction (a small opposing event) reads as that direction, not amber. Also
+        # requires non-zero mass (a net-zero node reads neutral, never MIXED).
+        minority, majority = min(pos, neg), max(pos, neg)
+        mixed = 1 if (minority > 0 and majority > 0 and magnitude > 0.0
+                      and minority >= IMPACT_MIXED_SIGNAL_RATIO * majority) else 0
         if mixed and 0 < magnitude < 0.15:
             magnitude = 0.15
         # top_events shows real drivers only: drop zero-weighted rows (unscored /

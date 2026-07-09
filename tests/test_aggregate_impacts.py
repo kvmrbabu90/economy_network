@@ -20,13 +20,39 @@ def test_nets_positive_and_negative_with_mixed_flag(tmp_path):
     conn = _db(tmp_path)
     _event(conn, "e1", "2026-06-17"); _event(conn, "e2", "2026-06-17")
     store.write_event_impacts(conn, "e1", [{"node_id": "cik:9", "direction": "positive", "magnitude": 0.8, "hop": 1}])
-    store.write_event_impacts(conn, "e2", [{"node_id": "cik:9", "direction": "negative", "magnitude": 0.3, "hop": 1}])
+    store.write_event_impacts(conn, "e2", [{"node_id": "cik:9", "direction": "negative", "magnitude": 0.6, "hop": 1}])
     agg.aggregate(conn, today=date(2026, 6, 17))
     import math
     r = conn.execute("SELECT * FROM node_impact WHERE node_id='cik:9'").fetchone()
-    assert r["direction"] == "positive"
-    assert abs(r["magnitude"] - math.tanh(0.5)) < 1e-3   # tanh(|0.8 - 0.3|); magnitude is round(,3)
-    assert r["mixed_signals"] == 1 and r["event_count"] == 2
+    assert r["direction"] == "positive"                  # 0.8 > 0.6
+    assert abs(r["magnitude"] - math.tanh(0.2)) < 1e-3   # tanh(|0.8 - 0.6|); magnitude is round(,3)
+    assert r["mixed_signals"] == 1 and r["event_count"] == 2   # ratio 0.6/0.8 = 0.75 >= 0.6 → mixed
+
+
+def test_strong_net_with_minor_opposite_is_not_mixed(tmp_path):
+    # 3 positive (0.9) vs 1 small negative (0.1): minority 0.1 / majority 2.7 = 0.037
+    # < 0.35 ratio → reads POSITIVE (green), NOT mixed (amber). Fixes the amber flood.
+    conn = _db(tmp_path)
+    for i in range(3):
+        _event(conn, f"p{i}", "2026-06-17")
+        store.write_event_impacts(conn, f"p{i}", [{"node_id": "n", "direction": "positive", "magnitude": 0.9, "hop": 1}])
+    _event(conn, "neg", "2026-06-17")
+    store.write_event_impacts(conn, "neg", [{"node_id": "n", "direction": "negative", "magnitude": 0.1, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT direction, mixed_signals FROM node_impact WHERE node_id='n'").fetchone()
+    assert r["direction"] == "positive" and r["mixed_signals"] == 0
+
+
+def test_comparable_opposing_signals_still_mixed(tmp_path):
+    # 1.0 positive vs 0.7 negative: minority 0.7 / majority 1.0 = 0.7 >= 0.6 → MIXED.
+    conn = _db(tmp_path)
+    _event(conn, "p1", "2026-06-17"); _event(conn, "p2", "2026-06-17"); _event(conn, "n", "2026-06-17")
+    store.write_event_impacts(conn, "p1", [{"node_id": "z", "direction": "positive", "magnitude": 0.5, "hop": 1}])
+    store.write_event_impacts(conn, "p2", [{"node_id": "z", "direction": "positive", "magnitude": 0.5, "hop": 1}])
+    store.write_event_impacts(conn, "n", [{"node_id": "z", "direction": "negative", "magnitude": 0.7, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT mixed_signals FROM node_impact WHERE node_id='z'").fetchone()
+    assert r["mixed_signals"] == 1
 
 
 def test_magnitude_is_tanh_bounded_no_saturation(tmp_path):
