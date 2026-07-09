@@ -61,8 +61,9 @@ import {
   tintColorForCombined,
   type ImpactState,
 } from "./impact";
-import { getImpactLive, getNodeImpact, getHealth, startImpactRefresh, getImpactRefreshStatus, type LiveImpact } from "./api";
+import { getImpactLive, getNodeImpact, getHealth, startImpactRefresh, getImpactRefreshStatus, getUsage, type LiveImpact, type UsageGranularity } from "./api";
 import { renderCombinedImpactInto, isStale } from "./ui/inspector";
+import { renderUsageChart } from "./ui/usageChart";
 import {
   loadArchive,
   saveToArchive,
@@ -2031,10 +2032,48 @@ async function restoreFromArchive(entry: ArchiveEntry): Promise<void> {
 // Sidebar tab switching (Filters ↔ Archive)
 // ---------------------------------------------------------------------------
 
+// Usage tab: LLM token/cost chart with an hourly/daily/weekly toggle.
+let _usageGranularity: UsageGranularity = "day";
+async function loadUsage(): Promise<void> {
+  const chart = document.getElementById("usage-chart");
+  const summary = document.getElementById("usage-summary");
+  if (!chart) return;
+  // Sensible lookback per granularity so the bar count stays readable.
+  const days = _usageGranularity === "hour" ? 3 : _usageGranularity === "week" ? 180 : 30;
+  try {
+    const resp = await getUsage(_usageGranularity, days);
+    renderUsageChart(chart, resp);
+    if (summary) {
+      const tok = resp.buckets.reduce((a, b) => a + b.input_tokens + b.output_tokens + b.cache_read_tokens, 0);
+      const cost = resp.buckets.reduce((a, b) => a + b.cost_usd, 0);
+      const calls = resp.buckets.reduce((a, b) => a + b.calls, 0);
+      summary.textContent = resp.buckets.length
+        ? `${tok.toLocaleString()} tokens · $${cost.toFixed(2)} · ${calls} calls (last ${resp.days}d)`
+        : "";
+    }
+  } catch (err) {
+    console.error("usage load failed", err);
+    chart.innerHTML = '<p class="combined-empty">Usage unavailable.</p>';
+  }
+}
+
+(function wireUsageGranularity() {
+  const seg = document.getElementById("usage-granularity");
+  if (!seg) return;
+  seg.querySelectorAll<HTMLButtonElement>(".layout-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      _usageGranularity = (btn.dataset.granularity as UsageGranularity) || "day";
+      seg.querySelectorAll(".layout-tab").forEach((b) => b.classList.toggle("is-active", b === btn));
+      loadUsage().catch(console.error);
+    });
+  });
+})();
+
 (function wireSidebarTabs() {
   const tabs = document.querySelectorAll<HTMLButtonElement>(".sidebar-tab");
   const panelFilters = document.getElementById("panel-filters");
   const panelArchive = document.getElementById("panel-archive");
+  const panelUsage = document.getElementById("panel-usage");
   if (!panelFilters || !panelArchive) return;
 
   tabs.forEach((tab) => {
@@ -2046,7 +2085,9 @@ async function restoreFromArchive(entry: ArchiveEntry): Promise<void> {
       });
       panelFilters.hidden = target !== "filters";
       panelArchive.hidden = target !== "archive";
+      if (panelUsage) panelUsage.hidden = target !== "usage";
       if (target === "archive") renderArchiveList();
+      if (target === "usage") loadUsage().catch(console.error);
     });
   });
 })();

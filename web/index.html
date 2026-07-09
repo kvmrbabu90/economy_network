@@ -68,6 +68,7 @@
         <div class="sidebar-tabs" role="tablist" aria-label="Sidebar panels">
           <button type="button" class="sidebar-tab is-active" data-tab="filters" role="tab" aria-selected="true">Filters</button>
           <button type="button" class="sidebar-tab" data-tab="archive" role="tab" aria-selected="false">Archive</button>
+          <button type="button" class="sidebar-tab" data-tab="usage" role="tab" aria-selected="false">Usage</button>
         </div>
 
         <!-- Filters panel -->
@@ -138,6 +139,22 @@
         <!-- Archive panel -->
         <div id="panel-archive" class="sidebar-panel" hidden>
           <div id="archive-list"></div>
+        </div>
+
+        <!-- Usage panel -->
+        <div id="panel-usage" class="sidebar-panel" hidden>
+          <div class="filter-section">
+            <div class="filter-title">LLM token usage</div>
+            <div class="layout-segmented" role="radiogroup" id="usage-granularity">
+              <button type="button" class="layout-tab" data-granularity="hour" role="radio">Hourly</button>
+              <button type="button" class="layout-tab is-active" data-granularity="day" role="radio">Daily</button>
+              <button type="button" class="layout-tab" data-granularity="week" role="radio">Weekly</button>
+            </div>
+          </div>
+          <div class="filter-section">
+            <div id="usage-chart"></div>
+            <div id="usage-summary" class="combined-freshness"></div>
+          </div>
         </div>
       </aside>
 

@@ -554,6 +554,22 @@ export function getNodeImpact(nodeId: string): Promise<NodeImpactResponse> {
   return get<NodeImpactResponse>(`/node/${encodeURI(nodeId)}/impact`);
 }
 
+// LLM token/cost usage for the Usage tab.
+export type UsageGranularity = "hour" | "day" | "week";
+export interface UsageBucket {
+  bucket: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cost_usd: number;
+  calls: number;
+}
+export interface UsageResponse { granularity: string; days: number; buckets: UsageBucket[]; }
+
+export function getUsage(granularity: UsageGranularity, days = 30): Promise<UsageResponse> {
+  return get<UsageResponse>("/usage", { granularity, days });
+}
+
 // So What? V2 · P9 — on-demand "Refresh news". POST starts a background cycle;
 // GET polls its status. Both use a raw fetch (bypassing the global inflight
 // "loading…" counter) so the periodic status poll doesn't flicker the app spinner
