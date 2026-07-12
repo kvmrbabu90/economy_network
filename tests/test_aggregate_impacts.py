@@ -232,3 +232,65 @@ def test_blank_published_at_still_in_window_via_ingested_at(tmp_path):
     agg.aggregate(conn, today=date(2026, 7, 1), window_days=7)
     r = conn.execute("SELECT * FROM node_impact WHERE node_id='z'").fetchone()
     assert r is not None and r["direction"] == "positive"     # included via ingested_at, not dropped
+
+
+import math
+
+
+def test_write_event_impacts_clamps_magnitude_to_nonnegative_weight(tmp_path):
+    # magnitude is a NON-NEGATIVE weight; sign lives in `direction`. A tracer that
+    # emits a signed-negative magnitude must be stored as its abs weight, else the
+    # aggregate's [0,1] clamp zeroes it and drops the driver.
+    conn = _db(tmp_path)
+    _event(conn, "e1", "2026-06-17")
+    store.write_event_impacts(conn, "e1", [{"node_id": "n", "direction": "negative", "magnitude": -0.30, "hop": 1}])
+    m = conn.execute("SELECT magnitude FROM event_impacts WHERE node_id='n'").fetchone()[0]
+    assert m == 0.30
+
+
+def test_legacy_signed_negative_magnitude_contributes_weight_not_zeroed(tmp_path):
+    # Rows written before the clamp hold a signed-negative magnitude. The aggregate
+    # must count the WEIGHT (abs) so the driver survives and the tint stays negative,
+    # instead of max(0, .) zeroing it and (with enough positive mass) flipping green.
+    conn = _db(tmp_path)
+    _event(conn, "e1", "2026-06-17")
+    # Insert a raw row bypassing write_event_impacts' abs-clamp (simulates a legacy row).
+    conn.execute(
+        "INSERT INTO event_impacts (event_id, node_id, direction, magnitude, hop, reasoning) "
+        "VALUES (?,?,?,?,?,?)", ("e1", "cik:neg", "negative", -0.30, 1, None))
+    conn.commit()
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT direction, magnitude FROM node_impact WHERE node_id='cik:neg'").fetchone()
+    assert r is not None, "a negative-magnitude driver must not be zeroed out of the aggregate"
+    assert r["direction"] == "negative"
+    assert abs(r["magnitude"] - math.tanh(0.30)) < 1e-3
+
+
+def test_subfloor_directional_row_is_dropped(tmp_path):
+    # A directional verdict at/below the tint floor never colours the map, so it must
+    # not be emitted — else an untinted node shows a populated combined-impact panel.
+    conn = _db(tmp_path)
+    _event(conn, "e1", "2026-06-17")
+    store.write_event_impacts(conn, "e1", [{"node_id": "tiny", "direction": "positive", "magnitude": 0.03, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    assert conn.execute("SELECT 1 FROM node_impact WHERE node_id='tiny'").fetchone() is None
+
+
+def test_read_all_node_impact_excludes_regions_but_read_node_impact_keeps_them(tmp_path):
+    # Region market-buckets saturate to magnitude ~1.0 and dominate the map. Exclude
+    # them from the /impact/live tint payload, but keep them resolvable on a direct
+    # click (read_node_impact stays unfiltered).
+    conn = _db(tmp_path)
+    conn.execute("INSERT INTO nodes (id, type, name) VALUES (?,?,?)", ("cik:5", "Company", "Co"))
+    conn.execute("INSERT INTO nodes (id, type, name) VALUES (?,?,?)", ("region:x", "Region", "Reg"))
+    conn.commit()
+    store.replace_node_impact(conn, [
+        {"node_id": "cik:5", "direction": "positive", "magnitude": 0.5, "mixed_signals": 0,
+         "event_count": 3, "top_events": "[]", "computed_at": "t"},
+        {"node_id": "region:x", "direction": "positive", "magnitude": 1.0, "mixed_signals": 0,
+         "event_count": 9, "top_events": "[]", "computed_at": "t"},
+    ])
+    payload_ids = {r["node_id"] for r in store.read_all_node_impact(conn)}
+    assert "cik:5" in payload_ids            # a Company still tints the map
+    assert "region:x" not in payload_ids     # the Region bucket is filtered out of the tint payload
+    assert store.read_node_impact(conn, "region:x") is not None   # but a direct click still resolves it

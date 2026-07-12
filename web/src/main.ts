@@ -223,6 +223,26 @@ let impactState: ImpactState | null = null;
 // always takes precedence when both are set.
 let liveImpactState: Map<string, LiveImpact> = new Map();
 
+// Per-node cache of the LLM /describe result, so the generated description
+// survives inspector re-renders (hover, relayout) instead of reverting to a
+// "Describe" button — same fragile-append class as the combined-impact box.
+const _describeCache = new Map<string, string>();
+
+// A compact NodeImpact synthesized from the live tint map (which carries no
+// top_events). Lets HOVER show a tinted node's "why" header (direction +
+// magnitude + count) before it has ever been clicked; the click then fetches the
+// full timeline via /node/{id}/impact and replaces this with the real verdict.
+function _combinedFromLive(live: LiveImpact): import("./api").NodeImpact {
+  return {
+    direction: live.direction,
+    magnitude: live.magnitude,
+    mixed_signals: live.mixed_signals,
+    event_count: live.event_count,
+    computed_at: "",     // unknown until the full fetch; the renderer skips an empty freshness line
+    top_events: [],      // no drivers in the live map — click fills these in
+  };
+}
+
 // Build the inspector's contextual extras: surfaces the LLM verdict
 // (if a propagation run is active for this node) and wires the
 // "Describe" button to the cached /describe endpoint.
@@ -230,12 +250,30 @@ function inspectorExtrasFor(nodeId: string): NodeExtras {
   const extras: NodeExtras = {
     onDescribe: async (id: string) => {
       const resp = await describeNode(id);
+      _describeCache.set(id, resp.description);   // cache so it survives re-renders
       return resp.description;
     },
   };
+  const cachedDesc = _describeCache.get(nodeId);
+  if (cachedDesc) extras.describedText = cachedDesc;
   if (impactState) {
     const v = impactState.byNode.get(nodeId);
     if (v) extras.impact = v;
+  }
+  // Inject the precomputed combined-impact ("why tinted") section so showNode
+  // renders it INLINE and atomically. This is what makes the panel wipe-proof:
+  // any re-render (hover, post-expand relayout, tab switch) rebuilds #inspector-body
+  // via showNode, which re-draws the box from cache instead of losing a separately-
+  // appended node. Prefer the full fetched response (with drivers); otherwise fall
+  // back to a compact box synthesized from the live tint map so hovering a tinted
+  // node you've never clicked still explains itself.
+  const cachedResp = _impactRespCache.get(nodeId);
+  if (cachedResp) {
+    extras.combinedImpact = cachedResp.impact;
+    extras.onSharpen = (headlines, context) => sharpenWithClaude(nodeId, headlines, context);
+  } else {
+    const live = liveImpactState.get(nodeId);
+    if (live) extras.combinedImpact = _combinedFromLive(live);
   }
   return extras;
 }
@@ -792,6 +830,10 @@ async function recenterOn(id: string): Promise<void> {
   // Show the focused node in the inspector.
   const center = resp.nodes.find((n) => n.key === resp.center);
   if (center) {
+    // Expand the inspector like the single-click paths do — otherwise a
+    // double-click or search-select on a tinted node renders the combined-impact
+    // box into a collapsed (display:none) panel and looks like "no panel".
+    setInspectorCollapsed(false);
     showNode(center, g, inspectorExtrasFor(center.key));
     hideMorningBrief();
     // Patch in the precomputed combined-impact section too, so a node reached
@@ -862,6 +904,10 @@ renderer.on("clickNode", (event) => {
         hideMorningBrief();
         showCombinedImpact(id);
       }
+      // No post-expand re-assert needed: showNode renders the box inline from
+      // cache (or the live-map synth), so the relayout's enterNode→showNode redraws
+      // it every frame. Re-asserting here risked painting this node's box onto a
+      // DIFFERENT node hovered mid-animation (the re-assert has no view check).
       expandFrom(id).catch(console.error);
     }, DOUBLE_CLICK_WINDOW_MS),
   };
@@ -885,6 +931,9 @@ renderer.on("enterNode", (event) => {
   const id = event.node;
   if (impactState && tintColor(impactState.byNode.get(id)) === null) return;
   const attrs = g.getNodeAttributes(id);
+  // showNode renders the combined-impact box inline from cache (via
+  // inspectorExtrasFor), so hovering a previously-fetched tinted node re-draws its
+  // "why" panel instead of blanking it — no separate re-apply step needed.
   showNode(attrs.apiNode, g, inspectorExtrasFor(id));
   hideMorningBrief();
 });
@@ -1048,6 +1097,7 @@ function setView(next: "2d" | "3d" | "globe") {
             showNode(g.getNodeAttributes(id).apiNode, g, inspectorExtrasFor(id));
             showCombinedImpact(id);
           }
+          // Inline render keeps the box across the merge; no re-assert (mirrors 2D).
           expandFrom(id).catch(console.error);
         },
         onNodeDoubleClick: (id) => recenterOn(id).catch(console.error),
@@ -1065,9 +1115,14 @@ function setView(next: "2d" | "3d" | "globe") {
             if (!srcActive && !tgtActive) return;
           }
           hideMorningBrief();
+          setInspectorCollapsed(false);   // expand the panel like the 2D clickEdge path
           try {
             const edge = await getEdge(id);
-            showEdge(edge);
+            // Pass the endpoint nodes so the header reads "Apple → Broadcom", not
+            // raw "cik:… → cik:…" (mirrors the 2D clickEdge handler).
+            const sNode = g.hasNode(edge.source) ? g.getNodeAttributes(edge.source).apiNode : null;
+            const tNode = g.hasNode(edge.target) ? g.getNodeAttributes(edge.target).apiNode : null;
+            showEdge(edge, { source: sNode, target: tNode });
           } catch (err) {
             console.warn("edge fetch failed", err);
           }
@@ -1660,21 +1715,46 @@ function startStalenessPolling(): void {
 // which threw a TDZ ReferenceError and aborted the entire app init.)
 startStalenessPolling();
 
-/** Tracks the most recently clicked node so a slow /node/{id}/impact response
- *  for a previously-selected node never renders into the current node's panel. */
-let latestImpactNodeId: string | null = null;
+/** Per-node cache of the last /node/{id}/impact response. Once cached, EVERY
+ *  showNode (click, hover, post-expand relayout, re-select) re-draws the box inline
+ *  via inspectorExtrasFor, so it can never be wiped. */
+type NodeImpactResp = Awaited<ReturnType<typeof getNodeImpact>>;
+const _impactRespCache = new Map<string, NodeImpactResp>();
 
-/** Node-click → fetch /node/{id}/impact and patch the combined-impact section
- *  into the inspector body asynchronously (same pattern as the Describe button). */
+/** Is the inspector body CURRENTLY showing node `nodeId`? showNode renders the
+ *  node id verbatim as the `.subtitle`; an edge panel renders the edge id there
+ *  and the empty state has no `.subtitle`. This DOM-truth check gates every async
+ *  paint so a late /node/{id}/impact response can never land on an edge provenance
+ *  panel, the empty state, or a DIFFERENT node the user has since hovered/selected
+ *  (replaces the old `latestImpactNodeId` variable, which tracked the last FETCH
+ *  target rather than what the inspector actually shows). */
+function _inspectorShowsNode(nodeId: string): boolean {
+  const sub = document.getElementById("inspector-body")?.querySelector(".subtitle");
+  return sub?.textContent === nodeId;
+}
+
+/** Paint the combined-impact box for `nodeId`, only if the inspector still shows
+ *  it. Used for the FIRST paint after a fetch, before the cache is populated; once
+ *  cached, showNode renders the box inline via inspectorExtrasFor. */
+function _paintCombinedImpact(nodeId: string, resp: NodeImpactResp): void {
+  const inspectorRoot = document.getElementById("inspector-body");
+  if (!inspectorRoot || !_inspectorShowsNode(nodeId)) return;
+  renderCombinedImpactInto(inspectorRoot, resp.impact, {
+    onSharpen: (headlines, context) => sharpenWithClaude(nodeId, headlines, context),
+  });
+}
+
+/** Node-click → fetch /node/{id}/impact, cache it, and paint the FULL combined-impact
+ *  section (with the event timeline). Before this resolves, inspectorExtrasFor has
+ *  already rendered a compact box from the live tint map, so a tinted node is never
+ *  panel-less; a fetch failure just leaves that compact box in place. */
 function showCombinedImpact(nodeId: string): void {
-  latestImpactNodeId = nodeId;
+  const cached = _impactRespCache.get(nodeId);
+  if (cached) _paintCombinedImpact(nodeId, cached);   // instant repaint, no flicker
   getNodeImpact(nodeId)
     .then((resp) => {
-      if (nodeId !== latestImpactNodeId) return;   // a newer node was clicked; drop this stale response
-      const inspectorRoot = document.getElementById("inspector-body");
-      if (inspectorRoot) renderCombinedImpactInto(inspectorRoot, resp, {
-        onSharpen: (headlines, context) => sharpenWithClaude(nodeId, headlines, context),
-      });
+      _impactRespCache.set(nodeId, resp);
+      _paintCombinedImpact(nodeId, resp);
     })
     .catch((err) => console.error("combined impact fetch failed", err));
 }

@@ -12,6 +12,14 @@ export type { ImpactResponse, ImpactVerdict, MultiImpactResponse };
 // Hop -> intensity multiplier. Hop 0 (seed) is full; further hops attenuate.
 const HOP_INTENSITY = [1.0, 0.85, 0.65, 0.45, 0.28, 0.15];
 
+// Below this combined magnitude a node is NOT tinted on the map. The inspector
+// panel MUST mirror this exact floor (renderCombinedImpactInto) or a node reads
+// as untinted on the map yet shows a populated "combined impact" box — an
+// inverse tint/panel inconsistency. The hourly aggregate applies the same floor
+// (pipeline/aggregate_impacts.py IMPACT_TINT_FLOOR) so sub-floor rows never even
+// reach the client. Keep all four in sync.
+export const IMPACT_TINT_FLOOR = 0.05;
+
 // Four-tier palette — positive (green) and negative (red).
 // Tier is chosen by combined intensity = hop_factor × magnitude.
 // Colors are kept bright/vivid so they read clearly against the dark
@@ -96,7 +104,7 @@ export function tintColor(verdict: ImpactVerdict | undefined): string | null {
   }
   const mag = Number(verdict.magnitude);
   if (!isFinite(mag)) return null;
-  if (verdict.direction === "no_effect" || mag <= 0.05) return null;
+  if (verdict.direction === "no_effect" || mag <= IMPACT_TINT_FLOOR) return null;
   const hop = Number.isInteger(verdict.hop) && verdict.hop >= 0 ? verdict.hop : 0;
   const intensity = (HOP_INTENSITY[hop] ?? 0.15) * Math.min(1, mag);
   const tier = pickTier(intensity);
@@ -122,7 +130,7 @@ export function tintColorRGB(verdict: ImpactVerdict | undefined): { r: number; g
   }
   const mag = Number(verdict.magnitude);
   if (!isFinite(mag)) return null;
-  if (verdict.direction === "no_effect" || mag <= 0.05) return null;
+  if (verdict.direction === "no_effect" || mag <= IMPACT_TINT_FLOOR) return null;
   const hop = Number.isInteger(verdict.hop) && verdict.hop >= 0 ? verdict.hop : 0;
   const intensity = (HOP_INTENSITY[hop] ?? 0.15) * Math.min(1, mag);
   const tier = pickTier(intensity);
@@ -154,7 +162,7 @@ export function tintColorForCombined(
 ): string | null {
   const mag = Number(row.magnitude);
   if (!isFinite(mag)) return null;
-  if (row.direction === "no_effect" || mag <= 0.05) return null;
+  if (row.direction === "no_effect" || mag <= IMPACT_TINT_FLOOR) return null;
   const tier = pickTier(Math.min(1, mag));         // no hop decay for a combined verdict
   const palette = row.mixed_signals ? TIERS.mixed
     : row.direction === "positive" ? TIERS.positive : TIERS.negative;
@@ -168,7 +176,7 @@ export function tintColorForCombinedRGB(
 ): { r: number; g: number; b: number } | null {
   const mag = Number(row.magnitude);
   if (!isFinite(mag)) return null;
-  if (row.direction === "no_effect" || mag <= 0.05) return null;
+  if (row.direction === "no_effect" || mag <= IMPACT_TINT_FLOOR) return null;
   const tier = pickTier(Math.min(1, mag));
   const palette = row.mixed_signals ? TIERS.mixed
     : row.direction === "positive" ? TIERS.positive : TIERS.negative;

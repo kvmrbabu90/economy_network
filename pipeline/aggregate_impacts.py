@@ -30,6 +30,11 @@ TOP_EVENTS_PER_NODE = int(os.environ.get("TOP_EVENTS_PER_NODE", "5"))
 # ratio the node reads as its dominant direction (green/red). Flagging any minority
 # signal as mixed painted ~77% of the map amber, incl. strongly-net nodes.
 IMPACT_MIXED_SIGNAL_RATIO = float(os.environ.get("IMPACT_MIXED_SIGNAL_RATIO", "0.6"))
+# Below this combined magnitude a node is not tinted on the map (mirror of
+# web/src/impact.ts IMPACT_TINT_FLOOR). Sub-floor non-mixed rows are dropped from
+# node_impact entirely so the map tint, /impact/live, and the /node/{id}/impact
+# panel all agree — a node the map won't tint must not present a combined-impact box.
+IMPACT_TINT_FLOOR = float(os.environ.get("IMPACT_TINT_FLOOR", "0.05"))
 
 
 def _age_days(row_date: Optional[str], today: date) -> Optional[int]:
@@ -71,8 +76,12 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
         if age is None or age < 0 or age > window_days:
             continue
         w = 0.5 ** (max(0, age) / halflife)
-        # Clamp to [0, 1] as defense-in-depth against any out-of-range stored magnitude.
-        mag = max(0.0, min(1.0, float(r["magnitude"] or 0.0)))
+        # magnitude is a NON-NEGATIVE weight; sign lives in `direction`. Use abs() so a
+        # stored signed-negative magnitude (a 'negative' row written as -0.30) contributes
+        # its intended weight 0.30 instead of being zeroed by a [0,1] clamp — which
+        # previously dropped real drivers and could flip a node's net tint. min(1.0, .)
+        # still caps out-of-range values.
+        mag = min(1.0, abs(float(r["magnitude"] or 0.0)))
         contrib = w * mag
         direction = r["direction"]
         a = acc.setdefault(r["node_id"], {"pos": 0.0, "neg": 0.0, "count": 0, "events": []})
@@ -120,6 +129,14 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
         # Skip inert nodes: no direction, no mass, no drivers. Emitting them bloats the
         # payload and produces the "N events, no drivers" contradiction on the map.
         if direction == "no_effect" and magnitude == 0.0 and not top:
+            continue
+        # Skip SUB-FLOOR directional rows: a positive/negative verdict whose magnitude
+        # is at/below the tint floor never colours the map (impact.ts IMPACT_TINT_FLOOR),
+        # so emitting it would produce an untinted node that nonetheless shows a
+        # populated combined-impact panel. Mixed rows are exempt (the bump above lifts
+        # them to 0.15 > floor); no_effect/net-zero rows are left as-is (they already
+        # don't tint and render "No recent impact." in the panel).
+        if not mixed and direction in ("positive", "negative") and magnitude <= IMPACT_TINT_FLOOR:
             continue
         out.append({"node_id": node_id, "direction": direction, "magnitude": round(magnitude, 3),
                     "mixed_signals": mixed, "event_count": a["count"],

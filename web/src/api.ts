@@ -155,6 +155,25 @@ export class ApiError extends Error {
   }
 }
 
+/** Compose an optional caller AbortSignal with a fresh timeout into ONE signal to
+ *  hand to fetch(). Guarantees a POST that would otherwise hang on a half-open
+ *  connection (the caller never clicked Cancel) still aborts, so the `finally` that
+ *  decrements the global inflight counter runs and the "loading…" pill is freed.
+ *  Call cleanup() in finally to clear the timer and detach the listener. */
+function _timeoutSignal(ms: number, external?: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ms);
+  const onAbort = () => controller.abort();
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener("abort", onAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    cleanup: () => { clearTimeout(timeoutId); external?.removeEventListener("abort", onAbort); },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Endpoints
 // ---------------------------------------------------------------------------
@@ -347,6 +366,9 @@ export async function runMultiImpact(
   const url = new URL("/impact/multi", API_BASE_URL);
   inflight += 1;
   notifyLoading();
+  // Timeout-compose the caller's signal so a hung backend can't pin the loading
+  // pill forever (get() and describeNode already do this; these POSTs did not).
+  const { signal, cleanup } = _timeoutSignal(LLM_TIMEOUT_MS, opts.signal);
   try {
     const body: Record<string, unknown> = { texts };
     if (opts.provider) body.provider = opts.provider;
@@ -354,7 +376,7 @@ export async function runMultiImpact(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal: opts.signal,
+      signal,
     });
     if (!resp.ok) {
       const respBody = await resp.text().catch(() => "");
@@ -366,6 +388,7 @@ export async function runMultiImpact(
       throw new Error("/impact/multi: server returned non-JSON response");
     }
   } finally {
+    cleanup();
     inflight -= 1;
     notifyLoading();
   }
@@ -378,6 +401,7 @@ export async function runImpact(
   const url = new URL("/impact", API_BASE_URL);
   inflight += 1;
   notifyLoading();
+  const { signal, cleanup } = _timeoutSignal(LLM_TIMEOUT_MS, opts.signal);
   try {
     const body: Record<string, string> = { text };
     if (opts.provider) body.provider = opts.provider;
@@ -385,7 +409,7 @@ export async function runImpact(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal: opts.signal,
+      signal,
     });
     if (!resp.ok) {
       const respBody = await resp.text().catch(() => "");
@@ -397,6 +421,7 @@ export async function runImpact(
       throw new Error("/impact: server returned non-JSON response");
     }
   } finally {
+    cleanup();
     inflight -= 1;
     notifyLoading();
   }
@@ -547,11 +572,30 @@ export interface NodeImpactResponse { node_id: string; name: string; type: strin
 export function getImpactLive(): Promise<ImpactLiveResponse> {
   return get<ImpactLiveResponse>("/impact/live");
 }
-export function getNodeImpact(nodeId: string): Promise<NodeImpactResponse> {
+// The per-node impact panel is a quick per-click read. Give it its OWN fetch (not
+// the shared get() wrapper) so it (a) does NOT touch the global inflight counter —
+// a slow panel read must never pin the bottom-left "loading…" pill after a simple
+// node click — and (b) fails fast (15 s) instead of the 90 s graph-fetch ceiling.
+// The click already shows a compact box from the live tint map, so a slow/failed
+// enrich degrades gracefully.
+const NODE_IMPACT_TIMEOUT_MS = 15_000;
+export async function getNodeImpact(nodeId: string): Promise<NodeImpactResponse> {
   // Node ids embed colons (cik:0000320193); the API route is {node_id:path}, so
   // the colon must survive into the path. encodeURI preserves ':' (encodeURIComponent
   // would escape it) — same convention as getNode/getEgo above.
-  return get<NodeImpactResponse>(`/node/${encodeURI(nodeId)}/impact`);
+  const url = new URL(`/node/${encodeURI(nodeId)}/impact`, API_BASE_URL);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), NODE_IMPACT_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url.toString(), { method: "GET", signal: controller.signal });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      throw new ApiError(resp.status, `${resp.statusText} - ${body.slice(0, 200)}`);
+    }
+    return (await resp.json()) as NodeImpactResponse;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 // LLM token/cost usage for the Usage tab.

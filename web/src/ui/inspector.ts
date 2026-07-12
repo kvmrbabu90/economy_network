@@ -4,10 +4,12 @@
 
 import type { ApiEdge, ApiNode, EdgeType, ImpactVerdict } from "../api";
 import type { EconGraph } from "../graph";
+import { IMPACT_TINT_FLOOR } from "../impact";
 
 export interface NodeExtras {
   impact?: ImpactVerdict;
   onDescribe?: (nodeId: string) => Promise<string>;
+  describedText?: string;   // cached /describe result, restored so it survives inspector re-renders
   combinedImpact?: import("../api").NodeImpact | null;   // resolved verdict, or null = no recent impact
   onSharpen?: (headlines: string[], context: string | null) => void;   // run full V1 trace over all contributing events
 }
@@ -123,26 +125,32 @@ export function showNode(node: ApiNode, g: EconGraph, extras: NodeExtras = {}): 
   const md = (a.metadata as Record<string, unknown> | undefined) ?? {};
   const wd = (md.wikidata as Record<string, unknown> | undefined) ?? {};
   const hqLabel = typeof wd.hq === "string" ? wd.hq : null;
-  if (extras.onDescribe) {
+  if (extras.describedText || extras.onDescribe) {
     const aboutBox = el("div", { class: "about-box" });
-    const descBtn = el("button", { class: "describe-btn", type: "button" },
-      "Describe this " + (a.type === "Company" ? "business" : a.type.toLowerCase()),
-    );
     const descBody = el("p", { class: "about-body" });
-    descBtn.addEventListener("click", async () => {
-      descBtn.setAttribute("disabled", "true");
-      descBtn.textContent = "Asking Claude...";
-      try {
-        const text = await extras.onDescribe!(node.key);
-        descBody.textContent = text || "(no description returned)";
-        descBtn.remove();
-      } catch (err) {
-        descBody.textContent = `Error: ${String((err as Error).message || err)}`;
-        descBtn.removeAttribute("disabled");
-        descBtn.textContent = "Retry";
-      }
-    });
-    aboutBox.appendChild(descBtn);
+    if (extras.describedText) {
+      // Restored from cache — the description survives every inspector re-render
+      // (hover, relayout) instead of vanishing back to a "Describe" button.
+      descBody.textContent = extras.describedText;
+    } else if (extras.onDescribe) {
+      const descBtn = el("button", { class: "describe-btn", type: "button" },
+        "Describe this " + (a.type === "Company" ? "business" : a.type.toLowerCase()),
+      );
+      descBtn.addEventListener("click", async () => {
+        descBtn.setAttribute("disabled", "true");
+        descBtn.textContent = "Asking Claude...";
+        try {
+          const text = await extras.onDescribe!(node.key);
+          descBody.textContent = text || "(no description returned)";
+          descBtn.remove();
+        } catch (err) {
+          descBody.textContent = `Error: ${String((err as Error).message || err)}`;
+          descBtn.removeAttribute("disabled");
+          descBtn.textContent = "Retry";
+        }
+      });
+      aboutBox.appendChild(descBtn);
+    }
     aboutBox.appendChild(descBody);
     r.appendChild(aboutBox);
   }
@@ -187,6 +195,17 @@ export function showNode(node: ApiNode, g: EconGraph, extras: NodeExtras = {}): 
       }
       r.appendChild(list);
     }
+  }
+
+  // Combined-impact ("why is this node tinted") section — rendered INLINE as part
+  // of showNode so it survives EVERY inspector re-render (hover→showNode, the
+  // post-click relayout sliding nodes under the cursor, tab switches). Previously
+  // this box was only appended asynchronously after showNode ran, so any later
+  // re-render wiped it — the "tinted node, no panel" bug. `undefined` = not fetched
+  // yet (render nothing, the async fetch will paint it); `null` = fetched, no recent
+  // impact (render "No recent impact."); object = the precomputed verdict + drivers.
+  if (extras.combinedImpact !== undefined) {
+    renderCombinedImpactInto(r, extras.combinedImpact, { onSharpen: extras.onSharpen });
   }
 }
 
@@ -341,14 +360,16 @@ export function buildTimelineRows(impact: import("../api").NodeImpact): Timeline
  *  don't stack. Exported so main.ts can call it after the async /node/{id}/impact fetch. */
 export function renderCombinedImpactInto(
   root: HTMLElement,
-  resp: import("../api").NodeImpactResponse,
+  imp: import("../api").NodeImpact | null,
   handlers: { onSharpen?: (headlines: string[], context: string | null) => void } = {},
 ): void {
   root.querySelector(".combined-impact-box")?.remove();
-  const imp = resp.impact;
   const box = el("div", { class: "combined-impact-box" });
   box.appendChild(el("div", { class: "combined-impact-title" }, "Combined impact · precomputed"));
-  if (!imp) {
+  // Mirror the map's tint floor: a node the map refuses to tint (no_effect, or
+  // magnitude at/below the floor) must NOT present a populated impact box, or an
+  // untinted node contradicts itself when clicked. Treat those as the empty case.
+  if (!imp || imp.direction === "no_effect" || imp.magnitude <= IMPACT_TINT_FLOOR) {
     box.appendChild(el("p", { class: "combined-empty" }, "No recent impact."));
     root.appendChild(box);
     return;
@@ -358,7 +379,11 @@ export function renderCombinedImpactInto(
     el("span", { class: "impact-mag" }, `magnitude ${imp.magnitude.toFixed(2)}`),
     el("span", { class: "impact-count" }, `${imp.event_count} event${imp.event_count === 1 ? "" : "s"}`),
   ));
-  box.appendChild(el("div", { class: "combined-freshness" }, `as of ${imp.computed_at}`));
+  // computed_at is empty for the compact live-map synth (hover before first click);
+  // skip the freshness line rather than render a bare "as of ".
+  if (imp.computed_at) {
+    box.appendChild(el("div", { class: "combined-freshness" }, `as of ${imp.computed_at}`));
+  }
   const rows = buildTimelineRows(imp);
   if (rows.length) {
     const tl = el("div", { class: "combined-timeline" });

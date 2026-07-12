@@ -438,8 +438,12 @@ def write_event_impacts(conn: sqlite3.Connection, event_id: str, impacts: list[d
     conn.executemany(
         "INSERT INTO event_impacts (event_id, node_id, direction, magnitude, hop, reasoning) "
         "VALUES (?,?,?,?,?,?)",
+        # magnitude is a NON-NEGATIVE weight in [0,1]; the sign lives in `direction`.
+        # Store abs() so a tracer that emits a signed negative magnitude (e.g. -0.30
+        # for a 'negative' row) doesn't get silently zeroed by the aggregate's
+        # [0,1] clamp — which dropped the driver and could flip the node's tint.
         [(event_id, v["node_id"], v.get("direction", "no_effect"),
-          float(v.get("magnitude") or 0.0), int(v.get("hop") or 0), v.get("reasoning"))
+          min(1.0, abs(float(v.get("magnitude") or 0.0))), int(v.get("hop") or 0), v.get("reasoning"))
          for v in impacts],
     )
     conn.commit()
@@ -504,11 +508,21 @@ def read_all_node_impact(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
     Inert (`direction = 'no_effect'`) rows are excluded: they never tint the
     graph and only bloat the /impact/live payload. A directly-queried
-    no_effect node still resolves via read_node_impact()."""
+    no_effect node still resolves via read_node_impact().
+
+    Region rows are ALSO excluded from the map payload: a market bucket
+    (region:us-consumer, …) is a sink every consumer company points at, so it
+    accumulates dozens of hop-1/2 verdicts and saturates to magnitude ~1.0 — the
+    brightest, least-informative nodes on the map. Suppressing propagation THROUGH
+    a region (IMPACT_SUPPRESS_REGION_EXPANSION) never stopped the region node
+    itself from being scored, so filter it out at the tint boundary. A directly
+    clicked region still shows its verdict via read_node_impact() (unfiltered)."""
     try:
         rows = conn.execute(
-            "SELECT node_id, direction, magnitude, mixed_signals, event_count "
-            "FROM node_impact WHERE direction != 'no_effect' ORDER BY node_id"
+            "SELECT ni.node_id, ni.direction, ni.magnitude, ni.mixed_signals, ni.event_count "
+            "FROM node_impact ni LEFT JOIN nodes n ON n.id = ni.node_id "
+            "WHERE ni.direction != 'no_effect' AND COALESCE(n.type, '') != 'Region' "
+            "ORDER BY ni.node_id"
         ).fetchall()
     except sqlite3.OperationalError as exc:
         if _is_missing_table(exc):
