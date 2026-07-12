@@ -33,6 +33,9 @@ BATCH_MAX_HOPS = int(os.environ.get("PRECOMPUTE_MAX_HOPS", "2"))
 # Cap on how many known seeds are handed to a trace. 1 = primary only (measured to
 # best match the LLM reference's direction axis); 0 = no cap (full GKG org set).
 PRECOMPUTE_SEED_CAP = int(os.environ.get("PRECOMPUTE_SEED_CAP", "1"))
+# Augment the trace context with the article-enrichment capsule (events.enriched_context).
+# Off by default — the enrichment stage is proven via A/B before it drives live cycles.
+ENRICH_ENABLED = os.environ.get("ENRICH_ENABLED", "0") == "1"
 
 
 def _known_seed_ids(ev: dict) -> Optional[list[str]]:
@@ -100,11 +103,16 @@ def run_precompute(db_path: Path = DB_PATH, *, max_events: int = PRECOMPUTE_MAX_
                 # PRECOMPUTE_SEED_CAP=0 restores full-set seeding.
                 if known and PRECOMPUTE_SEED_CAP > 0:
                     known = known[:PRECOMPUTE_SEED_CAP]
+                # AUGMENT (not replace) gkg_context with the article-enrichment capsule
+                # when enabled: gkg_context carries secondary-org grounding the seed-cap
+                # logic depends on, so we compose both. Off/absent → unchanged behavior.
+                _enriched = ev.get("enriched_context") if ENRICH_ENABLED else None
+                _context = "\n".join(x for x in (ev.get("gkg_context"), _enriched) if x) or None
                 r = _impact.run_impact(ev["headline"], conn=conn, provider=prov,
                                        max_hops=BATCH_MAX_HOPS, refine=False, verify=False,
                                        known_seed_ids=known,
                                        commodity_hint=_any_commodity(conn, known) if known else None,
-                                       context=ev.get("gkg_context"))
+                                       context=_context)
             except Exception as exc:
                 log.warning("precompute: %s trace raised %s", ev["id"], exc)
                 _mark_failed(ev["id"])

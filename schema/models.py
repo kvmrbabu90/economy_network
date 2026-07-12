@@ -327,3 +327,68 @@ class CandidateEdge(BaseModel):
                     f"start with 'regulator:' (got {self.target_raw!r})"
                 )
         return self
+
+
+# ---------------------------------------------------------------------------
+# So What? V2 — article enrichment capsule
+# ---------------------------------------------------------------------------
+
+class ArticleCapsule(BaseModel):
+    """LLM summary of a fetched + programmatically-reduced news article.
+
+    A compact, TYPED grounding capsule the impact trace consumes as `context`
+    (augmenting gkg_context). Kept small on purpose (<= ~60 tokens rendered).
+    Grounding (CLAUDE.md invariant #4) is enforced by the caller in pipeline/enrich.py:
+    any `affected` org or `money` value that does not appear verbatim in the reduced
+    text is dropped, and a capsule that invents them is discarded, never stored.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    event_type: Literal[
+        "earnings_beat", "earnings_miss", "guidance_raise", "guidance_cut",
+        "m_and_a", "deal_win", "deal_loss", "recall", "lawsuit", "regulatory_action",
+        "layoffs", "strike", "supply_disruption", "bankruptcy", "price_move", "other",
+    ] = "other"
+    direction: Literal["positive", "negative", "mixed", "neutral"] = "neutral"
+    magnitude: Literal["large", "moderate", "small", "unclear"] = "unclear"
+    money: Optional[str] = None                    # verbatim "$1.2B" / "12%" or None
+    affected: list[str] = Field(default_factory=list)   # <= 4 org names, verbatim
+    one_line: str = ""                             # <= ~12 words, what happened
+
+    @field_validator("affected")
+    @classmethod
+    def _cap_affected(cls, v: list[str]) -> list[str]:
+        return [s for s in (v or []) if s][:4]
+
+    @field_validator("one_line")
+    @classmethod
+    def _trim_one_line(cls, v: str) -> str:
+        return " ".join((v or "").split()[:14])
+
+    def is_informative(self) -> bool:
+        """Does the capsule carry anything the headline+gkg capsule wouldn't already?"""
+        return bool(
+            self.event_type != "other"
+            or self.direction != "neutral"
+            or self.money
+            or self.affected
+            or self.one_line
+        )
+
+    def render(self) -> Optional[str]:
+        """Render to the gkg_context bracket dialect so the trace path is unchanged:
+        '[earnings_miss | negative/large | $3B | affects: LG Energy | Q3 profit fell]'.
+        Returns None when there is nothing worth adding."""
+        parts: list[str] = []
+        if self.event_type != "other":
+            parts.append(self.event_type)
+        if self.direction != "neutral" or self.magnitude != "unclear":
+            parts.append(self.direction if self.magnitude == "unclear"
+                         else f"{self.direction}/{self.magnitude}")
+        if self.money:
+            parts.append(self.money)
+        if self.affected:
+            parts.append("affects: " + ", ".join(self.affected))
+        if self.one_line:
+            parts.append(self.one_line)
+        return "[" + " | ".join(parts) + "]" if parts else None

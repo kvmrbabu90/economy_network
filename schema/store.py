@@ -133,7 +133,13 @@ CREATE TABLE IF NOT EXISTS events (
     gkg_context  TEXT,
     -- JSON array of known seed node-ids (salience-ranked, seed first) for the
     -- trusted-seed trace path; NULL for free-text events that need LLM extraction.
-    seed_ids     TEXT
+    seed_ids     TEXT,
+    -- So What? V2 · article enrichment (pipeline/enrich.py). All NULL until enriched;
+    -- precompute augments gkg_context with enriched_context. Never blocks a cycle.
+    enriched_context TEXT,               -- rendered ArticleCapsule (compact bracket capsule)
+    enrich_status    TEXT,               -- pending|done|skipped|no_content|failed
+    enrich_tier      INTEGER,            -- router decision (0/1/2/2b); NULL before the router lands
+    enrich_version   INTEGER             -- bump to re-summarize from cached HTML (no re-fetch)
 );
 -- Per-LLM-call token/cost usage (exact, from the Claude CLI JSON envelope) for the
 -- Usage tab. Written by record_llm_usage() from _claude_call; aggregated by
@@ -208,6 +214,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     _migrate_seed_ids(conn)
     _migrate_llm_usage(conn)
     _migrate_node_impact_driver_count(conn)
+    _migrate_enrich_columns(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +312,35 @@ def _migrate_gkg_context(conn: sqlite3.Connection) -> None:
     if "gkg_context" not in cols:
         conn.execute("ALTER TABLE events ADD COLUMN gkg_context TEXT")
         conn.commit()
+
+
+def _migrate_enrich_columns(conn: sqlite3.Connection) -> None:
+    """Add the article-enrichment columns to a pre-existing DB (idempotent, no
+    backfill — events gain enrichment only when pipeline/enrich.py runs). Forward-only."""
+    if not conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='events'"
+    ).fetchone():
+        return
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()}
+    for name, decl in (("enriched_context", "TEXT"), ("enrich_status", "TEXT"),
+                       ("enrich_tier", "INTEGER"), ("enrich_version", "INTEGER")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE events ADD COLUMN {name} {decl}")
+    conn.commit()
+
+
+def set_event_enrichment(conn: sqlite3.Connection, event_id: str, *,
+                         enriched_context: Optional[str] = None, status: str = "done",
+                         tier: Optional[int] = None, version: Optional[int] = None) -> None:
+    """Persist the article-enrichment result for one event. `enriched_context` is the
+    rendered capsule (or None when nothing usable); `status` records the outcome."""
+    conn.execute(
+        "UPDATE events SET enriched_context = ?, enrich_status = ?, "
+        "enrich_tier = COALESCE(?, enrich_tier), enrich_version = COALESCE(?, enrich_version) "
+        "WHERE id = ?",
+        (enriched_context, status, tier, version, event_id),
+    )
+    conn.commit()
 
 
 def _migrate_seed_ids(conn: sqlite3.Connection) -> None:
