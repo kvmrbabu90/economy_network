@@ -399,6 +399,14 @@ export function renderCombinedImpactInto(
   if (imp.computed_at) {
     box.appendChild(el("div", { class: "combined-freshness" }, `as of ${imp.computed_at}`));
   }
+  // Honesty flag: a verdict with drivers but NO direct (hop-0) news is entirely
+  // propagated sector spillover — a bright tint on a node that had no news of its
+  // own. Say so, so a "0.90 · no story" reads correctly. (direct_count may be absent
+  // on the compact synth or pre-migration rows — only flag when we actually know it.)
+  if (drivers > 0 && imp.direct_count === 0) {
+    box.appendChild(el("div", { class: "combined-propagated" },
+      "↳ no direct news — propagated from related companies"));
+  }
   const rows = buildTimelineRows(imp);
   if (rows.length) {
     const tl = el("div", { class: "combined-timeline" });

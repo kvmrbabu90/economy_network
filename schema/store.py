@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS node_impact (
     mixed_signals INTEGER NOT NULL DEFAULT 0,
     event_count   INTEGER NOT NULL,   -- window rows SCANNED (incl. unscored/no_effect, for context)
     driver_count  INTEGER NOT NULL DEFAULT 0,   -- of those, the nonzero-weighted real drivers
+    direct_count  INTEGER NOT NULL DEFAULT 0,   -- of the drivers, the DIRECT (hop-0) ones; 0 = pure spillover
     top_events    TEXT NOT NULL DEFAULT '[]',
     computed_at   TEXT NOT NULL
 );
@@ -357,16 +358,17 @@ def _migrate_seed_ids(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_node_impact_driver_count(conn: sqlite3.Connection) -> None:
-    """Add node_impact.driver_count to a pre-existing DB (idempotent). Existing rows
-    default to 0 until the next aggregate cycle recomputes them. Forward-only."""
+    """Add node_impact.driver_count / direct_count to a pre-existing DB (idempotent).
+    Existing rows default to 0 until the next aggregate cycle recomputes them. Forward-only."""
     if not conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='node_impact'"
     ).fetchone():
         return
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(node_impact)").fetchall()]
-    if "driver_count" not in cols:
-        conn.execute("ALTER TABLE node_impact ADD COLUMN driver_count INTEGER NOT NULL DEFAULT 0")
-        conn.commit()
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(node_impact)").fetchall()}
+    for name in ("driver_count", "direct_count"):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE node_impact ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
 
 
 def _migrate_llm_usage(conn: sqlite3.Connection) -> None:
@@ -538,10 +540,10 @@ def replace_node_impact(conn: sqlite3.Connection, rows: list[dict[str, Any]]) ->
     conn.execute("DELETE FROM node_impact")
     conn.executemany(
         "INSERT INTO node_impact (node_id, direction, magnitude, mixed_signals, "
-        "event_count, driver_count, top_events, computed_at) VALUES (?,?,?,?,?,?,?,?)",
+        "event_count, driver_count, direct_count, top_events, computed_at) VALUES (?,?,?,?,?,?,?,?,?)",
         [(r["node_id"], r["direction"], float(r["magnitude"]), int(r.get("mixed_signals", 0)),
-          int(r["event_count"]), int(r.get("driver_count", 0)), r.get("top_events", "[]"),
-          r["computed_at"]) for r in rows],
+          int(r["event_count"]), int(r.get("driver_count", 0)), int(r.get("direct_count", 0)),
+          r.get("top_events", "[]"), r["computed_at"]) for r in rows],
     )
     conn.commit()
 
@@ -589,7 +591,7 @@ def read_node_impact(conn: sqlite3.Connection, node_id: str) -> Optional[dict[st
     try:
         row = conn.execute(
             "SELECT node_id, direction, magnitude, mixed_signals, event_count, "
-            "driver_count, top_events, computed_at FROM node_impact WHERE node_id = ?", (node_id,)
+            "driver_count, direct_count, top_events, computed_at FROM node_impact WHERE node_id = ?", (node_id,)
         ).fetchone()
     except sqlite3.OperationalError as exc:
         if _is_missing_table(exc):

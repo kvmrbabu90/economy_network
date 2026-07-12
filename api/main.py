@@ -342,6 +342,9 @@ def node_impact(node_id: str, conn: sqlite3.Connection = Depends(get_conn)):
                        # driver_count: nonzero-weighted drivers (subset of event_count). Older
                        # rows predating the column read 0 until the next aggregate recomputes.
                        "driver_count": (raw["driver_count"] if "driver_count" in raw.keys() else 0),
+                       # direct_count: of the drivers, the hop-0 (direct) ones. 0 = the verdict
+                       # is entirely propagated sector spillover (no news about this node itself).
+                       "direct_count": (raw["direct_count"] if "direct_count" in raw.keys() else 0),
                        "computed_at": raw["computed_at"], "top_events": top}}
 
 

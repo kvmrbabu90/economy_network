@@ -565,6 +565,7 @@ export interface NodeImpact {
   mixed_signals: number;   // 0|1
   event_count: number;     // window rows SCANNED (incl. unscored/no_effect), for context
   driver_count: number;    // of those, the real nonzero-weighted drivers (panel's primary figure)
+  direct_count: number;    // of the drivers, the DIRECT (hop-0) ones; 0 = pure sector spillover
   computed_at: string;
   top_events: TopEvent[];
 }

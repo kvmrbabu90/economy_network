@@ -4,7 +4,7 @@ import type { NodeImpact } from "../api";
 
 const imp = (top: NodeImpact["top_events"]): NodeImpact =>
   ({ direction: "negative", magnitude: 0.6, mixed_signals: 0, event_count: top.length,
-     driver_count: top.length, computed_at: "2026-06-30T00:00:00", top_events: top });
+     driver_count: top.length, direct_count: top.length, computed_at: "2026-06-30T00:00:00", top_events: top });
 
 describe("buildTimelineRows", () => {
   it("linkable when url present; plain when null; order preserved", () => {

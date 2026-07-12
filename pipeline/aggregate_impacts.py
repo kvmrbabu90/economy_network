@@ -35,6 +35,10 @@ IMPACT_MIXED_SIGNAL_RATIO = float(os.environ.get("IMPACT_MIXED_SIGNAL_RATIO", "0
 # node_impact entirely so the map tint, /impact/live, and the /node/{id}/impact
 # panel all agree — a node the map won't tint must not present a combined-impact box.
 IMPACT_TINT_FLOOR = float(os.environ.get("IMPACT_TINT_FLOOR", "0.05"))
+# Multiplier applied to a verdict's magnitude when it has NO direct (hop-0) news — i.e.
+# it's entirely propagated sector spillover. Keeps such nodes visible but SOFTER than a
+# company's own news. 1.0 = disabled. Chosen by the sweep in this commit's message.
+IMPACT_PROPAGATED_DAMP = float(os.environ.get("IMPACT_PROPAGATED_DAMP", "0.7"))
 
 
 def _age_days(row_date: Optional[str], today: date) -> Optional[int]:
@@ -113,6 +117,16 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
             direction, magnitude = "negative", -signed
         else:
             direction, magnitude = "no_effect", 0.0
+        # Contributing drivers + how many are DIRECT (hop 0 — news about this node itself).
+        contributing = [e for e in a["events"] if e["weighted"] != 0.0]
+        direct_count = sum(1 for e in contributing if e.get("hop") == 0)
+        # PROPAGATED DAMPING: a verdict with NO direct news is pure sector spillover — a
+        # node with no story of its own (e.g. HAL tinted 0.90 purely off Boeing/Honeywell
+        # aerospace news). Attenuate its magnitude so spillover tints SOFTER than a
+        # company's own news. Measured: 55% of tinted nodes are purely propagated, 167
+        # of them strong (mag>=0.5). IMPACT_PROPAGATED_DAMP=1.0 disables.
+        if direct_count == 0 and direction in ("positive", "negative"):
+            magnitude *= IMPACT_PROPAGATED_DAMP
         # Only flag MIXED when the signals genuinely conflict: the WEAKER side must be
         # at least IMPACT_MIXED_SIGNAL_RATIO of the stronger. A node that is overwhelmingly
         # one direction (a small opposing event) reads as that direction, not amber. Also
@@ -140,10 +154,12 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
             continue
         # driver_count = the real drivers (nonzero-weighted rows), distinct from
         # event_count which counts EVERY scanned window row (incl. unscored/no_effect).
-        # The panel header shows drivers as the primary figure so "N events" no longer
-        # overstates when most rows contributed nothing.
+        # direct_count (computed above) = of those drivers, the DIRECT (hop-0) ones;
+        # direct_count==0 means the verdict is pure PROPAGATED spillover — the panel flags
+        # it and its magnitude was damped above so a 0.90 with no story reads honestly.
         out.append({"node_id": node_id, "direction": direction, "magnitude": round(magnitude, 3),
                     "mixed_signals": mixed, "event_count": a["count"], "driver_count": len(contributing),
+                    "direct_count": direct_count,
                     "top_events": json.dumps(top), "computed_at": computed_at})
 
     store.replace_node_impact(conn, out)

@@ -329,3 +329,30 @@ def test_migrate_node_impact_driver_count_on_pre_existing_db(tmp_path):
     conn = store.connect(p); store.init_db(conn)   # runs migrations
     cols = [r[1] for r in conn.execute("PRAGMA table_info(node_impact)").fetchall()]
     assert "driver_count" in cols
+
+
+def test_direct_count_counts_only_hop0_drivers(tmp_path):
+    # direct_count = drivers that are DIRECT (hop 0 — news about the node itself).
+    conn = _db(tmp_path)
+    for eid in ("d0", "p1", "p2"):
+        _event(conn, eid, "2026-06-17")
+    store.write_event_impacts(conn, "d0", [{"node_id": "n", "direction": "positive", "magnitude": 0.5, "hop": 0}])
+    store.write_event_impacts(conn, "p1", [{"node_id": "n", "direction": "positive", "magnitude": 0.4, "hop": 1}])
+    store.write_event_impacts(conn, "p2", [{"node_id": "n", "direction": "positive", "magnitude": 0.3, "hop": 2}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT driver_count, direct_count FROM node_impact WHERE node_id='n'").fetchone()
+    assert r["driver_count"] == 3
+    assert r["direct_count"] == 1   # only the hop-0 driver is direct
+
+
+def test_direct_count_zero_for_pure_propagation(tmp_path):
+    # A verdict driven ONLY by hop>=1 propagation (like HAL: aerospace sector spillover,
+    # no direct HAL news) has direct_count 0 — the panel flags it "no direct news".
+    conn = _db(tmp_path)
+    for eid in ("p1", "p2"):
+        _event(conn, eid, "2026-06-17")
+    store.write_event_impacts(conn, "p1", [{"node_id": "hal", "direction": "positive", "magnitude": 0.6, "hop": 1}])
+    store.write_event_impacts(conn, "p2", [{"node_id": "hal", "direction": "positive", "magnitude": 0.5, "hop": 2}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT driver_count, direct_count FROM node_impact WHERE node_id='hal'").fetchone()
+    assert r["driver_count"] == 2 and r["direct_count"] == 0

@@ -26,7 +26,7 @@ const node = (key = "cik:0001067491"): ApiNode => ({
 });
 
 const imp = (): NodeImpact => ({
-  direction: "negative", magnitude: 0.52, mixed_signals: 0, event_count: 19, driver_count: 1,
+  direction: "negative", magnitude: 0.52, mixed_signals: 0, event_count: 19, driver_count: 1, direct_count: 1,
   computed_at: "2026-07-12T14:32:52+00:00",
   top_events: [{
     event_id: "e1", headline: "Infosys shares fall on batch concerns", direction: "negative",
@@ -119,7 +119,7 @@ describe("tint/panel floor + compact live-synth", () => {
   it("compact live-synth (empty top_events + computed_at) → header only, no timeline/freshness/sharpen", () => {
     const root = document.getElementById("inspector-body")!;
     renderCombinedImpactInto(root, {
-      direction: "negative", magnitude: 0.52, mixed_signals: 0, event_count: 19, driver_count: 0,
+      direction: "negative", magnitude: 0.52, mixed_signals: 0, event_count: 19, driver_count: 0, direct_count: 0,
       computed_at: "", top_events: [],
     }, { onSharpen: () => {} });
     const box = root.querySelector(".combined-impact-box")!;
@@ -155,6 +155,19 @@ describe("panel header: driver_count vs event_count", () => {
     expect(box.textContent).toContain("1 driver");
     expect(box.textContent).not.toContain("1 drivers");
     expect(box.textContent).not.toContain("scanned");
+  });
+
+  it("flags a purely-propagated verdict (drivers > 0, direct_count 0) as 'no direct news'", () => {
+    const root = document.getElementById("inspector-body")!;
+    renderCombinedImpactInto(root, { ...imp(), driver_count: 25, direct_count: 0 });
+    expect(root.querySelector(".combined-propagated")).not.toBeNull();
+    expect(root.querySelector(".combined-propagated")!.textContent).toContain("no direct news");
+  });
+
+  it("does NOT flag when there is direct news (direct_count > 0)", () => {
+    const root = document.getElementById("inspector-body")!;
+    renderCombinedImpactInto(root, { ...imp(), driver_count: 25, direct_count: 3 });
+    expect(root.querySelector(".combined-propagated")).toBeNull();
   });
 });
 
