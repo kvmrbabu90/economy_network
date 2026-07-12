@@ -760,18 +760,29 @@ def extract_rss_events(raw: list[dict]) -> list[dict]:
 
 
 _MATERIALITY_PROMPT = """You are a markets analyst gatekeeping a supply-chain impact graph.
-For EACH numbered item decide: is it a CONCRETE, DETERMINISTIC market-moving / business-impact
-event with a clear directional effect on a company, commodity, or region?
+For EACH numbered item decide: does the headline REPORT a CONCRETE, DETERMINISTIC
+business EVENT that already happened (or was formally announced) with a clear directional
+effect on a company, commodity, or region? Judge the headline's PRIMARY subject: if it is
+framed as advice, valuation, a price move, or logistics, DROP it even if it name-drops a
+real company or a real event in passing.
 
-KEEP (material=true): M&A, contracts won/lost, output/production cuts, regulatory
-approval/ban/recall, tariffs/sanctions, earnings or guidance surprises, supply disruptions,
-plant/mine closures, defaults, large capex/JV, major executive departures.
+KEEP (material=true) — a concrete event: M&A / takeover bids, contracts won or lost,
+output/production cuts, regulatory approval/ban/recall, tariffs/sanctions, actual earnings
+or guidance RESULTS/surprises, dividend CUTS or HIKES, supply disruptions, plant/mine
+closures, defaults/bankruptcies, large capex/JV, CEO/CFO departures, lawsuits/fines,
+data breaches, strikes/shutdowns.
 
-DROP (material=false): opinion / analysis / "how/why" explainers, price-move-only stories
-("stock rises 3%"), analyst rating or price-target changes, rumor / "could/may/reportedly",
-routine product launches, celebrity/sports/lifestyle, and law-firm "investigation" /
-class-action-solicitation / "shareholder alert" notices (these are legal advertising, not
-events), and stories where the company is only mentioned incidentally.
+DROP (material=false) — commentary, not an event:
+- investment advice / valuation opinion: "should you buy/sell/hold", "is it a buy/trap",
+  "under/overvalued", "still a buy", "N reasons to…", "here's why", "worth a look".
+- analyst actions: price-target changes, rating upgrades/downgrades, initiations.
+- price-move-only reports: "shares jump/fall X%" when NO underlying event is named
+  (if a real event IS named, e.g. "soar on a takeover bid", keep it for that event).
+- dividend/earnings LOGISTICS: record date, ex-dividend, payout history/schedule,
+  "results/earnings preview", "what you need to know", "results to watch".
+- rumor / "could/may/reportedly", routine product launches, celebrity/sports/lifestyle,
+  law-firm "investigation" / class-action / "shareholder alert" notices (legal ads),
+  and stories where the company is only mentioned incidentally.
 
 ITEMS (numbered):
 {items}
@@ -848,16 +859,107 @@ def _materiality_batch(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [c for i, c in enumerate(cands) if i in keep_idx]
 
 
+# --- Deterministic non-news pre-drop -------------------------------------------------
+# A cheap, LLM-free classifier for headline SHAPES that are commentary, investment
+# advice, analyst actions, or administrative logistics — never a concrete business
+# event. These flooded the impact panels ("Should You Buy?", "record date / payout
+# history", price-target changes) despite the LLM gate. Dropping them here removes the
+# noise AND saves LLM calls (aligns with the deterministic-first philosophy).
+#
+# SAFETY: a headline that also names a HARD material trigger (M&A, earnings surprise,
+# regulatory action, dividend action, exec change, …) is NEVER blind-dropped — it is
+# deferred to the LLM gate. This protects real events wrapped in a move/opinion hook,
+# e.g. "EasyJet shares soar 10% on $7.3B takeover bid" or "Vertex undervalued after
+# CASGEVY won FDA approval". The override only PREVENTS drops; it never forces a keep.
+# Money amounts ($ or "N billion") signal a transaction — kept SEPARATE because a
+# leading \b can't precede "$" (non-word char), which previously broke the override
+# and false-dropped real deals like "…Deal Despite $3.5b…".
+_MATERIAL_MONEY_RE = re.compile(r"\$\s?\d|\b\d+(\.\d+)?\s?(bn|billion|trillion|m|million)\b", re.I)
+_MATERIAL_WORDS_RE = re.compile(
+    r"\b(acquir\w*|acquisition|merg\w+|takeover|buyout|buy[- ]?out|tender offer|"
+    r"agrees? to buy|to acquire|stake in|buyback|repurchas\w*|\bdeal\b|deal to|joint venture|"
+    r"contract|awarded|wins? (a |the )?(deal|contract|order|bid|approval)|"
+    r"recall\w*|fda|approv\w*|clearance|ban(ned|s)?|sanction\w*|tariff\w*|antitrust|"
+    r"lawsuit|settle(d|ment)?|fine[sd]?|charges?|indict\w*|"
+    r"layoff\w*|job cuts|dispute\w*|restructur\w*|bankrupt\w*|default\w*|profit warning|guidance|"
+    r"beats?|miss(es|ed)?|earnings surprise|strikes?|shutdown|closure|halts?|"
+    r"disrupt\w*|outage|breach|cyber[- ]?attack\w*|ransomware|hacked|hacking|"    # security incidents
+    r"resign\w*|steps? down|appoint\w*|names? .* (ceo|cfo)|"                      # exec / leadership changes
+    r"unveil\w*|cancel\w*|scrap\w*|abandon\w*|shelv\w*|"                          # product/partnership + project cancellations
+    r"ipo|spin[- ]?off|dividend (cut|raise|hike|increase|suspen\w*|slash\w*))\b", re.I)
+# Earnings RESULTS + corporate actions — SEPARATE because the flexible gap and the
+# "N-fold" / "$-for-$ split" shapes don't fit the \b(...)\b word wrapper. These are
+# concrete events, not commentary: "profit jumped 19-fold", a stock split, or a
+# facility/plant/project being dropped/cancelled (matched via the WORDS_RE verbs too).
+_MATERIAL_EARNINGS_RE = re.compile(
+    r"\b(profit|earnings|revenue|sales|net income|loss|orders?|output|production)\b"
+    r"[^.]{0,25}\b(jump\w*|surg\w*|soar\w*|rose|rise|climb\w*|fell|fall\w*|drop\w*|plung\w*|"
+    r"doubl\w*|tripl\w*|halv\w*|grew|grow\w*|beat|topp\w*|record|\d+[- ]?fold)|"
+    r"\b\d+[- ]?fold\b|\bstock split\b|\b\d+[- ]?for[- ]?\d+ split\b|"
+    r"\b(dropp\w*|cancel\w*|scrap\w*|abandon\w*|shelv\w*)\b[^.]{0,30}\b(project|plant|plan|deal|facility|program)\b", re.I)
+
+
+def _has_material_trigger(headline: str) -> bool:
+    return bool(_MATERIAL_MONEY_RE.search(headline)
+                or _MATERIAL_WORDS_RE.search(headline)
+                or _MATERIAL_EARNINGS_RE.search(headline))
+
+# Headline shapes that are non-news UNLESS a material trigger is present.
+_NON_NEWS_RE = re.compile(
+    r"("
+    r"should you (buy|sell|hold)|buy,?\s*sell,?\s*(or|and|&)?\s*hold|"
+    r"\bis (it|this|that|[A-Z][\w.&'-]+) (a |an )?(buy|sell|trap|bargain|good buy|undervalued|overvalued)\b|"
+    r"\b(under|over)valued\b|fairly valued|\d+% (under|over)valued|"
+    r"\bstill a (buy|sell|hold)\b|\btime to (buy|sell)\b|worth (buying|a look)|"
+    r"here'?s why|\bwhy (you should|to buy|to sell|this|that|[A-Z][\w.&'-]+ (stock|shares|is|could))|"
+    r"\b\d+\s+(reasons?|things|stocks?|charts?|reasons to)\b|"
+    r"what you need to know|what to (know|watch|expect)|"
+    r"price[- ]?targets?\b|(raises?|cuts?|lifts?|lowers?|trims?|boosts?)\s+\w*\s*(target|estimate|forecast)|"
+    # upgrade/downgrade ONLY in an analyst/rating/stock context — a company upgrading a
+    # facility/fleet or unveiling an "upgrade" product is a real event, not commentary.
+    r"(up|down)grade[sd]?\s+[^.]{0,25}\b(stock|rating|shares|equity|to (strong[- ]?)?(buy|sell|hold|neutral|outperform|overweight|underweight))\b|"
+    r"\b(up|down)graded (to|at|by)\b|\b(stock|shares|rating|equity)\s+(up|down)grade[sd]?\b|analysts?\s+(up|down)grade|"
+    r"initiat(e|es|ed)\s+coverage|reiterat\w*|"
+    r"\b(outperform|underperform|overweight|underweight|neutral|hold|buy|sell)\s+rating\b|"
+    r"record date|ex[- ]?dividend|payout (history|schedule|date)|dividend (announcement|amount|history|payout|record|schedule|time today|date and)|"
+    r"(results|earnings|q[1-4]|quarterly)\s+(preview|to watch)|preview:?\s+what|"
+    # how-to guides + thought-leadership / educational content — not an event
+    r"\bhow to (protect|invest|choose|build|understand|use|start|read|trade|save|pick|find|avoid|make|prepare|navigate)\b|"
+    r"\btransforming\b[^.]{0,60}\b(industry|sector|landscape|space|market)\b|^\s*(the )?future of\b|\ba guide to\b|"
+    r"everything you need to know|\bexplainer\b|\bexplained$|a beginner'?s guide"
+    r")", re.I)
+
+
+def _looks_like_non_news(headline: Optional[str]) -> bool:
+    """True when the headline is investment commentary / advice / analyst action /
+    dividend-or-earnings logistics — i.e. NOT a concrete business event. Returns False
+    (defer to the LLM gate) whenever a hard material trigger is also present, so a real
+    event wrapped in a price-move or opinion hook is never blind-dropped."""
+    h = headline or ""
+    if _has_material_trigger(h):
+        return False
+    return bool(_NON_NEWS_RE.search(h))
+
+
 def _materiality_prefilter(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Rule-based materiality: auto-keep high-prior / 8-K events, auto-drop clear
-    noise, and send ONLY the ambiguous middle band (and prior-less RSS) to the LLM
-    gate. Cuts gate calls AND removes whole downstream traces for auto-dropped
-    noise. INGEST_MATERIALITY_RULES='0' restores the old all-to-LLM behavior."""
+    """Rule-based materiality: deterministically drop obvious non-news, auto-keep
+    high-prior / 8-K events, auto-drop clear low-prior noise, and send ONLY the
+    ambiguous middle band (and prior-less RSS/API) to the LLM gate. Cuts gate calls
+    AND removes whole downstream traces for auto-dropped noise.
+    INGEST_MATERIALITY_RULES='0' restores the old all-to-LLM behavior;
+    INGEST_NONNEWS_DROP='0' disables just the non-news classifier."""
     if os.environ.get("INGEST_MATERIALITY_RULES", "1") == "0":
         return _materiality_filter(cands)
+    nonnews_on = os.environ.get("INGEST_NONNEWS_DROP", "1") != "0"
     keep: list[dict[str, Any]] = []
     judge: list[dict[str, Any]] = []
+    nonnews_dropped = 0
     for c in cands:
+        # Deterministic non-news drop runs FIRST so it also catches prior-less API
+        # candidates (Alpha Vantage / Marketaux) that would otherwise skip to the LLM.
+        if nonnews_on and _looks_like_non_news(c.get("headline")):
+            nonnews_dropped += 1
+            continue
         p = c.get("_prior")
         if p == _MATERIALITY_AUTOKEEP:
             keep.append(c)    # only definitionally-material (8-K); preserves LLM precision
@@ -866,8 +968,9 @@ def _materiality_prefilter(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             judge.append(c)   # ALL other GKG/RSS candidates → LLM gate (measured: needed)
     kept = keep + _materiality_filter(judge)
-    log.info("materiality prefilter: auto-keep %d, judged %d→%d, auto-drop %d",
-             len(keep), len(judge), len(kept) - len(keep), len(cands) - len(keep) - len(judge))
+    log.info("materiality prefilter: non-news drop %d, auto-keep %d, judged %d→%d, auto-drop %d",
+             nonnews_dropped, len(keep), len(judge), len(kept) - len(keep),
+             len(cands) - len(keep) - len(judge) - nonnews_dropped)
     return kept
 
 
