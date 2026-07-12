@@ -138,8 +138,12 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
         # don't tint and render "No recent impact." in the panel).
         if not mixed and direction in ("positive", "negative") and magnitude <= IMPACT_TINT_FLOOR:
             continue
+        # driver_count = the real drivers (nonzero-weighted rows), distinct from
+        # event_count which counts EVERY scanned window row (incl. unscored/no_effect).
+        # The panel header shows drivers as the primary figure so "N events" no longer
+        # overstates when most rows contributed nothing.
         out.append({"node_id": node_id, "direction": direction, "magnitude": round(magnitude, 3),
-                    "mixed_signals": mixed, "event_count": a["count"],
+                    "mixed_signals": mixed, "event_count": a["count"], "driver_count": len(contributing),
                     "top_events": json.dumps(top), "computed_at": computed_at})
 
     store.replace_node_impact(conn, out)

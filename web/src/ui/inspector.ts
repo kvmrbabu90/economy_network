@@ -374,10 +374,25 @@ export function renderCombinedImpactInto(
     root.appendChild(box);
     return;
   }
+  // Count label: prefer the real driver_count ("3 drivers") as the primary figure so
+  // the header stops overstating with event_count (which also counts unscored /
+  // no_effect rows scanned for context). When more rows were scanned than drove the
+  // verdict, append a muted "· scanned N". Falls back to "N events" when driver_count
+  // is unavailable (0) — e.g. the compact live-map synth shown on hover-before-click.
+  const drivers = imp.driver_count ?? 0;
+  const countChildren: (Node | string)[] = [];
+  if (drivers > 0) {
+    countChildren.push(el("span", { class: "impact-count" }, `${drivers} driver${drivers === 1 ? "" : "s"}`));
+    if (imp.event_count > drivers) {
+      countChildren.push(el("span", { class: "impact-scanned" }, `· scanned ${imp.event_count}`));
+    }
+  } else {
+    countChildren.push(el("span", { class: "impact-count" }, `${imp.event_count} event${imp.event_count === 1 ? "" : "s"}`));
+  }
   box.appendChild(el("div", { class: "combined-header" },
     el("span", { class: "impact-dir" }, combinedDirLabel(imp)),
     el("span", { class: "impact-mag" }, `magnitude ${imp.magnitude.toFixed(2)}`),
-    el("span", { class: "impact-count" }, `${imp.event_count} event${imp.event_count === 1 ? "" : "s"}`),
+    ...countChildren,
   ));
   // computed_at is empty for the compact live-map synth (hover before first click);
   // skip the freshness line rather than render a bare "as of ".

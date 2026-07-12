@@ -26,7 +26,7 @@ const node = (key = "cik:0001067491"): ApiNode => ({
 });
 
 const imp = (): NodeImpact => ({
-  direction: "negative", magnitude: 0.52, mixed_signals: 0, event_count: 19,
+  direction: "negative", magnitude: 0.52, mixed_signals: 0, event_count: 19, driver_count: 1,
   computed_at: "2026-07-12T14:32:52+00:00",
   top_events: [{
     event_id: "e1", headline: "Infosys shares fall on batch concerns", direction: "negative",
@@ -119,15 +119,42 @@ describe("tint/panel floor + compact live-synth", () => {
   it("compact live-synth (empty top_events + computed_at) → header only, no timeline/freshness/sharpen", () => {
     const root = document.getElementById("inspector-body")!;
     renderCombinedImpactInto(root, {
-      direction: "negative", magnitude: 0.52, mixed_signals: 0, event_count: 19,
+      direction: "negative", magnitude: 0.52, mixed_signals: 0, event_count: 19, driver_count: 0,
       computed_at: "", top_events: [],
     }, { onSharpen: () => {} });
     const box = root.querySelector(".combined-impact-box")!;
     expect(box.textContent).toContain("NEGATIVE");
-    expect(box.textContent).toContain("19 events");
+    expect(box.textContent).toContain("19 events");                 // driver_count 0 → falls back to event count
     expect(box.textContent).not.toContain("as of");                 // empty computed_at → no freshness line
     expect(box.querySelector(".combined-timeline")).toBeNull();     // no drivers in the live map
     expect(box.querySelector(".sharpen-btn")).toBeNull();           // no sharpen without drivers
+  });
+});
+
+describe("panel header: driver_count vs event_count", () => {
+  it("shows driver_count as the primary figure with scanned event_count as secondary", () => {
+    const root = document.getElementById("inspector-body")!;
+    renderCombinedImpactInto(root, { ...imp(), driver_count: 3, event_count: 30 });
+    const box = root.querySelector(".combined-impact-box")!;
+    expect(box.textContent).toContain("3 drivers");
+    expect(box.textContent).toContain("scanned 30");
+  });
+
+  it("falls back to 'N events' when driver_count is 0 (live-map synth)", () => {
+    const root = document.getElementById("inspector-body")!;
+    renderCombinedImpactInto(root, { ...imp(), driver_count: 0, event_count: 19 });
+    const box = root.querySelector(".combined-impact-box")!;
+    expect(box.textContent).toContain("19 events");
+    expect(box.textContent).not.toContain("driver");
+  });
+
+  it("uses singular '1 driver' and omits 'scanned' when every scanned row was a driver", () => {
+    const root = document.getElementById("inspector-body")!;
+    renderCombinedImpactInto(root, { ...imp(), driver_count: 1, event_count: 1 });
+    const box = root.querySelector(".combined-impact-box")!;
+    expect(box.textContent).toContain("1 driver");
+    expect(box.textContent).not.toContain("1 drivers");
+    expect(box.textContent).not.toContain("scanned");
   });
 });
 

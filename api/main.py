@@ -339,6 +339,9 @@ def node_impact(node_id: str, conn: sqlite3.Connection = Depends(get_conn)):
     return {"node_id": cid, "name": name, "type": ntype,
             "impact": {"direction": raw["direction"], "magnitude": raw["magnitude"],
                        "mixed_signals": raw["mixed_signals"], "event_count": raw["event_count"],
+                       # driver_count: nonzero-weighted drivers (subset of event_count). Older
+                       # rows predating the column read 0 until the next aggregate recomputes.
+                       "driver_count": (raw["driver_count"] if "driver_count" in raw.keys() else 0),
                        "computed_at": raw["computed_at"], "top_events": top}}
 
 

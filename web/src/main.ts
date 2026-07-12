@@ -238,6 +238,7 @@ function _combinedFromLive(live: LiveImpact): import("./api").NodeImpact {
     magnitude: live.magnitude,
     mixed_signals: live.mixed_signals,
     event_count: live.event_count,
+    driver_count: 0,     // unknown in the compact live map; the header falls back to event_count
     computed_at: "",     // unknown until the full fetch; the renderer skips an empty freshness line
     top_events: [],      // no drivers in the live map — click fills these in
   };

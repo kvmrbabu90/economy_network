@@ -563,7 +563,8 @@ export interface NodeImpact {
   direction: "positive" | "negative" | "no_effect";
   magnitude: number;
   mixed_signals: number;   // 0|1
-  event_count: number;
+  event_count: number;     // window rows SCANNED (incl. unscored/no_effect), for context
+  driver_count: number;    // of those, the real nonzero-weighted drivers (panel's primary figure)
   computed_at: string;
   top_events: TopEvent[];
 }

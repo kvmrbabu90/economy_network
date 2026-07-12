@@ -294,3 +294,38 @@ def test_read_all_node_impact_excludes_regions_but_read_node_impact_keeps_them(t
     assert "cik:5" in payload_ids            # a Company still tints the map
     assert "region:x" not in payload_ids     # the Region bucket is filtered out of the tint payload
     assert store.read_node_impact(conn, "region:x") is not None   # but a direct click still resolves it
+
+
+def test_driver_count_counts_only_nonzero_weighted_drivers(tmp_path):
+    # event_count counts EVERY window row (incl. unscored/no_effect, kept for "scanned
+    # N" context); driver_count counts only the real drivers (nonzero-weighted rows),
+    # so the panel header stops claiming "30 events" when only a handful drove the tint.
+    conn = _db(tmp_path)
+    for eid in ("d1", "d2", "u1", "u2", "z1"):
+        _event(conn, eid, "2026-06-17")
+    store.write_event_impacts(conn, "d1", [{"node_id": "n", "direction": "positive", "magnitude": 0.7, "hop": 1}])
+    store.write_event_impacts(conn, "d2", [{"node_id": "n", "direction": "negative", "magnitude": 0.3, "hop": 1}])
+    store.write_event_impacts(conn, "u1", [{"node_id": "n", "direction": "unscored", "magnitude": 0.0, "hop": 1}])
+    store.write_event_impacts(conn, "u2", [{"node_id": "n", "direction": "no_effect", "magnitude": 0.0, "hop": 1}])
+    store.write_event_impacts(conn, "z1", [{"node_id": "n", "direction": "positive", "magnitude": 0.0, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT event_count, driver_count FROM node_impact WHERE node_id='n'").fetchone()
+    assert r["event_count"] == 5      # all 5 window rows scanned
+    assert r["driver_count"] == 2     # only the 2 nonzero-weighted directional drivers
+
+
+def test_migrate_node_impact_driver_count_on_pre_existing_db(tmp_path):
+    # A DB whose node_impact predates driver_count must gain the column (forward-only).
+    import sqlite3
+    p = tmp_path / "old.db"
+    c = sqlite3.connect(p)
+    c.executescript(
+        "CREATE TABLE node_impact (node_id TEXT PRIMARY KEY, direction TEXT NOT NULL, "
+        "magnitude REAL NOT NULL, mixed_signals INTEGER NOT NULL DEFAULT 0, "
+        "event_count INTEGER NOT NULL, top_events TEXT NOT NULL DEFAULT '[]', "
+        "computed_at TEXT NOT NULL);"
+    )
+    c.commit(); c.close()
+    conn = store.connect(p); store.init_db(conn)   # runs migrations
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(node_impact)").fetchall()]
+    assert "driver_count" in cols

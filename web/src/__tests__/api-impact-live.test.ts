@@ -23,7 +23,7 @@ describe("impact-live client", () => {
 
   it("getNodeImpact hits /node/{id}/impact and parses top_events", async () => {
     const f = mockFetch({ node_id: "cik:1", name: "Apple", type: "Company",
-      impact: { direction: "negative", magnitude: 0.6, mixed_signals: 0, event_count: 1, computed_at: "2026-06-30T00:00:00",
+      impact: { direction: "negative", magnitude: 0.6, mixed_signals: 0, event_count: 1, driver_count: 1, computed_at: "2026-06-30T00:00:00",
         top_events: [{ event_id: "e1", headline: "H", direction: "negative", magnitude: 0.7, weighted: -0.7,
                        hop: 1, published_at: "2026-06-29", url: "https://x/e1", source: "SEC 8-K" }] } });
     const r = await getNodeImpact("cik:1");

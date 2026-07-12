@@ -1320,6 +1320,11 @@ html, body {
   font-size: 11px;
   color: var(--text-mute);
 }
+.combined-header .impact-scanned {
+  font-size: 11px;
+  color: var(--text-mute);
+  opacity: 0.7;
+}
 .combined-freshness {
   font-size: 11px;
   color: var(--text-faint);
