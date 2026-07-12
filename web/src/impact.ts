@@ -184,6 +184,18 @@ export function tintColorForCombinedRGB(
   return { r: c.r / 255, g: c.g / 255, b: c.b / 255 };
 }
 
+/** Is the magnitude filter doing anything? Default [0, 1] means "show everything". */
+export function magnitudeFilterActive(min: number, max: number): boolean {
+  return min > 0 || max < 1;
+}
+
+/** Is `magnitude` within the inclusive band [min, max]? Drives the magnitude
+ *  filter that hides dots outside the chosen impact-strength range. A non-impacted
+ *  node counts as magnitude 0, so any min > 0 hides it. */
+export function inMagnitudeBand(magnitude: number, min: number, max: number): boolean {
+  return magnitude >= min && magnitude <= max;
+}
+
 export function buildLiveImpactMap(rows: LiveImpact[]): Map<string, LiveImpact> {
   const m = new Map<string, LiveImpact>();
   for (const r of rows ?? []) m.set(r.node_id, r);

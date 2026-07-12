@@ -454,6 +454,11 @@ let _globeCameraInitialized = false;
 // the scene, so buildArcs()/_applyLinkTint() find nothing to build or tint.
 let _hideEdges = false;
 
+// Impact-magnitude band, mirrored from FilterState (same pattern as _hideEdges).
+// nodeVisibility() reads these live; start3D()/update3D()/setLiveImpact3D() sync them.
+let _magMin = 0;
+let _magMax = 1;
+
 export function start3D(
   container: HTMLElement,
   g: EconGraph,
@@ -464,6 +469,8 @@ export function start3D(
   mountedContainer = container;
   currentLayout = opts.layout ?? "ball";
   _hideEdges = !!opts.filterState?.hideEdges;
+  _magMin = opts.filterState?.magMin ?? 0;
+  _magMax = opts.filterState?.magMax ?? 1;
 
   instance = ForceGraph3D({ controlType: "orbit" })(container)
     .backgroundColor("#14171a")  // match --bg in styles.css
@@ -500,6 +507,16 @@ export function start3D(
       return n.color;
     })
     .nodeVisibility((n: ForceNode) => {
+      // Magnitude-band filter (declutter): hide dots whose impact magnitude is
+      // outside [_magMin, _magMax]. Magnitude comes from the active source
+      // (on-demand verdict or the live map); non-impacted nodes count as 0, so a
+      // magMin > 0 removes them too.
+      if (_magMin > 0 || _magMax < 1) {
+        const mag = _currentImpactState
+          ? (_currentImpactState.byNode.get(n.id)?.magnitude ?? 0)
+          : (_liveImpactState?.get(n.id)?.magnitude ?? 0);
+        if (mag < _magMin || mag > _magMax) return false;
+      }
       // Hide non-impacted nodes during an impact trace (removes their meshes
       // entirely, which is cleaner than setting obj.visible=false and avoids
       // the raycaster hitting invisible geometry).
@@ -960,6 +977,8 @@ export function update3D(g: EconGraph, filterState?: FilterState | null): void {
   // Keep the declutter flag current before graphData() re-digests links so
   // linkVisibility() re-evaluates with the new value (hidden links build no arcs).
   _hideEdges = !!filterState?.hideEdges;
+  _magMin = filterState?.magMin ?? 0;
+  _magMax = filterState?.magMax ?? 1;
   // In globe mode, dispose any custom TubeGeometry arc objects before
   // replacing graphData. 3d-force-graph handles teardown of its own internal
   // primitives but our linkThreeObject meshes are external — leaking them

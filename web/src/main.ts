@@ -59,6 +59,8 @@ import {
   buildMultiImpactState,
   tintColor,
   tintColorForCombined,
+  magnitudeFilterActive,
+  inMagnitudeBand,
   type ImpactState,
 } from "./impact";
 import { getImpactLive, getNodeImpact, getHealth, startImpactRefresh, getImpactRefreshStatus, getUsage, type LiveImpact, type UsageGranularity } from "./api";
@@ -157,7 +159,7 @@ window.__ec = {
 
 // Current filter state -- declared so all callbacks can read it without
 // dragging it through arguments.
-let filters: FilterState = { types: [], includeProvisional: false, includeInferred: false, markets: null, hideEdges: false };
+let filters: FilterState = { types: [], includeProvisional: false, includeInferred: false, markets: null, hideEdges: false, magMin: 0, magMax: 1 };
 
 // Layout mode for the 2D view. Force = FA2; sector = GICS clusters;
 // bubble = each sector collapsed into a clickable hub with expand/collapse.
@@ -347,6 +349,15 @@ function refreshEdgeVisibility(): void {
     const label = isBubbleNode ? nattrs.label : (nattrs.displayLabel || "");
     // Apply the global [ / ] scale factor so all types scale together.
     const baseSize = (nattrs.size ?? 6) * nodeScale;
+    // Magnitude-band filter: hide dots whose impact magnitude is outside
+    // [magMin, magMax]. A node's magnitude comes from the active impact source
+    // (on-demand verdict or the live map); non-impacted nodes count as 0, so any
+    // magMin > 0 declutters them away too.
+    const nodeMag = impactState
+      ? (impactState.byNode.get(id)?.magnitude ?? 0)
+      : (liveImpactState.get(id)?.magnitude ?? 0);
+    const outOfBand = magnitudeFilterActive(filters.magMin, filters.magMax)
+      && !inMagnitudeBand(nodeMag, filters.magMin, filters.magMax);
     if (impactState) {
       const verdict = impactState.byNode.get(id);
       const tint = tintColor(verdict);
@@ -354,7 +365,7 @@ function refreshEdgeVisibility(): void {
       return {
         ...nattrs,
         label: isImpacted ? label : "",
-        hidden: hide || !isImpacted,   // hide non-firing nodes (incl. no_effect)
+        hidden: hide || !isImpacted || outOfBand,   // hide non-firing / out-of-band nodes
         color: tint ?? "#1e2228",
         size: isImpacted ? baseSize * 1.8 : baseSize * 0.45,
         zIndex: isImpacted ? 10 : 0,
@@ -368,10 +379,10 @@ function refreshEdgeVisibility(): void {
     if (liveImpactState.size) {
       const row = liveImpactState.get(id);
       const tint = row ? tintColorForCombined(row) : null;
-      if (tint) return { ...nattrs, label, hidden: hide, color: tint, size: baseSize * 1.4, zIndex: 5 };
-      return { ...nattrs, label, hidden: hide, size: baseSize };
+      if (tint) return { ...nattrs, label, hidden: hide || outOfBand, color: tint, size: baseSize * 1.4, zIndex: 5 };
+      return { ...nattrs, label, hidden: hide || outOfBand, size: baseSize };
     }
-    return { ...nattrs, label, hidden: hide, size: baseSize };
+    return { ...nattrs, label, hidden: hide || outOfBand, size: baseSize };
   });
   renderer.refresh();
 }

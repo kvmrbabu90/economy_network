@@ -104,6 +104,22 @@
           </label>
         </div>
         <div class="filter-section">
+          <div class="filter-title">Impact magnitude</div>
+          <div class="mag-filter">
+            <div class="mag-readout" id="mag-readout">showing all dots</div>
+            <label class="mag-row">
+              <span class="mag-cap">min</span>
+              <input type="range" id="mag-min" min="0" max="1" step="0.05" value="0" aria-label="minimum impact magnitude" />
+              <span class="mag-val" id="mag-min-val">0.00</span>
+            </label>
+            <label class="mag-row">
+              <span class="mag-cap">max</span>
+              <input type="range" id="mag-max" min="0" max="1" step="0.05" value="1" aria-label="maximum impact magnitude" />
+              <span class="mag-val" id="mag-max-val">1.00</span>
+            </label>
+          </div>
+        </div>
+        <div class="filter-section">
           <div class="filter-title">Markets</div>
           <label class="chip market-all-chip">
             <input type="checkbox" id="market-all" checked />

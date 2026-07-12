@@ -48,6 +48,10 @@ export interface FilterState {
   markets: string[] | null;
   /** Hide all edges in both 2D and 3D — a pure-visual declutter toggle. */
   hideEdges: boolean;
+  /** Impact-magnitude band [magMin, magMax] in [0,1]; dots whose combined-impact
+   *  magnitude falls outside are hidden. Default [0, 1] filters nothing. */
+  magMin: number;
+  magMax: number;
 }
 
 export type FilterListener = (state: FilterState) => void;
@@ -61,6 +65,11 @@ export function wireFilters(onChange: FilterListener): FilterState {
   const provisional = document.getElementById("toggle-provisional") as HTMLInputElement | null;
   const inferred    = document.getElementById("toggle-inferred")    as HTMLInputElement | null;
   const hideEdges   = document.getElementById("toggle-hide-edges")  as HTMLInputElement | null;
+  const magMinEl    = document.getElementById("mag-min")            as HTMLInputElement | null;
+  const magMaxEl    = document.getElementById("mag-max")            as HTMLInputElement | null;
+  const magMinVal   = document.getElementById("mag-min-val");
+  const magMaxVal   = document.getElementById("mag-max-val");
+  const magReadout  = document.getElementById("mag-readout");
   const marketAll   = document.getElementById("market-all")         as HTMLInputElement | null;
   const marketCbs   = Array.from(
     document.querySelectorAll<HTMLInputElement>(".market-cb"),
@@ -117,6 +126,8 @@ export function wireFilters(onChange: FilterListener): FilterState {
       includeInferred:    inferred?.checked    ?? false,
       markets,
       hideEdges: hideEdges?.checked ?? false,
+      magMin: magMinEl ? parseFloat(magMinEl.value) : 0,
+      magMax: magMaxEl ? parseFloat(magMaxEl.value) : 1,
     };
   }
 
@@ -125,6 +136,34 @@ export function wireFilters(onChange: FilterListener): FilterState {
   provisional?.addEventListener("change", fire);
   inferred?.addEventListener("change", fire);
   hideEdges?.addEventListener("change", fire);
+
+  // ---- Impact-magnitude band sliders ----
+  // Keep min <= max, update the readout live on every drag tick, but DEBOUNCE the
+  // actual re-render (the globe rebuild is heavy) so dragging stays smooth.
+  function refreshMagLabels() {
+    const lo = magMinEl ? parseFloat(magMinEl.value) : 0;
+    const hi = magMaxEl ? parseFloat(magMaxEl.value) : 1;
+    if (magMinVal) magMinVal.textContent = lo.toFixed(2);
+    if (magMaxVal) magMaxVal.textContent = hi.toFixed(2);
+    if (magReadout) magReadout.textContent =
+      lo <= 0 && hi >= 1 ? "showing all dots" : `showing ${lo.toFixed(2)} – ${hi.toFixed(2)}`;
+  }
+  let magTimer: ReturnType<typeof setTimeout> | undefined;
+  function afterMagChange() {
+    refreshMagLabels();
+    clearTimeout(magTimer);
+    magTimer = setTimeout(() => onChange(readState()), 90);   // debounce the re-render
+  }
+  magMinEl?.addEventListener("input", () => {
+    // dragging min past max pushes max up to meet it (thumbs never cross)
+    if (magMaxEl && parseFloat(magMinEl.value) > parseFloat(magMaxEl.value)) magMaxEl.value = magMinEl.value;
+    afterMagChange();
+  });
+  magMaxEl?.addEventListener("input", () => {
+    if (magMinEl && parseFloat(magMaxEl.value) < parseFloat(magMinEl.value)) magMinEl.value = magMaxEl.value;
+    afterMagChange();
+  });
+  refreshMagLabels();
 
   return readState();
 }
