@@ -34,6 +34,10 @@ NON_NEWS = [
     "Transforming Computer System Validation In The Life Sciences Industry",
     "The Future of AI in Enterprise Software",
     "A Guide to Building a Dividend Portfolio",
+    # price-move / market-reaction after-effects with no material cause named
+    "IT Stocks Rally: Infosys, LTM, Tech Mahindra Shares Jump Over 4% After TCS Q1 Meets Estimates",
+    "Micron stock falls 6% despite strong quarter",
+    "Nvidia shares climb 3% in early trading",
 ]
 
 # --- must NOT be dropped: a hard material event is named (defer to LLM, don't blind-drop)
@@ -60,6 +64,9 @@ MATERIAL_OR_DEFER = [
     "American International Group (AIG) Could Be 8% Undervalued Following Executive Appointments",  # leadership change
     "Argus raises Stryker stock price target on cyberattack recovery",              # cyberattack incident
     "Labor dispute threatens the future of geothermal power and lithium extraction",  # labor dispute, not a "future of" puff piece
+    # price-moves that DO name a material cause must defer, not blind-drop:
+    "EasyJet shares soar 10% on Castlelake's $7.3B takeover bid for budget airline",  # move + $-takeover
+    "TCS Q1 results 2026: Net profit rises to Rs 13,349 cr, revenue rises 14%",       # fundamental (revenue), not a share-price move
 ]
 
 

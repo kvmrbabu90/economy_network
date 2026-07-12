@@ -899,10 +899,24 @@ _MATERIAL_EARNINGS_RE = re.compile(
     r"\b(dropp\w*|cancel\w*|scrap\w*|abandon\w*|shelv\w*)\b[^.]{0,30}\b(project|plant|plan|deal|facility|program)\b", re.I)
 
 
+# Event CAUSES that frequently appear as the reason behind a price move
+# ("shares fall 9% AFTER trial fails", "jumps 13% in Wall Street DEBUT", "fall 6% on
+# BATCH concerns, SUPPLY DELAY"). Without these the price-move rule would false-drop
+# real news wrapped as a market reaction. Deferring (not force-keeping) is safe.
+_MATERIAL_EVENT_RE = re.compile(
+    r"\btrial\w*|\bphase\s?[123]\b|\bclinical\b|\bdisappoint\w*|\bfail\w*|"                 # clinical / trial
+    r"\bdebut\w*|\bgoes public\b|\blisting\b|\bstock market debut\b|"                       # IPO / listing
+    r"\bshortage\w*|\bsupply (delay|disrupt\w*|constraint|chain)|\bbatch\b|\brecall\w*|"    # supply / ops / quality
+    r"\b(plant|factory|refinery|warehouse)\s+(fire|explosion|blast)\b|\bexplosion\b|"       # physical incidents
+    r"\bnew\b[^.]{0,20}\b(plant|factory|facility|product|business|partnership|plan|drug|chip|model|line)\b|"  # new build / business line
+    r"\bopens?\b[^.]{0,12}\b(plant|factory|facility|store|office)\b", re.I)
+
+
 def _has_material_trigger(headline: str) -> bool:
     return bool(_MATERIAL_MONEY_RE.search(headline)
                 or _MATERIAL_WORDS_RE.search(headline)
-                or _MATERIAL_EARNINGS_RE.search(headline))
+                or _MATERIAL_EARNINGS_RE.search(headline)
+                or _MATERIAL_EVENT_RE.search(headline))
 
 # Headline shapes that are non-news UNLESS a material trigger is present.
 _NON_NEWS_RE = re.compile(
@@ -923,6 +937,14 @@ _NON_NEWS_RE = re.compile(
     r"\b(outperform|underperform|overweight|underweight|neutral|hold|buy|sell)\s+rating\b|"
     r"record date|ex[- ]?dividend|payout (history|schedule|date)|dividend (announcement|amount|history|payout|record|schedule|time today|date and)|"
     r"(results|earnings|q[1-4]|quarterly)\s+(preview|to watch)|preview:?\s+what|"
+    # price-move / market-reaction "after-effect" — SHARES/STOCK + a move verb + a %%.
+    # These report that the market already reacted, not a forward business event. The
+    # material override keeps the ones that name a real cause ("shares soar on $7B
+    # takeover"); a bare move ("shares jump 4% after Q1 meets estimates") is dropped.
+    # Scoped to shares/stock so fundamentals like "revenue rises 14%" are NOT matched.
+    r"\b(shares?|stock|stocks|share price|shrs?)\b[^.]{0,30}\b(jump|rall|surg|soar|spik|climb|"
+    r"ris|ros|gain|slip|slump|tumbl|fell|fall|drop|plung|sank|sink|slid|slide|dip|skyrocket|"
+    r"plummet|jumps|higher|lower|\bup\b|\bdown\b)\w*\b[^.]{0,15}\d+(\.\d+)?\s?%|"
     # how-to guides + thought-leadership / educational content — not an event
     r"\bhow to (protect|invest|choose|build|understand|use|start|read|trade|save|pick|find|avoid|make|prepare|navigate)\b|"
     r"\btransforming\b[^.]{0,60}\b(industry|sector|landscape|space|market)\b|^\s*(the )?future of\b|\ba guide to\b|"
