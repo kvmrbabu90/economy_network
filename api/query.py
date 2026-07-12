@@ -288,10 +288,20 @@ def get_node_edges(
     #   * stored supplies with source=N -> N appears as TARGET of derived
     #     customer_of edges ("<the customer> is a customer of N").
     if "customer_of" in requested:
+        # Exclude supplies edges that touch a Region market-bucket. A company gets a
+        # `supplies` edge to its Region (company --supplies--> region:us-consumer) purely
+        # for impact aggregation — it is NOT a real supply-chain link. Reversing it would
+        # synthesize a nonsensical `region customer_of company` edge (a market bucket
+        # isn't a customer). customer_of is still derived from supplies only (invariant
+        # #2) and Region nodes are untouched (invariant #10) — we just don't derive a
+        # customer relationship from an aggregation edge. Region ids are always the
+        # target in practice; exclude either endpoint for robustness.
         rows = conn.execute(
             f"""
             SELECT * FROM edges
             WHERE type = 'supplies' AND (source = ? OR target = ?) {below_clause}
+              AND target NOT IN (SELECT id FROM nodes WHERE type = 'Region')
+              AND source NOT IN (SELECT id FROM nodes WHERE type = 'Region')
             """,
             (node_id, node_id),
         ).fetchall()
