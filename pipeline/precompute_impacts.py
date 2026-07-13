@@ -34,8 +34,9 @@ BATCH_MAX_HOPS = int(os.environ.get("PRECOMPUTE_MAX_HOPS", "2"))
 # best match the LLM reference's direction axis); 0 = no cap (full GKG org set).
 PRECOMPUTE_SEED_CAP = int(os.environ.get("PRECOMPUTE_SEED_CAP", "1"))
 # Augment the trace context with the article-enrichment capsule (events.enriched_context).
-# Off by default — the enrichment stage is proven via A/B before it drives live cycles.
-ENRICH_ENABLED = os.environ.get("ENRICH_ENABLED", "0") == "1"
+# On by default now that the A/B measured a real, never-harmful lift (+7pts, 2 recovered /
+# 0 broke on a clean sample). ENRICH_ENABLED=0 restores headline+gkg-only.
+ENRICH_ENABLED = os.environ.get("ENRICH_ENABLED", "1") == "1"
 
 
 def _known_seed_ids(ev: dict) -> Optional[list[str]]:

@@ -17,10 +17,12 @@ def _event(conn, eid, published_at):
 
 
 def test_nets_positive_and_negative_with_mixed_flag(tmp_path):
+    # hop 0 (direct news) so the propagated-magnitude damping does not apply — this test
+    # is about netting + the mixed flag, not spillover attenuation.
     conn = _db(tmp_path)
     _event(conn, "e1", "2026-06-17"); _event(conn, "e2", "2026-06-17")
-    store.write_event_impacts(conn, "e1", [{"node_id": "cik:9", "direction": "positive", "magnitude": 0.8, "hop": 1}])
-    store.write_event_impacts(conn, "e2", [{"node_id": "cik:9", "direction": "negative", "magnitude": 0.6, "hop": 1}])
+    store.write_event_impacts(conn, "e1", [{"node_id": "cik:9", "direction": "positive", "magnitude": 0.8, "hop": 0}])
+    store.write_event_impacts(conn, "e2", [{"node_id": "cik:9", "direction": "negative", "magnitude": 0.6, "hop": 0}])
     agg.aggregate(conn, today=date(2026, 6, 17))
     import math
     r = conn.execute("SELECT * FROM node_impact WHERE node_id='cik:9'").fetchone()
@@ -186,8 +188,8 @@ def test_magnitude_clamped_to_unit_range(tmp_path):
     import math
     conn = _db(tmp_path)
     _event(conn, "e1", "2026-06-17")
-    store.write_event_impacts(conn, "e1", [{"node_id": "c", "direction": "positive", "magnitude": 5.0, "hop": 1}])
-    agg.aggregate(conn, today=date(2026, 6, 17))        # same-day weight = 1.0
+    store.write_event_impacts(conn, "e1", [{"node_id": "c", "direction": "positive", "magnitude": 5.0, "hop": 0}])
+    agg.aggregate(conn, today=date(2026, 6, 17))        # same-day weight = 1.0; hop 0 = no damping
     r = conn.execute("SELECT * FROM node_impact WHERE node_id='c'").fetchone()
     assert r["direction"] == "positive"
     assert abs(r["magnitude"] - math.tanh(1.0)) < 1e-3  # net 1.0 (5.0 per-event clamped) → tanh(1.0)
@@ -257,7 +259,7 @@ def test_legacy_signed_negative_magnitude_contributes_weight_not_zeroed(tmp_path
     # Insert a raw row bypassing write_event_impacts' abs-clamp (simulates a legacy row).
     conn.execute(
         "INSERT INTO event_impacts (event_id, node_id, direction, magnitude, hop, reasoning) "
-        "VALUES (?,?,?,?,?,?)", ("e1", "cik:neg", "negative", -0.30, 1, None))
+        "VALUES (?,?,?,?,?,?)", ("e1", "cik:neg", "negative", -0.30, 0, None))   # hop 0 = direct, no damping
     conn.commit()
     agg.aggregate(conn, today=date(2026, 6, 17))
     r = conn.execute("SELECT direction, magnitude FROM node_impact WHERE node_id='cik:neg'").fetchone()

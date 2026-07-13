@@ -21,9 +21,19 @@ log = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = store.default_db_path()
 
+# Article enrichment runs between ingest and precompute (routed + budgeted, so cost is
+# bounded). On by default now that the A/B measured a real, never-harmful lift; it also
+# self-bounds and degrades to headline+gkg, so it can't block a cycle. ENRICH_ENABLED=0 skips it.
+ENRICH_ENABLED = os.environ.get("ENRICH_ENABLED", "1") == "1"
+
 
 def _run_ingest(db_path) -> dict:
     return ingest_news.run_ingest(db_path=db_path)          # P1 entrypoint: run_ingest(db_path=DB_PATH)
+
+
+def _run_enrich(db_path) -> dict:
+    from pipeline import enrich
+    return enrich.run_enrich(db_path)
 
 
 def _run_precompute(db_path, provider) -> dict:
@@ -63,6 +73,8 @@ def run_cycle(db_path=DB_PATH, *, provider: Optional[str] = None) -> dict:
     t0 = time.time()
     summary: dict = {"ok": True}
     _stage("ingest", lambda: _run_ingest(db_path), summary)
+    if ENRICH_ENABLED:
+        _stage("enrich", lambda: _run_enrich(db_path), summary)   # routed + budgeted; degrades safely
     _stage("precompute", lambda: _run_precompute(db_path, provider), summary)
     _stage("aggregate", lambda: _run_aggregate(db_path), summary)
     # Bound table growth: drop events (and their impacts) older than the aggregation

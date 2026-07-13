@@ -33,8 +33,14 @@ from api import impact as _impact
 
 log = logging.getLogger(__name__)
 
-ENRICH_WALLCLOCK_S = float(os.environ.get("ENRICH_WALLCLOCK_S", "900"))
+ENRICH_WALLCLOCK_S = float(os.environ.get("ENRICH_WALLCLOCK_S", "600"))
 ENRICH_LLM_PROVIDER = os.environ.get("ENRICH_LLM_PROVIDER", "claude")   # claude | ollama
+ENRICH_MAX_EVENTS = int(os.environ.get("ENRICH_MAX_EVENTS", "25"))      # per-cycle fetch/LLM budget
+# ROUTER: the A/B measured that enrichment earns its tokens on AMBIGUOUS headlines
+# (Libya oil "13-year high", "Eversource hike" — no clear material trigger) and adds
+# nothing on headlines that already name a hard event ("$14.5B deal"). So by default we
+# enrich only ambiguous headlines. ENRICH_AMBIGUOUS_ONLY=0 enriches everything (for A/B).
+ENRICH_AMBIGUOUS_ONLY = os.environ.get("ENRICH_AMBIGUOUS_ONLY", "1") != "0"
 ENRICH_VERSION = 1
 _MAX_REDUCED_CHARS = 4000   # cap what reaches the LLM (already reduced, this is belt-and-braces)
 
@@ -127,14 +133,43 @@ def _seed_names(conn, ev: dict) -> list[str]:
     return out
 
 
-def enrich(conn, *, limit: int = 40, provider: str = ENRICH_LLM_PROVIDER,
-           wallclock_s: float = ENRICH_WALLCLOCK_S) -> dict:
-    """Enrich up to `limit` un-enriched events that have a real URL. Returns a summary."""
+def _seed_reach(conn, seed_node_id: Optional[str]) -> int:
+    """Cheap 'value' proxy: the seed node's degree (above-threshold edges). A corrected
+    verdict on a high-degree node propagates to more of the map, so the enrichment budget
+    is spent where it moves the most."""
+    if not seed_node_id:
+        return 0
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE (source = ? OR target = ?) AND below_threshold = 0",
+            (seed_node_id, seed_node_id),
+        ).fetchone()[0]
+    except Exception:
+        return 0
+
+
+def _select_candidates(conn, limit: int, *, queued_only: bool) -> list[dict]:
+    """The router. Un-enriched events with a real URL, keeping only AMBIGUOUS headlines
+    (no material trigger — where the capsule earns its tokens), ordered by seed reach,
+    capped at `limit`. queued_only restricts to events precompute will actually trace."""
+    from pipeline.ingest_news import _has_material_trigger
+    status = "AND status = 'queued'" if queued_only else ""
     rows = conn.execute(
-        "SELECT id, headline, url, seed_entity, seed_ids FROM events "
-        "WHERE (enrich_status IS NULL OR enrich_status = 'pending') AND url LIKE 'http%' "
-        "ORDER BY ingested_at DESC LIMIT ?", (limit,),
+        f"SELECT id, headline, url, seed_entity, seed_ids, seed_node_id FROM events "
+        f"WHERE (enrich_status IS NULL OR enrich_status = 'pending') AND url LIKE 'http%' {status} "
+        f"ORDER BY ingested_at DESC",
     ).fetchall()
+    cands = [dict(r) for r in rows]
+    if ENRICH_AMBIGUOUS_ONLY:
+        cands = [c for c in cands if not _has_material_trigger(c.get("headline") or "")]
+    cands.sort(key=lambda c: -_seed_reach(conn, c.get("seed_node_id")))   # high reach first
+    return cands[:limit]
+
+
+def enrich(conn, *, limit: int = ENRICH_MAX_EVENTS, provider: str = ENRICH_LLM_PROVIDER,
+           wallclock_s: float = ENRICH_WALLCLOCK_S, queued_only: bool = False) -> dict:
+    """Enrich the router-selected candidate set. Returns a summary."""
+    rows = _select_candidates(conn, limit, queued_only=queued_only)
     deadline = time.monotonic() + wallclock_s
     summary = {"seen": 0, "done": 0, "no_content": 0, "skipped": 0, "failed": 0, "fetch_fail": 0}
     for r in rows:
@@ -172,6 +207,19 @@ def enrich(conn, *, limit: int = 40, provider: str = ENRICH_LLM_PROVIDER,
             store.set_event_enrichment(conn, ev["id"], enriched_context=None,
                                        status="skipped", version=ENRICH_VERSION)
     return summary
+
+
+def run_enrich(db_path=None) -> dict:
+    """run_cycle entrypoint: enrich the router-selected QUEUED events (the ambiguous,
+    high-reach ones precompute will trace this cycle), bounded by ENRICH_MAX_EVENTS +
+    wallclock. Self-contained connection so it slots as a stage; never raises out."""
+    conn = store.connect(db_path or store.default_db_path())
+    store.init_db(conn)
+    conn.row_factory = __import__("sqlite3").Row
+    try:
+        return enrich(conn, queued_only=True)
+    finally:
+        conn.close()
 
 
 def main() -> int:
