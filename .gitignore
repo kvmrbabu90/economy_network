@@ -48,3 +48,5 @@ logs/
 # Local scratch — ad-hoc debug scripts and impact/test dumps
 check_nio.py
 *_test.json
+# A/B harness local LLM-response cache (machine-specific, not shared)
+scripts/.ab_cache.json
