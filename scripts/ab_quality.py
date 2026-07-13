@@ -234,12 +234,25 @@ def measure_enrich(conn, n: int) -> dict:
     oracle takes a stance (positive/negative/mixed). LLM calls are cached (repeatable)."""
     from pipeline import article as _article   # local: keeps bs4 import off the hot path
 
-    rows = conn.execute(
+    # Diverse-by-construction: one event per STORY (story_sig collapses near-duplicate
+    # cross-source headlines, e.g. the "US strikes Iran" cluster) AND one per SEED
+    # company, so no single cluster can dominate the sample and skew the result.
+    allrows = conn.execute(
         "SELECT id, headline, seed_entity, seed_node_id, seed_ids, gkg_context, "
-        "enriched_context, url FROM events "
+        "enriched_context, url, story_sig FROM events "
         "WHERE enrich_status = 'done' AND enriched_context IS NOT NULL "
-        "AND seed_node_id IS NOT NULL AND url LIKE 'http%' ORDER BY id LIMIT ?", (n,),
+        "AND seed_node_id IS NOT NULL AND url LIKE 'http%' ORDER BY id",
     ).fetchall()
+    seen_story: set = set()
+    seen_seed: set = set()
+    rows = []
+    for r in allrows:
+        sig = r["story_sig"] or r["id"]
+        if sig in seen_story or r["seed_node_id"] in seen_seed:
+            continue
+        seen_story.add(sig); seen_seed.add(r["seed_node_id"]); rows.append(r)
+        if len(rows) >= n:
+            break
 
     def _seed_dir(headline, seed, known, context):
         res = impact_mod.run_impact(headline, conn=conn, max_hops=1, refine=False,
