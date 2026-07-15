@@ -117,6 +117,26 @@ _warmup_lock = threading.Lock()   # prevents duplicate warmup threads within thi
 
 
 @app.on_event("startup")
+def _migrate_db_on_boot() -> None:
+    """Run schema migrations against the served DB on API boot.
+
+    init_db is idempotent — a no-op on an already-current DB — so this is cheap on every
+    restart, but it heals a pre-existing DB whose schema drifted from the code (e.g. a
+    v1.0.0 pre-built econgraph.db that predates the edges.source_tier column). Without it
+    the API only ever migrates when a pipeline stage happens to run, so a read-only API user
+    querying an old DB hits `no such column: source_tier` in _neighbors(). Never crash boot
+    on a migration hiccup — a genuinely broken DB will surface on the first query instead."""
+    try:
+        conn = connect(_DB_PATH)
+        try:
+            store.init_db(conn)
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("startup: on-boot DB migration failed: %s", exc)
+
+
+@app.on_event("startup")
 def _warmup_news_cache() -> None:
     """Pre-warm the daily headlines cache in a background thread.
 

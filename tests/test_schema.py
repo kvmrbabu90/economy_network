@@ -25,6 +25,52 @@ from schema import (
     upsert_node,
 )
 
+# --- edges-table drift migration -------------------------------------------
+# The edges table gained weight / supply_geography / source_tier AFTER v1.0.0, but
+# those columns lived only in the CREATE TABLE block — no ALTER migration back-filled
+# them onto an existing DB. A v1.0.0 pre-built econgraph.db therefore lacked source_tier,
+# and api/impact.py:_neighbors() (which SELECTs it) failed with
+# `sqlite3.OperationalError: no such column: source_tier`. init_db must upgrade in place.
+
+_V1_EDGES_DDL = """
+CREATE TABLE edges (
+    id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL, type TEXT NOT NULL,
+    directed INTEGER NOT NULL DEFAULT 1, confidence REAL NOT NULL,
+    prov_filing TEXT NOT NULL, prov_url TEXT NOT NULL, prov_snippet TEXT NOT NULL,
+    prov_extracted_by TEXT NOT NULL,
+    additional_provenance TEXT NOT NULL DEFAULT '[]',
+    below_threshold INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+
+def test_init_db_migrates_drifted_edge_columns(tmp_path):
+    """Regression: a v1.0.0-shaped edges table (no weight/supply_geography/source_tier)
+    is upgraded in place by init_db, so _neighbors()'s source_tier SELECT stops failing."""
+    db = tmp_path / "v1.db"
+    c = connect(db)
+    c.executescript(_V1_EDGES_DDL)
+    c.execute(
+        "INSERT INTO edges (id, source, target, type, confidence, prov_filing, "
+        "prov_url, prov_snippet, prov_extracted_by) VALUES "
+        "('e1','cik:0000080424','cik:0000909832','supplies',0.8,'','','x','rule')"
+    )
+    c.commit()
+    assert "source_tier" not in {r[1] for r in c.execute("PRAGMA table_info(edges)")}
+
+    init_db(c)  # must add the missing columns without raising
+
+    cols = {r[1] for r in c.execute("PRAGMA table_info(edges)")}
+    for col in ("weight", "supply_geography", "source_tier"):
+        assert col in cols, f"{col} was not migrated onto the existing edges table"
+    # Existing row survives; drifted columns default to NULL; the _neighbors()-style
+    # SELECT that names source_tier now succeeds.
+    row = c.execute(
+        "SELECT weight, supply_geography, source_tier FROM edges WHERE id='e1'"
+    ).fetchone()
+    assert row["source_tier"] is None and row["weight"] is None
+    c.close()
+
 
 # --- PRD §4 example records -------------------------------------------------
 

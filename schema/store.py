@@ -216,6 +216,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     _migrate_llm_usage(conn)
     _migrate_node_impact_driver_count(conn)
     _migrate_enrich_columns(conn)
+    _migrate_edge_columns(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +342,35 @@ def set_event_enrichment(conn: sqlite3.Connection, event_id: str, *,
         "WHERE id = ?",
         (enriched_context, status, tier, version, event_id),
     )
+    conn.commit()
+
+
+def _migrate_edge_columns(conn: sqlite3.Connection) -> None:
+    """Add the post-v1.0.0 edges columns to a pre-existing DB (idempotent, forward-only).
+
+    weight / supply_geography / source_tier were added to the edges DDL after the v1.0.0
+    release but never got an ALTER path, so a v1.0.0 pre-built econgraph.db lacked them and
+    api/impact.py:_neighbors() failed with `no such column: source_tier`. Fresh DBs already
+    have all three from the DDL, so this is a no-op for them. Existing rows get NULL (the
+    column defaults) until the weight/confidence pipeline repopulates them.
+
+    NOTE: only columns with NO dependent index in the DDL are listed here — the DDL (run
+    first in init_db) already creates idx_edges_below_threshold, so a DB old enough to lack
+    below_threshold would fail there, before this migration; that predates v1.0.0 and is out
+    of scope. The source_tier CHECK is carried verbatim so a migrated DB matches a fresh one."""
+    if not conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='edges'"
+    ).fetchone():
+        return
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(edges)").fetchall()}
+    for name, decl in (
+        ("weight", "REAL"),
+        ("supply_geography", "TEXT"),
+        ("source_tier", "TEXT CHECK(source_tier IN "
+                        "('sec_explicit','sec_inferred','manual','wikidata','wikipedia'))"),
+    ):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE edges ADD COLUMN {name} {decl}")
     conn.commit()
 
 

@@ -103,6 +103,32 @@ def test_impact_endpoints_survive_pre_p4_db(tmp_path):
     assert client.get("/node/cik:1/impact").json()["impact"] is None    # 200, not 500
 
 
+def test_api_boot_migrates_drifted_edges_db(tmp_path, monkeypatch):
+    """A v1.0.0 pre-built DB (edges without source_tier) self-heals when the API boots,
+    so _neighbors()'s source_tier SELECT stops raising `no such column`. Regression for the
+    report that tracing a headline failed on the v1.0.0 econgraph.db against newer code."""
+    db = tmp_path / "v1.db"
+    conn = store.connect(db)
+    conn.executescript(
+        "CREATE TABLE edges (id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL, "
+        "type TEXT NOT NULL, directed INTEGER NOT NULL DEFAULT 1, confidence REAL NOT NULL, "
+        "prov_filing TEXT NOT NULL, prov_url TEXT NOT NULL, prov_snippet TEXT NOT NULL, "
+        "prov_extracted_by TEXT NOT NULL, additional_provenance TEXT NOT NULL DEFAULT '[]', "
+        "below_threshold INTEGER NOT NULL DEFAULT 0);"
+    )
+    conn.commit(); conn.close()
+    assert "source_tier" not in {r[1] for r in store.connect(db).execute("PRAGMA table_info(edges)")}
+
+    api_main.set_db_path(db)
+    # Keep the news-cache warmup startup handler from doing network I/O during the test.
+    monkeypatch.setattr(api_main.news_mod, "get_daily_headlines", lambda *a, **k: None)
+    with TestClient(api_main.app):        # entering the context fires @app.on_event("startup")
+        pass
+
+    cols = {r[1] for r in store.connect(db).execute("PRAGMA table_info(edges)")}
+    assert {"weight", "supply_geography", "source_tier"} <= cols
+
+
 def test_health_degrades_without_node_impact_table(tmp_path):
     db = _seed(tmp_path)
     conn = store.connect(db)
