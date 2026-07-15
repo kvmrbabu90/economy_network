@@ -102,14 +102,29 @@ def _summarize(headline: str, reduced_text: str, provider: str) -> Optional[Arti
             return None
 
 
+def _token_present(term: str, text: str) -> bool:
+    """True if `term` occurs in `text` (case-insensitive) delimited by non-alphanumerics (or
+    the string edges) — a whole-token match. A plain substring test false-grounds short
+    orgs/tickers: "ge" matches inside "large", "gm" inside "augment". The lookarounds require
+    the chars ADJACENT to the term to be non-alphanumeric, which also tolerates names with
+    internal punctuation ("s&p", "at&t") better than \\b."""
+    term = term.strip().lower()
+    if not term:
+        return False
+    return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text.lower()) is not None
+
+
 def _ground(cap: ArticleCapsule, reduced_text: str) -> ArticleCapsule:
-    """Invariant #4: keep only what the text literally supports. Drop any `affected`
-    org not present in the text; drop `money` whose number doesn't appear in the text."""
+    """Invariant #4: keep only what the text literally supports. Drop any `affected` org
+    not present in the text as a whole token; drop `money` whose number doesn't appear in
+    the text as a STANDALONE figure ("12" must not ground against "2012" / "$120M")."""
     tl = reduced_text.lower()
-    cap.affected = [a for a in cap.affected if a.lower() in tl]
+    cap.affected = [a for a in cap.affected if _token_present(a, tl)]
     if cap.money:
         num = re.search(r"\d+(?:[.,]\d+)?", cap.money)
-        if not num or num.group().replace(",", "") not in reduced_text.replace(",", ""):
+        raw = num.group().replace(",", "") if num else ""
+        # (?<!\d)…(?!\d): the number must not be embedded in a longer number.
+        if not raw or not re.search(rf"(?<!\d){re.escape(raw)}(?!\d)", reduced_text.replace(",", "")):
             cap.money = None
     return cap
 

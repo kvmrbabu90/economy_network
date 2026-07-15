@@ -909,7 +909,17 @@ _MATERIAL_EVENT_RE = re.compile(
     r"\bshortage\w*|\bsupply (delay|disrupt\w*|constraint|chain)|\bbatch\b|\brecall\w*|"    # supply / ops / quality
     r"\b(plant|factory|refinery|warehouse)\s+(fire|explosion|blast)\b|\bexplosion\b|"       # physical incidents
     r"\bnew\b[^.]{0,20}\b(plant|factory|facility|product|business|partnership|plan|drug|chip|model|line)\b|"  # new build / business line
-    r"\bopens?\b[^.]{0,12}\b(plant|factory|facility|store|office)\b", re.I)
+    r"\bopens?\b[^.]{0,12}\b(plant|factory|facility|store|office)\b|"
+    # Demand / volume business RESULTS that commonly appear as the cause behind a price
+    # move ("stock jumps 7% on record DELIVERIES", "BOOKINGS climb"). Without these the
+    # price-move rule blind-drops real results whose cause noun isn't an earnings subject.
+    # Deferring (not force-keeping) is safe — the LLM gate still judges.
+    r"\b(deliveries|shipments|bookings|backlog|subscribers?|units? sold|"
+    r"same[- ]?store sales|comparable sales|passenger traffic|load factor)\b|"
+    # "demand" only when QUALIFIED by a move/record word — bare "demand" is too broad (it
+    # tags macro commentary like "output hits a high amid steady regional demand").
+    r"\b(record|surging|soaring|booming|plunging|collapsing|slumping|robust|record[- ]high)\s+demand\b|"
+    r"\bdemand\s+(surg\w*|jump\w*|soar\w*|plung\w*|slump\w*|collaps\w*)", re.I)
 
 
 def _has_material_trigger(headline: str) -> bool:

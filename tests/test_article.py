@@ -1,8 +1,54 @@
 """Tests for the deterministic article-enrichment core: reduce_html + ArticleCapsule."""
 from __future__ import annotations
 
+import json
+
+import pytest
+
+from pipeline import article
 from pipeline.article import reduce_html
 from schema.models import ArticleCapsule
+
+
+class _FakeResp:
+    status_code = 200
+    headers = {"Content-Type": "text/html; charset=utf-8"}
+    ok = True
+    text = "<html><body><article><p>fresh Acme content after refetch</p></article></body></html>"
+
+
+def test_fetch_article_refetches_corrupt_cached_body(tmp_path, monkeypatch):
+    """A truncated/corrupt .gz whose meta still says status='ok' must be re-fetched, not
+    returned as (None, 'ok') forever. Regression for the corrupt-cache short-circuit bug."""
+    monkeypatch.setattr(article, "ARTICLE_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(article, "_rate_limit", lambda *_a, **_k: None)   # no sleeps in tests
+    monkeypatch.setattr(article.requests, "get", lambda *a, **k: _FakeResp())
+    url = "https://example.com/news/story"
+    html_path, meta_path = article._paths(url)
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_bytes(b"not-valid-gzip-bytes")                       # corrupt body
+    meta_path.write_text(json.dumps({"status": "ok", "ts": 0}))
+
+    html, status = article.fetch_article(url)
+    assert html is not None and "fresh Acme" in html                    # re-fetched
+    assert status == "ok"                                               # NOT (None, "ok")
+
+
+def test_fetch_article_negative_cache_still_short_circuits(tmp_path, monkeypatch):
+    """The fix must not weaken the negative cache: a remembered 404 still returns without
+    a network call."""
+    monkeypatch.setattr(article, "ARTICLE_CACHE_DIR", tmp_path)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("must not re-fetch a cached 404")
+    monkeypatch.setattr(article.requests, "get", _boom)
+    url = "https://example.com/gone"
+    _, meta_path = article._paths(url)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps({"status": "404", "ts": 0}))
+
+    html, status = article.fetch_article(url)
+    assert html is None and status == "404"
 
 HTML = """
 <html><head><title>t</title><style>.x{color:red}</style></head>

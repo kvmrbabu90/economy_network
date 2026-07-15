@@ -1610,6 +1610,14 @@ async function applyLiveImpactTint(): Promise<void> {
   _liveTintInFlight = true;
   try {
     const resp = await getImpactLive();
+    // A new precompute cycle (changed computed_at) means per-node verdicts may have moved,
+    // so the /node/{id}/impact responses cached on click are now potentially stale. Drop
+    // them so inspectorExtrasFor doesn't paint a stale panel over a freshly re-tinted dot;
+    // the next click re-fetches full drivers, and hovering falls back to the live map box.
+    if (resp.computed_at && resp.computed_at !== _lastLiveComputedAt) {
+      if (_lastLiveComputedAt !== null) _impactRespCache.clear();
+      _lastLiveComputedAt = resp.computed_at;
+    }
     liveImpactState = buildLiveImpactMap(resp.impacts);
     refreshEdgeVisibility();               // reinstalls the reducer, which reads liveImpactState
     // So What? V2 · P5 — push the live map into the 3D renderer too, using the
@@ -1733,6 +1741,10 @@ startStalenessPolling();
  *  via inspectorExtrasFor, so it can never be wiped. */
 type NodeImpactResp = Awaited<ReturnType<typeof getNodeImpact>>;
 const _impactRespCache = new Map<string, NodeImpactResp>();
+// computed_at of the last applied /impact/live snapshot. When a re-poll returns a newer
+// one, _impactRespCache is cleared (applyLiveImpactTint) so cached per-node panels can't go
+// stale relative to the re-tinted map. null until the first snapshot lands.
+let _lastLiveComputedAt: string | null = null;
 
 /** Is the inspector body CURRENTLY showing node `nodeId`? showNode renders the
  *  node id verbatim as the `.subtitle`; an edge panel renders the edge id there

@@ -188,13 +188,24 @@ def fetch_article(url: Optional[str]) -> tuple[Optional[str], str]:
     if not url or not url.startswith(("http://", "https://")):
         return None, "no_url"
     html_path, meta_path = _paths(url)
+    corrupt_body = False
     if html_path.exists():
         try:
             return gzip.decompress(html_path.read_bytes()).decode("utf-8", "replace"), "cached"
         except Exception:
-            pass  # corrupt cache -> refetch
+            # Corrupt / truncated cache body -> drop it and refetch. Without unlinking, the
+            # meta short-circuit below (status "ok") would return (None, "ok") forever and
+            # the URL would be permanently unreadable.
+            corrupt_body = True
+            try:
+                html_path.unlink()
+            except OSError:
+                pass
     meta = _read_meta(meta_path)
-    if meta:
+    # A negative-cache meta suppresses a refetch — but ONLY for genuinely negative statuses.
+    # A meta of "ok" means "we have a body"; if we reached here the body is missing or was
+    # just found corrupt, so an "ok" meta must NOT short-circuit — fall through and refetch.
+    if meta and not corrupt_body and meta.get("status") not in {"ok", "cached"}:
         transient = meta.get("status") in {"timeout", "error", "403"}
         if not transient or (time.time() - meta.get("ts", 0)) < ARTICLE_NEG_TTL_S:
             return None, meta.get("status", "error")

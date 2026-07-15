@@ -67,6 +67,14 @@ MATERIAL_OR_DEFER = [
     # price-moves that DO name a material cause must defer, not blind-drop:
     "EasyJet shares soar 10% on Castlelake's $7.3B takeover bid for budget airline",  # move + $-takeover
     "TCS Q1 results 2026: Net profit rises to Rs 13,349 cr, revenue rises 14%",       # fundamental (revenue), not a share-price move
+    # B1 regression (code-review finder): a price move whose CAUSE is a demand/volume
+    # RESULT (not one of the earnings SUBJECT nouns) was blind-dropped before the LLM
+    # gate ever saw it. These must defer, not drop:
+    "Tesla stock jumps 7% on record Q2 deliveries",
+    "Nvidia shares soar 12% on record demand",
+    "Ford stock rises 5% as truck bookings climb",
+    "Boeing shares gain 4% on growing 737 backlog",
+    "Netflix stock climbs 6% on subscriber additions",
 ]
 
 

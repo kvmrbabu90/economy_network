@@ -30,11 +30,13 @@ TOP_EVENTS_PER_NODE = int(os.environ.get("TOP_EVENTS_PER_NODE", "5"))
 # ratio the node reads as its dominant direction (green/red). Flagging any minority
 # signal as mixed painted ~77% of the map amber, incl. strongly-net nodes.
 IMPACT_MIXED_SIGNAL_RATIO = float(os.environ.get("IMPACT_MIXED_SIGNAL_RATIO", "0.6"))
-# Below this combined magnitude a node is not tinted on the map (mirror of
-# web/src/impact.ts IMPACT_TINT_FLOOR). Sub-floor non-mixed rows are dropped from
-# node_impact entirely so the map tint, /impact/live, and the /node/{id}/impact
-# panel all agree — a node the map won't tint must not present a combined-impact box.
-IMPACT_TINT_FLOOR = float(os.environ.get("IMPACT_TINT_FLOOR", "0.05"))
+# Below this combined magnitude a node is not tinted on the map. This MUST equal
+# web/src/impact.ts IMPACT_TINT_FLOOR: sub-floor non-mixed rows are dropped from node_impact
+# so the map tint, /impact/live, and the /node/{id}/impact panel all agree — a node the map
+# won't tint must not present a combined-impact box. NOT env-overridable on purpose: the TS
+# floor is a hardcoded constant, so an env override here would silently desync the two sides
+# and re-create the untinted-node-with-populated-panel bug. Change both constants together.
+IMPACT_TINT_FLOOR = 0.05
 # Multiplier applied to a verdict's magnitude when it has NO direct (hop-0) news — i.e.
 # it's entirely propagated sector spillover. Keeps such nodes visible but SOFTER than a
 # company's own news. 1.0 = disabled. Chosen by the sweep in this commit's message.
