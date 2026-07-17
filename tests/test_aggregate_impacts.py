@@ -24,11 +24,12 @@ def test_nets_positive_and_negative_with_mixed_flag(tmp_path):
     store.write_event_impacts(conn, "e1", [{"node_id": "cik:9", "direction": "positive", "magnitude": 0.8, "hop": 0}])
     store.write_event_impacts(conn, "e2", [{"node_id": "cik:9", "direction": "negative", "magnitude": 0.6, "hop": 0}])
     agg.aggregate(conn, today=date(2026, 6, 17))
-    import math
     r = conn.execute("SELECT * FROM node_impact WHERE node_id='cik:9'").fetchone()
-    assert r["direction"] == "positive"                  # 0.8 > 0.6
-    assert abs(r["magnitude"] - math.tanh(0.2)) < 1e-3   # tanh(|0.8 - 0.6|); magnitude is round(,3)
-    assert r["mixed_signals"] == 1 and r["event_count"] == 2   # ratio 0.6/0.8 = 0.75 >= 0.6 → mixed
+    assert r["direction"] == "positive"                  # net 0.8 - 0.6 = +0.2 leans positive
+    # MIXED (ratio 0.6/0.8 = 0.75): the consensus discount scales tanh(0.2) by (1-0.75)=0.25 to
+    # ~0.049, which the 0.15 mixed floor then lifts — a contested node reads dim, not near-full.
+    assert abs(r["magnitude"] - 0.15) < 1e-6
+    assert r["mixed_signals"] == 1 and r["event_count"] == 2   # ratio 0.75 >= 0.6 → mixed
 
 
 def test_strong_net_with_minor_opposite_is_not_mixed(tmp_path):
@@ -123,6 +124,30 @@ def test_rebuild_is_deterministic_and_drops_stale_nodes(tmp_path):
     agg.aggregate(conn, today=date(2026, 6, 17))       # rerun
     second = conn.execute("SELECT node_id, direction, magnitude FROM node_impact ORDER BY node_id").fetchall()
     assert [tuple(r) for r in first] == [tuple(r) for r in second]
+
+
+def test_mixed_node_gets_consensus_discount_vs_clean_node(tmp_path):
+    # Same NET lean (pos - neg = 2 → tanh ≈ 0.96), but the CONTESTED node (pos 8 / neg 6,
+    # ratio 0.75) must tint far softer than the CLEAN node (pos 2 / neg 0). Without the
+    # consensus discount both would read ~0.96 — the exact "MIXED but 0.95 magnitude" problem.
+    import math
+    conn = _db(tmp_path)
+    for i in range(8):
+        _event(conn, f"cp{i}", "2026-06-17")
+        store.write_event_impacts(conn, f"cp{i}", [{"node_id": "mix", "direction": "positive", "magnitude": 1.0, "hop": 0}])
+    for i in range(6):
+        _event(conn, f"cn{i}", "2026-06-17")
+        store.write_event_impacts(conn, f"cn{i}", [{"node_id": "mix", "direction": "negative", "magnitude": 1.0, "hop": 0}])
+    for i in range(2):
+        _event(conn, f"kp{i}", "2026-06-17")
+        store.write_event_impacts(conn, f"kp{i}", [{"node_id": "clean", "direction": "positive", "magnitude": 1.0, "hop": 0}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    mix = conn.execute("SELECT * FROM node_impact WHERE node_id='mix'").fetchone()
+    clean = conn.execute("SELECT * FROM node_impact WHERE node_id='clean'").fetchone()
+    assert mix["mixed_signals"] == 1 and clean["mixed_signals"] == 0
+    assert abs(mix["magnitude"] - math.tanh(2.0) * (1 - 0.75)) < 1e-3   # consensus-discounted ≈ 0.24
+    assert clean["magnitude"] > 0.9                                     # clean node undiscounted
+    assert mix["magnitude"] < clean["magnitude"]                       # contested tints softer
 
 
 def test_mixed_signals_magnitude_floored(tmp_path):

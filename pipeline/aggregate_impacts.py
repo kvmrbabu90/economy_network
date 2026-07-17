@@ -41,6 +41,14 @@ IMPACT_TINT_FLOOR = 0.05
 # it's entirely propagated sector spillover. Keeps such nodes visible but SOFTER than a
 # company's own news. 1.0 = disabled. Chosen by the sweep in this commit's message.
 IMPACT_PROPAGATED_DAMP = float(os.environ.get("IMPACT_PROPAGATED_DAMP", "0.7"))
+# Consensus discount for MIXED nodes. magnitude = |tanh(pos-neg)| reflects the NET lean, so a
+# node with heavy signal BOTH ways can read near-max even though it's contested (Nvidia: pos
+# 8.0 / neg 6.2 → net 1.82 → 0.95, yet the minority is 77% of the majority). Scale a mixed
+# node's magnitude by how one-sided it is — factor = 1 - DAMP*(minority/majority) — so a
+# contested node tints SOFTER than a clean one of the same net. DAMP=1 → full consensus
+# discount (a 77%-mixed node keeps 23% of its magnitude); 0 → disabled. The 0.15 mixed floor
+# below still keeps it a visible dim amber rather than dropping it off the map.
+IMPACT_MIXED_DAMP = float(os.environ.get("IMPACT_MIXED_DAMP", "1.0"))
 
 
 def _age_days(row_date: Optional[str], today: date) -> Optional[int]:
@@ -136,6 +144,11 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
         minority, majority = min(pos, neg), max(pos, neg)
         mixed = 1 if (minority > 0 and majority > 0 and magnitude > 0.0
                       and minority >= IMPACT_MIXED_SIGNAL_RATIO * majority) else 0
+        # Consensus discount (see IMPACT_MIXED_DAMP): a mixed node's magnitude reflected the
+        # NET lean and could read near-max while heavily contested. Scale it down by how
+        # balanced the two sides are, BEFORE the 0.15 floor so contested nodes stay a dim amber.
+        if mixed and majority > 0:
+            magnitude *= (1.0 - IMPACT_MIXED_DAMP * (minority / majority))
         if mixed and 0 < magnitude < 0.15:
             magnitude = 0.15
         # top_events shows real drivers only: drop zero-weighted rows (unscored /
