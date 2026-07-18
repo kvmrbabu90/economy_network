@@ -37,10 +37,14 @@ IMPACT_MIXED_SIGNAL_RATIO = float(os.environ.get("IMPACT_MIXED_SIGNAL_RATIO", "0
 # floor is a hardcoded constant, so an env override here would silently desync the two sides
 # and re-create the untinted-node-with-populated-panel bug. Change both constants together.
 IMPACT_TINT_FLOOR = 0.05
-# Multiplier applied to a verdict's magnitude when it has NO direct (hop-0) news — i.e.
-# it's entirely propagated sector spillover. Keeps such nodes visible but SOFTER than a
-# company's own news. 1.0 = disabled. Chosen by the sweep in this commit's message.
-IMPACT_PROPAGATED_DAMP = float(os.environ.get("IMPACT_PROPAGATED_DAMP", "0.7"))
+# Distance decay: a contribution's weight is multiplied by HOP_WEIGHT**hop, so news ABOUT a
+# node (hop 0) counts full, a neighbor's news (hop 1) counts HOP_WEIGHT, a neighbor-of-neighbor
+# (hop 2) HOP_WEIGHT**2. This replaces the old "damp only when direct_count==0" special case
+# with one uniform rule: a company's own news should dominate news about its neighbors.
+# MEASURED (2026-07-17): at 0.5, propagated news over-riding a node's OWN direction dropped
+# from 92/416 nodes to 53, pure-spillover nodes softened (mean 0.28->0.19), and the direction
+# split barely moved (Amgen's competitor-driven NEGATIVE 1.00 -> 0.76). 1.0 = disabled (flat).
+IMPACT_HOP_WEIGHT = float(os.environ.get("IMPACT_HOP_WEIGHT", "0.5"))
 # Consensus discount for MIXED nodes. magnitude = |tanh(pos-neg)| reflects the NET lean, so a
 # node with heavy signal BOTH ways can read near-max even though it's contested (Nvidia: pos
 # 8.0 / neg 6.2 → net 1.82 → 0.95, yet the minority is 77% of the majority). Scale a mixed
@@ -75,7 +79,7 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
     rows = conn.execute(
         """
         SELECT ei.node_id, ei.event_id, ei.direction, ei.magnitude, ei.hop,
-               e.headline, e.published_at, e.ingested_at
+               e.headline, e.published_at, e.ingested_at, e.seed_node_id
         FROM event_impacts ei JOIN events e ON e.id = ei.event_id
         WHERE e.status = 'traced'
           AND date(COALESCE(NULLIF(e.published_at, ''), e.ingested_at)) >= date(?)
@@ -96,19 +100,40 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
         # previously dropped real drivers and could flip a node's net tint. min(1.0, .)
         # still caps out-of-range values.
         mag = min(1.0, abs(float(r["magnitude"] or 0.0)))
-        contrib = w * mag
+        hop = r["hop"] or 0
+        # Distance decay: news about a neighbor counts less than news about the node itself.
+        contrib = w * mag * (IMPACT_HOP_WEIGHT ** hop)
         direction = r["direction"]
-        a = acc.setdefault(r["node_id"], {"pos": 0.0, "neg": 0.0, "count": 0, "events": []})
-        a["count"] += 1
-        signed = 0.0
-        if direction == "positive":
-            a["pos"] += contrib; signed = contrib
-        elif direction == "negative":
-            a["neg"] += contrib; signed = -contrib
-        a["events"].append({"event_id": r["event_id"], "headline": r["headline"],
-                            "direction": direction, "magnitude": round(mag, 3),
-                            "weighted": round(signed, 4), "hop": r["hop"],
-                            "published_at": r["published_at"]})
+        a = acc.setdefault(r["node_id"],
+                           {"pos": 0.0, "neg": 0.0, "count": 0, "events": [], "seen": {}})
+        a["count"] += 1                              # every scanned row (incl. no_effect/dupes)
+        if direction not in ("positive", "negative"):
+            a["events"].append({"event_id": r["event_id"], "headline": r["headline"],
+                                "direction": direction, "magnitude": round(mag, 3),
+                                "weighted": 0.0, "hop": hop, "published_at": r["published_at"]})
+            continue
+        # Same-source dedup: one (source entity, day, direction) is ONE story — collapse the
+        # duplicate press-release copies (e.g. a competitor's FDA approval carried by 4 wires,
+        # each propagating negative to a peer). Keep only the STRONGEST copy so a single event
+        # can't be counted N times. Applies at every hop (incl. a node's own repeated-headline
+        # day). Genuinely distinct same-source same-day same-direction items collapse too — a
+        # conservative anti-amplification tradeoff.
+        day = (r["published_at"] or r["ingested_at"] or "")[:10]
+        key = (r["seed_node_id"], day, direction)
+        prev = a["seen"].get(key)
+        if prev is not None:
+            if contrib <= prev["contrib"]:
+                continue                             # weaker duplicate — drop it
+            # stronger duplicate — retract the previous copy's mass + driver, then re-add below
+            a["pos" if direction == "positive" else "neg"] -= prev["contrib"]
+            a["events"].remove(prev["event"])
+        signed = contrib if direction == "positive" else -contrib
+        a["pos" if direction == "positive" else "neg"] += contrib
+        ev = {"event_id": r["event_id"], "headline": r["headline"], "direction": direction,
+              "magnitude": round(mag, 3), "weighted": round(signed, 4), "hop": hop,
+              "published_at": r["published_at"]}
+        a["events"].append(ev)
+        a["seen"][key] = {"contrib": contrib, "event": ev}
 
     # Full UTC timestamp (with time) so 24 hourly cycles are distinguishable and a
     # stalled pipeline is detectable (a date-only stamp collapses them all to midnight).
@@ -128,15 +153,12 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
         else:
             direction, magnitude = "no_effect", 0.0
         # Contributing drivers + how many are DIRECT (hop 0 — news about this node itself).
+        # direct_count still labels the panel ("propagated — no direct news"); the magnitude
+        # attenuation for spillover now comes from IMPACT_HOP_WEIGHT applied per-contribution
+        # above (a pure-spillover node has only hop>=1 rows, so all its mass is already
+        # down-weighted) — no separate direct_count==0 damp needed.
         contributing = [e for e in a["events"] if e["weighted"] != 0.0]
         direct_count = sum(1 for e in contributing if e.get("hop") == 0)
-        # PROPAGATED DAMPING: a verdict with NO direct news is pure sector spillover — a
-        # node with no story of its own (e.g. HAL tinted 0.90 purely off Boeing/Honeywell
-        # aerospace news). Attenuate its magnitude so spillover tints SOFTER than a
-        # company's own news. Measured: 55% of tinted nodes are purely propagated, 167
-        # of them strong (mag>=0.5). IMPACT_PROPAGATED_DAMP=1.0 disables.
-        if direct_count == 0 and direction in ("positive", "negative"):
-            magnitude *= IMPACT_PROPAGATED_DAMP
         # Only flag MIXED when the signals genuinely conflict: the WEAKER side must be
         # at least IMPACT_MIXED_SIGNAL_RATIO of the stronger. A node that is overwhelmingly
         # one direction (a small opposing event) reads as that direction, not amber. Also

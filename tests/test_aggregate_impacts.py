@@ -10,10 +10,14 @@ def _db(tmp_path):
     return conn
 
 
-def _event(conn, eid, published_at):
+def _event(conn, eid, published_at, seed=None):
+    # Distinct seed per event by default so the same-source dedup (one seed+day+direction =
+    # one story) does NOT collapse events in netting/mixing tests. Pass an explicit `seed` to
+    # exercise the dedup path.
     store.insert_event(conn, {"id": eid, "headline": f"H {eid}", "source": "SEC 8-K",
                               "url": f"u/{eid}", "category": "m&a", "published_at": published_at,
-                              "seed_entity": "E", "seed_node_id": "cik:1", "status": "traced"})
+                              "seed_entity": "E", "seed_node_id": seed or f"cik:{eid}",
+                              "status": "traced"})
 
 
 def test_nets_positive_and_negative_with_mixed_flag(tmp_path):
@@ -231,6 +235,50 @@ def test_mixed_not_set_when_net_is_zero(tmp_path):
     agg.aggregate(conn, today=date(2026, 6, 17))
     r = conn.execute("SELECT * FROM node_impact WHERE node_id='z0'").fetchone()
     assert r["magnitude"] == 0.0 and r["mixed_signals"] == 0
+
+
+def test_hop_weight_direct_news_outweighs_equal_propagated(tmp_path):
+    # A node with ONE direct (hop0) positive and ONE propagated (hop1) negative of EQUAL raw
+    # magnitude reads POSITIVE: the hop-1 contribution is scaled by IMPACT_HOP_WEIGHT (0.5), so
+    # a company's own news dominates a neighbor's. Under the old flat weighting this net-zeroed.
+    import math
+    conn = _db(tmp_path)
+    _event(conn, "d", "2026-06-17"); _event(conn, "p", "2026-06-17")
+    store.write_event_impacts(conn, "d", [{"node_id": "h", "direction": "positive", "magnitude": 0.6, "hop": 0}])
+    store.write_event_impacts(conn, "p", [{"node_id": "h", "direction": "negative", "magnitude": 0.6, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT direction, magnitude FROM node_impact WHERE node_id='h'").fetchone()
+    assert r["direction"] == "positive"                       # 0.6 direct vs 0.6*0.5=0.3 propagated
+    assert abs(r["magnitude"] - math.tanh(0.6 - 0.3)) < 1e-3  # net +0.3
+
+
+def test_same_source_day_direction_deduped(tmp_path):
+    # Four wire copies of ONE story (same seed + day + direction) hitting a peer must count
+    # ONCE (the strongest copy), not 4x — the Novartis-Fabhalta triple-count. All 4 are still
+    # "scanned", but only one is a driver and only its mass enters the net.
+    import math
+    conn = _db(tmp_path)
+    for i, m in enumerate([0.4, 0.3, 0.3, 0.28]):
+        _event(conn, f"dup{i}", "2026-06-17", seed="cik:novartis")
+        store.write_event_impacts(conn, f"dup{i}", [{"node_id": "peer", "direction": "negative", "magnitude": m, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT * FROM node_impact WHERE node_id='peer'").fetchone()
+    assert r["direction"] == "negative"
+    assert abs(r["magnitude"] - math.tanh(0.4 * 0.5)) < 1e-3  # only the 0.4 copy, hop-weighted 0.5
+    assert r["driver_count"] == 1                             # deduped to a single driver
+    assert r["event_count"] == 4                              # but all four were scanned
+
+
+def test_distinct_same_day_sources_not_deduped(tmp_path):
+    # Dedup keys on the SOURCE entity — two DIFFERENT companies' same-day same-direction news
+    # about a peer are distinct stories and both count (guards against over-collapsing).
+    conn = _db(tmp_path)
+    _event(conn, "a", "2026-06-17", seed="cik:aaa"); _event(conn, "b", "2026-06-17", seed="cik:bbb")
+    store.write_event_impacts(conn, "a", [{"node_id": "peer2", "direction": "negative", "magnitude": 0.4, "hop": 1}])
+    store.write_event_impacts(conn, "b", [{"node_id": "peer2", "direction": "negative", "magnitude": 0.4, "hop": 1}])
+    agg.aggregate(conn, today=date(2026, 6, 17))
+    r = conn.execute("SELECT driver_count FROM node_impact WHERE node_id='peer2'").fetchone()
+    assert r["driver_count"] == 2                             # both sources kept
 
 
 def test_computed_at_is_full_utc_timestamp(tmp_path):
