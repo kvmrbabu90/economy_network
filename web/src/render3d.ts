@@ -459,6 +459,40 @@ let _hideEdges = false;
 let _magMin = 0;
 let _magMax = 1;
 
+// --- user-controlled node sizing (wheel / '[' / ']' / '0') ------------------
+// The size controls mutate obj.scale on the LIVE THREE objects. graphData() builds
+// FRESH objects at scale 1 on every update3D() — a filter change, a layout swap, or the
+// periodic live re-poll — which silently discarded the user's sizing (spheres jumped back
+// to default). Keep the factor HERE, outside the disposable scene graph, and re-apply it
+// after every rebuild so sizing survives.
+const NODE_SCALE_MIN = 0.15;
+const NODE_SCALE_MAX = 4.0;
+const clampNodeScale = (s: number) => Math.min(NODE_SCALE_MAX, Math.max(NODE_SCALE_MIN, s));
+let _userNodeScale = 1;
+// True while the user is actively dragging/orbiting, so a post-rebuild viewport restore
+// never yanks the camera out from under an in-progress gesture.
+let _userDragging = false;
+
+/** Apply the persisted user size factor to every node (and link, in ball mode) object. */
+function _applyUserNodeScale(resetLinkOpacity = false): void {
+  if (!instance) return;
+  const s = _userNodeScale;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  instance.scene().traverse((obj: any) => {
+    if (obj.__graphObjType === "node" && obj.scale) {
+      obj.scale.set(s, s, s);
+    } else if (obj.__graphObjType === "link" && obj.scale && currentLayout !== "globe") {
+      // Globe arcs are TubeGeometry built in WORLD space — scaling distorts the path,
+      // so only ball-mode links are scaled (same guard as the original handlers).
+      obj.scale.x = s;
+      obj.scale.y = s;
+      if (resetLinkOpacity && obj.material && obj.userData?.__origOpacity !== undefined) {
+        obj.material.opacity = obj.userData.__origOpacity;
+      }
+    }
+  });
+}
+
 export function start3D(
   container: HTMLElement,
   g: EconGraph,
@@ -700,9 +734,8 @@ export function start3D(
   // camera distance per frame was unreliable (HMR + force-sim interaction
   // hung the renderer in earlier attempts). User-input-driven is simpler
   // and survives anything the simulation does to the camera.
-  const SCALE_MIN = 0.15;
-  const SCALE_MAX = 4.0;
-  const clampScale = (s: number) => Math.min(SCALE_MAX, Math.max(SCALE_MIN, s));
+  // Size clamp + the persisted factor live at module scope (NODE_SCALE_*/_userNodeScale)
+  // so they survive the graphData() rebuilds that discard the scene's THREE objects.
   // Cache the reference camera distance + the controls' default rotate
   // speed so we can taper rotation/pan as the user zooms in. OrbitControls
   // moves in angular units; when the camera is close to the target, a
@@ -728,23 +761,10 @@ export function start3D(
     // deltaY < 0 = scroll up = zoom in. We shrink so dense clusters
     // resolve into distinct nodes instead of an overlapping blob.
     const factor = ev.deltaY < 0 ? 1 / 1.12 : 1.12;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    instance.scene().traverse((obj: any) => {
-      if (obj.__graphObjType === "node" && obj.scale) {
-        const next = clampScale(obj.scale.x * factor);
-        obj.scale.set(next, next, next);
-      } else if (obj.__graphObjType === "link" && obj.scale && currentLayout !== "globe") {
-        // Scale X/Y only (shrinks tube radius) -- valid in ball mode because
-        // 3d-force-graph owns the tube geometry in local space. In globe mode
-        // the TubeGeometry is built in WORLD space with the mesh at origin, so
-        // scaling X/Y distorts the arc path geometry. Globe arcs must not be
-        // scaled; their visual weight is fixed by the TUBE_RADIUS constants.
-        const nx = clampScale(obj.scale.x * factor);
-        const ny = clampScale(obj.scale.y * factor);
-        obj.scale.x = nx;
-        obj.scale.y = ny;
-      }
-    });
+    // Accumulate on the persisted factor (not per-object) so the size survives the next
+    // graphData() rebuild; _applyUserNodeScale then sets every object to that absolute value.
+    _userNodeScale = clampNodeScale(_userNodeScale * factor);
+    _applyUserNodeScale();
     // OrbitControls fires its zoom logic on the same wheel event; by the
     // time the browser dispatches it, the camera has already moved to its
     // new position, so reading position.length() here gives the post-zoom
@@ -753,6 +773,9 @@ export function start3D(
   };
   container.addEventListener("wheel", onWheel, { passive: true });
   tuneControls();
+  // Track drag state so a post-rebuild viewport restore never fights a live gesture.
+  ctrlRef?.addEventListener?.("start", () => { _userDragging = true; });
+  ctrlRef?.addEventListener?.("end", () => { _userDragging = false; });
 
   // Keyboard shortcuts as a fallback / fine control:
   // '[' shrink, ']' grow, '0' reset.
@@ -766,23 +789,10 @@ export function start3D(
     else if (ev.key === "0") factor = -1;
     else return;
     ev.preventDefault();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    instance.scene().traverse((obj: any) => {
-      if (obj.__graphObjType === "node" && obj.scale) {
-        if (factor < 0) obj.scale.set(1, 1, 1);
-        else obj.scale.multiplyScalar(factor);
-      } else if (obj.__graphObjType === "link" && obj.scale && currentLayout !== "globe") {
-        // Same globe-mode guard as onWheel: arc geometry lives in world space
-        // so scaling the mesh distorts it. Only scale links in ball mode.
-        if (factor < 0) {
-          obj.scale.set(1, 1, 1);
-          if (obj.material) obj.material.opacity = obj.userData?.__origOpacity ?? obj.material.opacity;
-        } else {
-          obj.scale.x *= factor;
-          obj.scale.y *= factor;
-        }
-      }
-    });
+    // '0' resets to 1; otherwise accumulate on the persisted factor so the size
+    // survives the next graphData() rebuild (same reason as onWheel).
+    _userNodeScale = factor < 0 ? 1 : clampNodeScale(_userNodeScale * factor);
+    _applyUserNodeScale(factor < 0);
   };
   document.addEventListener("keydown", sizeKeydown);
 
@@ -1004,7 +1014,42 @@ export function update3D(g: EconGraph, filterState?: FilterState | null): void {
       }
     } catch { /* best-effort */ }
   }
+  // Preserve the user's VIEWPORT + node SIZING across the rebuild. graphData() builds fresh
+  // THREE objects (scale 1) and the library re-fits the camera once the engine settles, so a
+  // filter change or the periodic live re-poll used to both enlarge the spheres and throw the
+  // globe back to its default framing. Snapshot before, re-assert on the same settle schedule
+  // the arcs use (rAF / 100 ms / 600 ms) so we win against that async re-fit.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const camNow: any = instance.camera?.();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ctrlNow: any = instance.controls?.();
+  const savedCam = camNow?.position
+    ? { x: camNow.position.x, y: camNow.position.y, z: camNow.position.z } : null;
+  const savedTarget = ctrlNow?.target
+    ? { x: ctrlNow.target.x, y: ctrlNow.target.y, z: ctrlNow.target.z } : null;
+  // Don't pin the camera before the globe's one-time initial framing has happened —
+  // _assertGlobeCamera still owns that first positioning.
+  const keepView = !(currentLayout === "globe" && !_globeCameraInitialized);
+  const restoreAfterRebuild = () => {
+    if (!instance) return;
+    if (_userNodeScale !== 1) _applyUserNodeScale();
+    if (!keepView || _userDragging) return;      // never fight an in-progress gesture
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c: any = instance.camera?.();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const k: any = instance.controls?.();
+    if (savedCam && c?.position) c.position.set(savedCam.x, savedCam.y, savedCam.z);
+    if (savedTarget && k?.target) {
+      k.target.set(savedTarget.x, savedTarget.y, savedTarget.z);
+      k.update?.();
+    }
+  };
+
   instance.graphData(toForceData(g, { layout: currentLayout, filterState }));
+  restoreAfterRebuild();
+  requestAnimationFrame(restoreAfterRebuild);
+  setTimeout(restoreAfterRebuild, 100);
+  setTimeout(restoreAfterRebuild, 600);
   // In globe mode, re-build arc geometry after the data update since
   // graphData() replaces link objects. Three passes mirror start3D's schedule:
   // rAF catches the common case where positions resolve in one tick;
@@ -1151,6 +1196,34 @@ export function setLiveImpact3D(
   if (!instance) return;
   // Re-trigger the kapsule digest so nodeColor re-runs with the new live map.
   update3D(g, filterState);
+}
+
+/** Inspection snapshot of the 3D viewport + sizing state, surfaced on window.__ec.view3D.
+ *  Exists so the "sizing/viewport must survive a graphData() rebuild" behaviour can be
+ *  checked from the console or a browser-driven test — WebGL state is otherwise opaque. */
+export function view3DState(): {
+  userNodeScale: number; sampleNodeScale: number | null;
+  sceneKinds: Record<string, number>;
+  camera: { x: number; y: number; z: number } | null;
+  target: { x: number; y: number; z: number } | null;
+} | null {
+  if (!instance) return null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c: any = instance.camera?.();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const k: any = instance.controls?.();
+  let sample: number | null = null;
+  const kinds: Record<string, number> = {};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  instance.scene().traverse((obj: any) => {
+    const t = obj.__graphObjType ? `graph:${obj.__graphObjType}` : (obj.type || "?");
+    kinds[t] = (kinds[t] || 0) + 1;
+    if (sample === null && obj.__graphObjType === "node" && obj.scale) sample = obj.scale.x;
+  });
+  const v = (o: { x: number; y: number; z: number } | undefined) =>
+    o ? { x: +o.x.toFixed(3), y: +o.y.toFixed(3), z: +o.z.toFixed(3) } : null;
+  return { userNodeScale: _userNodeScale, sampleNodeScale: sample, sceneKinds: kinds,
+           camera: v(c?.position), target: v(k?.target) };
 }
 
 /** Reset the globe camera to the default whole-globe view (lat=30, lon=-90). */

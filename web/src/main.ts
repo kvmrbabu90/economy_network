@@ -43,6 +43,7 @@ import {
   resetGlobeCamera,
   resize3D,
   setLiveImpact3D,
+  view3DState,
   start3D,
   stop3D,
   update3D,
@@ -138,6 +139,7 @@ declare global {
       loadFullCore: () => Promise<void>;
       setIncludeProvisional: (v: boolean) => void;
       tintLive: () => Promise<void>;
+      view3D: typeof view3DState;
     };
   }
 }
@@ -148,6 +150,7 @@ window.__ec = {
   expandFrom,
   loadFullCore,
   tintLive: applyLiveImpactTint,
+  view3D: view3DState,
   setIncludeProvisional: (v: boolean) => {
     const cb = document.getElementById("toggle-provisional") as HTMLInputElement | null;
     if (cb) {
