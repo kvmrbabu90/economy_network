@@ -46,6 +46,8 @@ NON_NEWS = [
     "Valero Energy stock trades steady as refining margins shape outlook",
     "Xcel Energy stock trades steadily as regulated earnings and clean energy investments shape the outlook",
     "AutoZone stock holds steady as parts retailer leans on DIY demand",
+    "ONEOK stock trades near highs as energy demand supports revenue growth",
+    "Parker-Hannifin stock trades near record territory as motion control specialist executes",
     "Sempra (SRE) Stock Looks Above Fair Value After Its 65% Run",
     "Sempra (SRE) Could Be 9% Below Fair Value On Leadership Reshuffle",
     "Sempra (SRE) Stock May Be Pricey After First LNG Cargo Milestone",

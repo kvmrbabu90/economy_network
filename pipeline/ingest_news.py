@@ -974,8 +974,13 @@ _NON_NEWS_RE = re.compile(
 # bare "shares steady" isn't caught. Measured 2026-07-20: 0/27 material-event corpus false-drops.
 _NONNEWS_HARD_RE = re.compile(
     r"\b(stock|shares?|share price|shrs?)\b[^.]{0,20}"
-    r"\b(trade[sd]?|trading|hold[s]?|remain[s]?|clos\w*|settl\w*|end\w*)\b[^.]{0,12}"
+    r"\b(trade[sd]?|trading|hold[s]?|remain[s]?|sit[s]?|clos\w*|settl\w*|end\w*)\b[^.]{0,12}"
+    r"(?:"
+    # "…steady|flat|… as/amid/on…" — the trades-flat commentary template
     r"\b(stead(?:y|ily)|flat|firm|mixed|sideways|range[- ]?bound|rangebound|little changed|unchanged|muted|subdued)\b"
+    # …or "…near/at record|highs|lows (territory|levels) as…" — same template, momentum framing
+    r"|\b(near|at|off)\s+(?:its\s+)?(?:all[- ]?time\s+|record\s+)?(?:high|highs|low|lows|record)(?:\s+(?:territory|levels?))?"
+    r")"
     r"\s+(as|amid|on|after|despite|while|following)\b", re.I)
 
 
