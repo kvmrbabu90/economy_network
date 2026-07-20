@@ -280,7 +280,12 @@ function inspectorExtrasFor(nodeId: string): NodeExtras {
     extras.onSharpen = (headlines, context) => sharpenWithClaude(nodeId, headlines, context);
   } else {
     const live = liveImpactState.get(nodeId);
-    if (live) extras.combinedImpact = _combinedFromLive(live);
+    if (live) {
+      extras.combinedImpact = _combinedFromLive(live);
+      // If the full driver fetch is already running for this node, the synth renders
+      // "· loading news…"; otherwise (pure hover) it renders "· click for news".
+      extras.combinedLoading = _impactFetchInFlight.has(nodeId);
+    }
   }
   return extras;
 }
@@ -1776,15 +1781,40 @@ function _paintCombinedImpact(nodeId: string, resp: NodeImpactResp): void {
  *  section (with the event timeline). Before this resolves, inspectorExtrasFor has
  *  already rendered a compact box from the live tint map, so a tinted node is never
  *  panel-less; a fetch failure just leaves that compact box in place. */
+// Nodes whose full /node/{id}/impact fetch is currently in flight. Drives the compact
+// synth's "· loading news…" hint so a just-clicked node doesn't read "magnitude X · N events"
+// with no explanation while the drivers are still being fetched.
+const _impactFetchInFlight = new Set<string>();
+
+/** Repaint the combined-impact box from the live-map synth (no drivers) with the loading hint —
+ *  used at click time, before the /node/{id}/impact fetch resolves. */
+function _paintCombinedLive(nodeId: string, loading: boolean): void {
+  const inspectorRoot = document.getElementById("inspector-body");
+  if (!inspectorRoot || !_inspectorShowsNode(nodeId)) return;
+  const live = liveImpactState.get(nodeId);
+  renderCombinedImpactInto(inspectorRoot, live ? _combinedFromLive(live) : null, {
+    onSharpen: (headlines, context) => sharpenWithClaude(nodeId, headlines, context),
+    loadingNews: loading,
+  });
+}
+
 function showCombinedImpact(nodeId: string): void {
   const cached = _impactRespCache.get(nodeId);
-  if (cached) _paintCombinedImpact(nodeId, cached);   // instant repaint, no flicker
+  if (cached) {
+    _paintCombinedImpact(nodeId, cached);   // instant repaint, no flicker
+  } else {
+    // No drivers cached yet — show the synth WITH "· loading news…" while the fetch runs
+    // (showNode already painted the synth, but before this flag was set, so repaint).
+    _impactFetchInFlight.add(nodeId);
+    _paintCombinedLive(nodeId, true);
+  }
   getNodeImpact(nodeId)
     .then((resp) => {
       _impactRespCache.set(nodeId, resp);
       _paintCombinedImpact(nodeId, resp);
     })
-    .catch((err) => console.error("combined impact fetch failed", err));
+    .catch((err) => console.error("combined impact fetch failed", err))
+    .finally(() => { _impactFetchInFlight.delete(nodeId); });
 }
 
 /** "Sharpen with Claude": re-run the full V1 streaming trace for the CLICKED

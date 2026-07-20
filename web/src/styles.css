@@ -1339,6 +1339,12 @@ html, body {
   color: var(--text-mute);
   opacity: 0.7;
 }
+.combined-header .impact-loading {
+  font-size: 11px;
+  color: var(--text-mute);
+  opacity: 0.7;
+  font-style: italic;
+}
 .combined-propagated {
   font-size: 11px;
   color: #d9a441;            /* muted amber — a caution, not an error */

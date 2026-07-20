@@ -11,6 +11,7 @@ export interface NodeExtras {
   onDescribe?: (nodeId: string) => Promise<string>;
   describedText?: string;   // cached /describe result, restored so it survives inspector re-renders
   combinedImpact?: import("../api").NodeImpact | null;   // resolved verdict, or null = no recent impact
+  combinedLoading?: boolean;   // true while the full /node/{id}/impact fetch is in flight → "loading news…"
   onSharpen?: (headlines: string[], context: string | null) => void;   // run full V1 trace over all contributing events
 }
 
@@ -205,7 +206,8 @@ export function showNode(node: ApiNode, g: EconGraph, extras: NodeExtras = {}): 
   // yet (render nothing, the async fetch will paint it); `null` = fetched, no recent
   // impact (render "No recent impact."); object = the precomputed verdict + drivers.
   if (extras.combinedImpact !== undefined) {
-    renderCombinedImpactInto(r, extras.combinedImpact, { onSharpen: extras.onSharpen });
+    renderCombinedImpactInto(r, extras.combinedImpact,
+      { onSharpen: extras.onSharpen, loadingNews: extras.combinedLoading });
   }
 }
 
@@ -361,7 +363,10 @@ export function buildTimelineRows(impact: import("../api").NodeImpact): Timeline
 export function renderCombinedImpactInto(
   root: HTMLElement,
   imp: import("../api").NodeImpact | null,
-  handlers: { onSharpen?: (headlines: string[], context: string | null) => void } = {},
+  handlers: {
+    onSharpen?: (headlines: string[], context: string | null) => void;
+    loadingNews?: boolean;   // live-map synth shown before drivers load → hint instead of a bare count
+  } = {},
 ): void {
   root.querySelector(".combined-impact-box")?.remove();
   const box = el("div", { class: "combined-impact-box" });
@@ -388,6 +393,13 @@ export function renderCombinedImpactInto(
     }
   } else {
     countChildren.push(el("span", { class: "impact-count" }, `${imp.event_count} event${imp.event_count === 1 ? "" : "s"}`));
+    // Live-map synth (empty computed_at): the compact /impact/live row carries a magnitude +
+    // event count but NO driver headlines — those arrive from the separate /node/{id}/impact
+    // fetch on click. Say so, so the panel doesn't read "positive 0.73 · 4 events" unexplained.
+    if (!imp.computed_at) {
+      countChildren.push(el("span", { class: "impact-loading" },
+        handlers.loadingNews ? "· loading news…" : "· click for news"));
+    }
   }
   box.appendChild(el("div", { class: "combined-header" },
     el("span", { class: "impact-dir" }, combinedDirLabel(imp)),

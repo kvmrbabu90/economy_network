@@ -128,6 +128,28 @@ describe("tint/panel floor + compact live-synth", () => {
     expect(box.textContent).not.toContain("as of");                 // empty computed_at → no freshness line
     expect(box.querySelector(".combined-timeline")).toBeNull();     // no drivers in the live map
     expect(box.querySelector(".sharpen-btn")).toBeNull();           // no sharpen without drivers
+    expect(box.textContent).toContain("click for news");            // hint: drivers load on click
+  });
+
+  it("live-synth WHILE fetching (loadingNews) → '· loading news…' instead of 'click for news'", () => {
+    const root = document.getElementById("inspector-body")!;
+    renderCombinedImpactInto(root, {
+      direction: "positive", magnitude: 0.73, mixed_signals: 0, event_count: 4, driver_count: 0, direct_count: 0,
+      computed_at: "", top_events: [],
+    }, { loadingNews: true });
+    const box = root.querySelector(".combined-impact-box")!;
+    expect(box.textContent).toContain("4 events");
+    expect(box.textContent).toContain("loading news");              // fetch in flight
+    expect(box.textContent).not.toContain("click for news");
+  });
+
+  it("a FULL fetch with real computed_at shows NO loading/click hint (only the synth gets it)", () => {
+    const root = document.getElementById("inspector-body")!;
+    renderCombinedImpactInto(root, { ...imp(), driver_count: 3, event_count: 4 }, { loadingNews: true });
+    const box = root.querySelector(".combined-impact-box")!;
+    expect(box.textContent).toContain("3 drivers");
+    expect(box.textContent).not.toContain("loading news");          // computed_at present → not a synth
+    expect(box.textContent).not.toContain("click for news");
   });
 });
 
