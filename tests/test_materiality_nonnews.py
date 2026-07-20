@@ -38,6 +38,17 @@ NON_NEWS = [
     "IT Stocks Rally: Infosys, LTM, Tech Mahindra Shares Jump Over 4% After TCS Q1 Meets Estimates",
     "Micron stock falls 6% despite strong quarter",
     "Nvidia shares climb 3% in early trading",
+    # algorithmic valuation / fair-value commentary ("X stock holds steady as <narrative>",
+    # "Above/Below Fair Value", "May Be Pricey", "after its N% run") — the Sempra-class leak.
+    # The "trades/holds steady as" ones carry incidental material words (earnings/growth) so
+    # they must HARD-drop; the fair-value/pricey ones drop via the regular path.
+    "Sempra stock trades steady as regulated utilities earnings and LNG growth underpin valuation",
+    "Valero Energy stock trades steady as refining margins shape outlook",
+    "Xcel Energy stock trades steadily as regulated earnings and clean energy investments shape the outlook",
+    "AutoZone stock holds steady as parts retailer leans on DIY demand",
+    "Sempra (SRE) Stock Looks Above Fair Value After Its 65% Run",
+    "Sempra (SRE) Could Be 9% Below Fair Value On Leadership Reshuffle",
+    "Sempra (SRE) Stock May Be Pricey After First LNG Cargo Milestone",
 ]
 
 # --- must NOT be dropped: a hard material event is named (defer to LLM, don't blind-drop)

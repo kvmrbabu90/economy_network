@@ -958,8 +958,25 @@ _NON_NEWS_RE = re.compile(
     # how-to guides + thought-leadership / educational content — not an event
     r"\bhow to (protect|invest|choose|build|understand|use|start|read|trade|save|pick|find|avoid|make|prepare|navigate)\b|"
     r"\btransforming\b[^.]{0,60}\b(industry|sector|landscape|space|market)\b|^\s*(the )?future of\b|\ba guide to\b|"
+    # valuation / fair-value commentary ("Looks Above Fair Value", "May Be Pricey", "after its 65% run")
+    r"\b(above|below|at|near)\s+fair\s+value\b|"
+    r"\b(may be|might be|could be|looks?|seems?|appears?|is|remains?|trading)\s+"
+    r"(pricey|cheap|expensive|rich|stretched|overpriced|underpriced|overbought|oversold)\b|"
+    r"\bafter (its|a)\s+\d+\.?\d*%\s+(run|rally|surge|gain|pop|jump|rise|climb)\b|"
     r"everything you need to know|\bexplainer\b|\bexplained$|a beginner'?s guide"
     r")", re.I)
+
+# HARD non-news: "STOCK/SHARES trades|holds|remains STEADY|FLAT|… AS|AMID|ON|AFTER …" — pure
+# market-commentary framing (the algorithmic Alpha Vantage "X stock holds steady as <narrative>
+# underpins the long-term outlook" template). It routinely carries incidental material words
+# ("earnings", "growth"), so unlike _NON_NEWS_RE it must drop UNCONDITIONALLY — a material
+# trigger must NOT defer it. The trailing connector (as/amid/on/after/…) keeps it tight so a
+# bare "shares steady" isn't caught. Measured 2026-07-20: 0/27 material-event corpus false-drops.
+_NONNEWS_HARD_RE = re.compile(
+    r"\b(stock|shares?|share price|shrs?)\b[^.]{0,20}"
+    r"\b(trade[sd]?|trading|hold[s]?|remain[s]?|clos\w*|settl\w*|end\w*)\b[^.]{0,12}"
+    r"\b(stead(?:y|ily)|flat|firm|mixed|sideways|range[- ]?bound|rangebound|little changed|unchanged|muted|subdued)\b"
+    r"\s+(as|amid|on|after|despite|while|following)\b", re.I)
 
 
 def _looks_like_non_news(headline: Optional[str]) -> bool:
@@ -968,6 +985,9 @@ def _looks_like_non_news(headline: Optional[str]) -> bool:
     (defer to the LLM gate) whenever a hard material trigger is also present, so a real
     event wrapped in a price-move or opinion hook is never blind-dropped."""
     h = headline or ""
+    # Hard commentary templates drop even when a (often incidental) material word is present.
+    if _NONNEWS_HARD_RE.search(h):
+        return True
     if _has_material_trigger(h):
         return False
     return bool(_NON_NEWS_RE.search(h))
