@@ -48,6 +48,36 @@ log = logging.getLogger(__name__)
 # fallback for offline use.
 LLM_PROVIDER = os.environ.get("IMPACT_LLM_PROVIDER", "claude").lower()
 
+
+class ClaudeAuthError(RuntimeError):
+    """The Claude CLI is not logged in (its `-p` call returned is_error with a login prompt).
+    Raised by _claude_call so a batch job (precompute/enrich) can abort LOUDLY and leave events
+    QUEUED, instead of silently returning "" and marking every event 'failed' for weeks."""
+
+
+# The logged-out CLI returns exit 0 + {"is_error": true, "result": "Not logged in · Please run
+# /login"}. Match that (and close variants) so we distinguish an auth outage from a real empty
+# result. Deliberately narrow — must not fire on ordinary model output that mentions "login".
+_CLAUDE_LOGGED_OUT_RE = re.compile(r"\bnot logged in\b|\brun /login\b|\bplease (run )?/?login\b", re.I)
+
+
+def check_claude_auth(provider: Optional[str] = None) -> Optional[str]:
+    """Cheap PRE-FLIGHT for batch jobs (precompute/enrich): return None if the Claude CLI is
+    usable, or a short reason string if it's logged out. Only meaningful for the claude provider.
+
+    We can't rely on ClaudeAuthError propagating from deep inside run_impact (the trace swallows
+    LLM errors into empty results), so batch jobs call this ONCE up front and bail cleanly — no
+    events touched — when it reports a logout. One tiny call; a logged-out CLI fails it in ~70ms."""
+    if (provider or LLM_PROVIDER) != "claude":
+        return None
+    try:
+        _claude_call("Reply with exactly: ok")
+        return None
+    except ClaudeAuthError as exc:
+        return str(exc) or "not logged in"
+    except Exception:
+        return None   # non-auth failures: let the normal per-event path handle them
+
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.environ.get("ECONGRAPH_LLM_MODEL", "gemma4:26b")
 MAX_HOPS = int(os.environ.get("IMPACT_MAX_HOPS", "3"))
@@ -183,6 +213,11 @@ def _claude_call(prompt: str) -> str:
     log.info("claude CLI call (%.1fs, %d bytes prompt, exit=%d)",
              time.time() - t0, len(prompt), returncode)
     if returncode != 0:
+        # A logged-out CLI exits non-zero and puts "Not logged in · Please run /login" in the
+        # STDOUT json envelope (not stderr), so check BOTH streams before treating it as a
+        # generic failure — otherwise the auth outage looks like an ordinary empty result.
+        if _CLAUDE_LOGGED_OUT_RE.search((stderr or "") + " " + (stdout or "")):
+            raise ClaudeAuthError("Claude CLI not logged in — run `claude login`")
         log.warning("claude CLI non-zero exit: %s", stderr[:300])
         return ""
     try:
@@ -192,7 +227,13 @@ def _claude_call(prompt: str) -> str:
                     exc, stdout[:300])
         return ""
     if envelope.get("is_error"):
-        log.warning("claude CLI is_error=true: %s", envelope.get("result", ""))
+        result = envelope.get("result", "") or ""
+        # A logged-out CLI returns is_error with a "/login" prompt — surface it distinctly so the
+        # caller defers the batch instead of burying every event as 'failed'. Other is_error
+        # results (rate limit, model error) stay the tolerant empty-string path.
+        if _CLAUDE_LOGGED_OUT_RE.search(result):
+            raise ClaudeAuthError(result[:200])
+        log.warning("claude CLI is_error=true: %s", result)
         return ""
     # Record EXACT token/cost usage from the CLI envelope for the Usage tab.
     # Fail-safe (record_llm_usage swallows too) — usage metrics never block a trace.

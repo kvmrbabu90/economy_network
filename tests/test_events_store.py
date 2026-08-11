@@ -195,10 +195,12 @@ def test_prune_old_events_deletes_only_aged_and_cascades_impacts():
         "published_at": "2000-01-01", "seed_entity": "E", "seed_node_id": "cik:1",
         "status": "traced",
     })
-    # Fresh event (published today) — must survive.
+    # Fresh event — must survive. Use a date RELATIVE to now (not a hardcoded one, which
+    # silently ages past the 30-day horizon as real time passes and breaks this test).
+    _recent = conn.execute("SELECT date('now','-3 days')").fetchone()[0]
     store.insert_event(conn, {
         "id": "new", "headline": "fresh", "source": "s", "url": "u", "category": "c",
-        "published_at": "2026-06-30", "seed_entity": "E", "seed_node_id": "cik:2",
+        "published_at": _recent, "seed_entity": "E", "seed_node_id": "cik:2",
         "status": "traced",
     })
     store.write_event_impacts(conn, "old", [

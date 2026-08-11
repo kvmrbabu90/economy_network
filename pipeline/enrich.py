@@ -85,6 +85,8 @@ def _summarize(headline: str, reduced_text: str, provider: str) -> Optional[Arti
     try:
         raw = (_impact._ollama_call(prompt, fmt_json=True) if provider == "ollama"
                else _impact._claude_call(prompt))
+    except _impact.ClaudeAuthError:
+        raise                                    # let the loop defer the whole batch
     except Exception as exc:
         log.debug("enrich summarize failed: %s", exc)
         return None
@@ -185,8 +187,14 @@ def enrich(conn, *, limit: int = ENRICH_MAX_EVENTS, provider: str = ENRICH_LLM_P
            wallclock_s: float = ENRICH_WALLCLOCK_S, queued_only: bool = False) -> dict:
     """Enrich the router-selected candidate set. Returns a summary."""
     rows = _select_candidates(conn, limit, queued_only=queued_only)
-    deadline = time.monotonic() + wallclock_s
     summary = {"seen": 0, "done": 0, "no_content": 0, "skipped": 0, "failed": 0, "fetch_fail": 0}
+    # PRE-FLIGHT: skip the batch cleanly if the Claude CLI is logged out (same reason as
+    # precompute) — leave events un-enriched so they retry after `claude login`.
+    if rows and (auth_err := _impact.check_claude_auth(provider)):
+        summary["auth_error"] = True
+        log.error("enrich: Claude CLI NOT LOGGED IN (%s) — skipping; run `claude login`.", auth_err)
+        return summary
+    deadline = time.monotonic() + wallclock_s
     for r in rows:
         if time.monotonic() > deadline:
             log.info("enrich: wallclock budget hit, %d left 'pending'", len(rows) - summary["seen"])
@@ -205,7 +213,14 @@ def enrich(conn, *, limit: int = ENRICH_MAX_EVENTS, provider: str = ENRICH_LLM_P
             store.set_event_enrichment(conn, ev["id"], enriched_context=None,
                                        status="no_content", version=ENRICH_VERSION)
             continue
-        cap = _summarize(ev.get("headline"), reduced, provider)
+        try:
+            cap = _summarize(ev.get("headline"), reduced, provider)
+        except _impact.ClaudeAuthError as exc:
+            # Logged out — every summarize will fail. Abort and leave this event UN-enriched
+            # (no status write) so it retries after `claude login`, same as precompute.
+            summary["auth_error"] = True
+            log.error("enrich: Claude CLI NOT LOGGED IN (%s) — deferring the rest; run `claude login`.", exc)
+            break
         if cap is None:
             summary["failed"] += 1
             store.set_event_enrichment(conn, ev["id"], enriched_context=None,

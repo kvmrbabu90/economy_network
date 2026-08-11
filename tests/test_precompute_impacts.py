@@ -1,6 +1,14 @@
 from __future__ import annotations
+import pytest
 from schema import store
 from pipeline import precompute_impacts as pc
+
+
+@pytest.fixture(autouse=True)
+def _assume_logged_in(monkeypatch):
+    # The precompute pre-flight calls the Claude CLI; default it to "logged in" so unit tests
+    # never hit the real (possibly logged-out) CLI. The auth-outage test overrides this.
+    monkeypatch.setattr(pc._impact, "check_claude_auth", lambda *a, **k: None)
 
 
 def _db_with_queued(tmp_path, n=2):
@@ -101,6 +109,21 @@ def test_run_impact_raising_marks_failed_and_continues(tmp_path, monkeypatch):
     monkeypatch.setattr(pc._impact, "run_impact", boom)
     s = pc.run_precompute(db)
     assert s["failed"] == 2 and s["traced"] == 0   # both fail, loop didn't crash
+
+
+def test_claude_logged_out_defers_queue_not_failed(tmp_path, monkeypatch):
+    # When the Claude CLI is logged out, the PRE-FLIGHT check aborts the batch and leaves every
+    # event QUEUED (so they trace after `claude login`) — NOT burned into 'failed'. run_impact
+    # must never be called.
+    db = _db_with_queued(tmp_path, 3)
+    monkeypatch.setattr(pc._impact, "check_claude_auth", lambda *a, **k: "Not logged in · Please run /login")
+    def must_not_run(*a, **k): raise AssertionError("run_impact must not be called when logged out")
+    monkeypatch.setattr(pc._impact, "run_impact", must_not_run)
+    s = pc.run_precompute(db)
+    assert s.get("auth_error") is True
+    assert s["failed"] == 0 and s["traced"] == 0 and s["processed"] == 0
+    conn = store.connect(db)
+    assert conn.execute("SELECT COUNT(*) c FROM events WHERE status='queued'").fetchone()["c"] == 3
 
 
 def test_max_events_budget(tmp_path, monkeypatch):

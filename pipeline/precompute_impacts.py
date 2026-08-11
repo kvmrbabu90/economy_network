@@ -88,6 +88,18 @@ def run_precompute(db_path: Path = DB_PATH, *, max_events: int = PRECOMPUTE_MAX_
             conn.execute("UPDATE events SET status='queued' WHERE status='failed'")
             conn.commit()
         events = store.queued_events(conn)
+        # PRE-FLIGHT: if the Claude CLI is logged out, EVERY trace this run fails identically.
+        # Bail before touching any event (leaving them queued) with a loud, actionable message —
+        # instead of silently marking the whole batch 'failed' for weeks. run_impact swallows
+        # the LLM error into an empty result, so a per-event catch can't see it; check up front.
+        if events:
+            auth_err = _impact.check_claude_auth(prov)
+            if auth_err:
+                log.error("precompute: Claude CLI NOT LOGGED IN (%s) — deferring %d queued events. "
+                          "Run `claude login`; the next cycle will trace them.", auth_err, len(events))
+                summary["auth_error"] = True
+                summary["elapsed_s"] = round(time.time() - t0, 1)
+                return summary
         for ev in events:
             if summary["processed"] >= max_events or (time.time() - t0) >= wallclock_s:
                 log.info("precompute: budget hit; deferring %d events", len(events) - summary["processed"])
@@ -114,6 +126,17 @@ def run_precompute(db_path: Path = DB_PATH, *, max_events: int = PRECOMPUTE_MAX_
                                        known_seed_ids=known,
                                        commodity_hint=_any_commodity(conn, known) if known else None,
                                        context=_context)
+            except _impact.ClaudeAuthError as exc:
+                # The Claude CLI is logged out — EVERY trace this run will fail the same way.
+                # Abort NOW and leave this event (and the rest) QUEUED, so they trace normally
+                # once `claude login` is done — instead of silently burning the queue into
+                # thousands of 'failed' rows with no signal it was an auth outage.
+                summary["processed"] -= 1                    # this event wasn't really processed
+                summary["auth_error"] = True
+                pending = len(events) - summary["processed"]
+                log.error("precompute: Claude CLI NOT LOGGED IN (%s). Deferring %d queued events "
+                          "— run `claude login`, then the next cycle traces them.", exc, pending)
+                break
             except Exception as exc:
                 log.warning("precompute: %s trace raised %s", ev["id"], exc)
                 _mark_failed(ev["id"])
