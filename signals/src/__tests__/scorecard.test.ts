@@ -23,6 +23,11 @@ const sc = (withIntraday = true): ReliabilitySummary => ({
     by_hop_horizon: [{ hop: 2, horizon_days: 0, all: stat(8, 0.75, null, 0.7), clean: stat(6, 0.8, null, 0.72) }],
     coverage: { outcome_rows: 22, distinct_events: 4, distinct_nodes: 9, latency_min: 60, mature_by_horizon: { "0": 12, "1": 10 } },
   } : null,
+  dynamic: {
+    overall: { ...stat(18, 0.61, null, 0.56), avg_hold: 3.4 },
+    by_hop: [{ hop: 1, ...stat(10, 0.6, null, 0.55), avg_hold: 3.0 }, { hop: 2, ...stat(8, 0.63, null, 0.58), avg_hold: 3.8 }],
+    coverage: { outcome_rows: 18, distinct_nodes: 12, avg_hold: 3.4, exit_reasons: { reverse: 7, faded: 9, maxhold: 2 }, max_hold: 10 },
+  },
 });
 
 describe("renderDashboard", () => {
@@ -57,6 +62,24 @@ describe("renderDashboard", () => {
     const active = el.querySelector(".rel-btn.is-active[data-metric]") as HTMLElement;
     expect(active.dataset.metric).toBe("net");                      // not blank, not "diracc"
     expect(el.querySelector(".rel-cell:not(.rel-cell-empty)")).not.toBeNull();   // heatmap not all-empty
+  });
+
+  it("renders the dynamic-exit model (net, avg hold, by-order, exit reasons; no metric/clean toggles)", () => {
+    const el = document.createElement("div");
+    renderDashboard(el, sc(), { model: "dynamic", metric: "net", clean: false });
+    const active = el.querySelector(".rel-btn.is-active[data-model]") as HTMLElement;
+    expect(active.dataset.model).toBe("dynamic");
+    expect(el.textContent).toContain("avg hold");
+    expect(el.textContent).toContain("3.4d");
+    expect(el.textContent).toContain("reverse 7");          // exit-reason mix
+    expect(el.querySelectorAll("[data-metric]").length).toBe(0);   // no metric toggle in dynamic
+    expect(el.querySelectorAll("[data-clean]").length).toBe(0);    // no clean toggle in dynamic
+  });
+
+  it("shows a dynamic-exit accumulating note when there is no dynamic data", () => {
+    const el = document.createElement("div");
+    renderDashboard(el, { ...sc(), dynamic: null }, { model: "dynamic", metric: "net", clean: false });
+    expect(el.textContent).toContain("No dynamic-exit outcomes yet");
   });
 
   it("shows an accumulating note for hourly when there is no intraday data", () => {

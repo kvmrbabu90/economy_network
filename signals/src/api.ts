@@ -22,6 +22,15 @@ export interface RelIntraday {
     latency_min: number | null; mature_by_horizon: Record<string, number>;
   };
 }
+export interface RelDynStat extends RelStat { hop?: number; avg_hold?: number; }
+export interface RelDynamic {
+  overall: RelDynStat;
+  by_hop: RelDynStat[];
+  coverage: {
+    outcome_rows: number; distinct_nodes: number; avg_hold: number;
+    exit_reasons: Record<string, number>; max_hold: number | null;
+  };
+}
 export interface ReliabilitySummary {
   status: "ok" | "not_computed";
   message?: string;
@@ -32,6 +41,7 @@ export interface ReliabilitySummary {
   by_magband: RelMagBand[];
   coverage: RelCoverage;
   intraday?: RelIntraday | null;
+  dynamic?: RelDynamic | null;
 }
 
 async function get<T>(path: string): Promise<T> {

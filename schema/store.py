@@ -283,6 +283,34 @@ CREATE TABLE IF NOT EXISTS intraday_outcomes (
     PRIMARY KEY (event_id, node_id, horizon_days)
 );
 CREATE INDEX IF NOT EXISTS idx_intraday_outcomes_cls ON intraday_outcomes(hop, direction, horizon_days);
+
+-- Reverse-signal dynamic-exit outcomes (Phase B): hold while the node's net consensus still
+-- supports the entry direction; exit when a reverse signal flips it (or the story decays), capped.
+CREATE TABLE IF NOT EXISTS dynamic_outcomes (
+    event_id      TEXT NOT NULL,
+    node_id       TEXT NOT NULL,
+    ticker        TEXT NOT NULL,
+    hop           INTEGER NOT NULL,
+    direction     TEXT NOT NULL,
+    magnitude     REAL NOT NULL,
+    entry_date    TEXT NOT NULL,
+    exit_date     TEXT NOT NULL,
+    holding_days  INTEGER NOT NULL,     -- trading days held
+    exit_reason   TEXT NOT NULL,        -- reverse | faded | maxhold
+    stock_ret     REAL NOT NULL,
+    benchmark     TEXT NOT NULL,
+    benchmark_ret REAL NOT NULL,
+    abn_ret       REAL NOT NULL,
+    hit           INTEGER NOT NULL,     -- directional abnormal return > 0
+    net_cap       REAL NOT NULL,        -- direction-signed abn_ret minus round-trip cost
+    net_hit       INTEGER NOT NULL,
+    entry_mag     REAL NOT NULL,        -- thesis strength (net consensus) at entry
+    cost_bps      REAL NOT NULL,
+    max_hold      INTEGER NOT NULL,
+    computed_at   TEXT NOT NULL,
+    PRIMARY KEY (event_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dynamic_outcomes_cls ON dynamic_outcomes(hop, direction);
 """
 
 
@@ -1142,5 +1170,25 @@ def upsert_intraday_outcomes(conn: sqlite3.Connection, rows: Iterable[dict]) -> 
     conn.executemany(
         f"INSERT INTO intraday_outcomes ({','.join(_INTRADAY_OUTCOME_COLS)}) VALUES ({ph}) "
         f"ON CONFLICT(event_id, node_id, horizon_days) DO UPDATE SET {updates}", tuples)
+    conn.commit()
+    return len(tuples)
+
+
+_DYNAMIC_OUTCOME_COLS = ("event_id", "node_id", "ticker", "hop", "direction", "magnitude",
+                         "entry_date", "exit_date", "holding_days", "exit_reason", "stock_ret",
+                         "benchmark", "benchmark_ret", "abn_ret", "hit", "net_cap", "net_hit",
+                         "entry_mag", "cost_bps", "max_hold", "computed_at")
+
+
+def upsert_dynamic_outcomes(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
+    tuples = [tuple(r[c] for c in _DYNAMIC_OUTCOME_COLS) for r in rows]
+    if not tuples:
+        return 0
+    ph = ",".join("?" * len(_DYNAMIC_OUTCOME_COLS))
+    updates = ",".join(f"{c}=excluded.{c}" for c in _DYNAMIC_OUTCOME_COLS
+                       if c not in ("event_id", "node_id"))
+    conn.executemany(
+        f"INSERT INTO dynamic_outcomes ({','.join(_DYNAMIC_OUTCOME_COLS)}) VALUES ({ph}) "
+        f"ON CONFLICT(event_id, node_id) DO UPDATE SET {updates}", tuples)
     conn.commit()
     return len(tuples)

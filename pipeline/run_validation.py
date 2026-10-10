@@ -15,7 +15,7 @@ import logging
 import time
 
 from schema import store
-from pipeline import signal_outcomes, intraday_outcomes, reliability
+from pipeline import signal_outcomes, intraday_outcomes, dynamic_exit, reliability
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +27,9 @@ def run_validation(conn) -> dict:
     conn.commit()
     intraday = intraday_outcomes.compute_intraday_outcomes(conn)   # hourly-entry model (needs published_ts)
     conn.commit()
-    scorecard = reliability.compute_reliability(conn)   # embeds both daily + intraday rollups
+    dynamic_exit.compute_dynamic_outcomes(conn)   # reverse-signal dynamic-exit model
+    conn.commit()
+    scorecard = reliability.compute_reliability(conn)   # embeds daily + intraday + dynamic rollups
     conn.commit()
     took = round(time.monotonic() - t0, 1)
     cov = scorecard["coverage"]

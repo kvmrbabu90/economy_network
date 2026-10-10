@@ -5,7 +5,7 @@
 // net-first KPI cards, and coverage. n + Wilson CI everywhere; low-n cells dimmed, not hidden.
 import type { ReliabilitySummary, RelStat, RelHopHorizon } from "../api";
 
-export type RelModel = "daily" | "hourly";
+export type RelModel = "daily" | "hourly" | "dynamic";
 export type RelMetric = "net" | "gross" | "diracc";
 
 const HOPS = [0, 1, 2];
@@ -99,6 +99,28 @@ function calibration(sc: ReliabilitySummary): string {
     + (mb ? ` · low ${mb.low} · med ${mb.med} · high ${mb.high}` : "") + `</div>`;
 }
 
+function dynamicView(sc: ReliabilitySummary): string {
+  const dyn = sc.dynamic;
+  if (!dyn || dyn.coverage.outcome_rows === 0) {
+    return `<div class="rel-card"><p class="rel-sub">No dynamic-exit outcomes yet — a signal matures once its reverse/decay exit falls within available prices. The trigger replays the node's net consensus (7-day window, 3-day half-life) and exits when a reverse signal flips it or it fades.</p></div>`;
+  }
+  const o = dyn.overall;
+  const net = o.net_hit_rate ?? o.hit_rate;
+  const lo = o.net_ci_low ?? o.ci_low, hi = o.net_ci_high ?? o.ci_high;
+  const cards = `<div class="rel-overall">
+    <div class="rel-ov-card"><div class="rel-ov-h">net edge</div><div class="rel-ov-pct" style="color:${hitColor(net)}">${pct(net)}</div><div class="rel-ov-ci">CI ${pct(lo)}–${pct(hi)}</div><div class="rel-ov-n">gross ${pct(o.hit_rate)} · n=${o.n}</div></div>
+    <div class="rel-ov-card"><div class="rel-ov-h">avg hold</div><div class="rel-ov-pct">${dyn.coverage.avg_hold}d</div><div class="rel-ov-n">cap ${dyn.coverage.max_hold ?? "—"}d</div></div>
+    <div class="rel-ov-card"><div class="rel-ov-h">mean net / trade</div><div class="rel-ov-pct" style="font-size:22px">${((o.mean_net ?? 0) * 100).toFixed(2)}%</div></div>
+  </div>`;
+  const rows = dyn.by_hop.map((h) =>
+    `<div class="rel-bar-row"><span class="rel-bar-lab">${HOP_LABEL[h.hop ?? 0] ?? `hop ${h.hop}`}</span>`
+    + `<span class="rel-bar-val">net ${pct(h.net_hit_rate ?? h.hit_rate)} · mean ${((h.mean_net ?? 0) * 100).toFixed(2)}% · ${h.avg_hold ?? "—"}d · <em>n=${h.n}</em></span></div>`).join("");
+  const reasons = Object.entries(dyn.coverage.exit_reasons).map(([k, v]) => `${k} ${v}`).join(" · ") || "—";
+  return cards
+    + `<div class="rel-card"><div class="rel-card-title">By order (net / mean-per-trade / avg hold)</div><div class="rel-bars">${rows}</div></div>`
+    + `<div class="rel-card"><div class="rel-card-title">Exit reasons</div><div class="rel-sub">${reasons} · nodes ${dyn.coverage.distinct_nodes}</div></div>`;
+}
+
 export interface RelViewOpts { model: RelModel; metric: RelMetric; clean: boolean }
 
 export function renderDashboard(el: HTMLElement, sc: ReliabilitySummary, opts: RelViewOpts): void {
@@ -131,23 +153,27 @@ export function renderDashboard(el: HTMLElement, sc: ReliabilitySummary, opts: R
       <b>1st-order</b> news is priced in before you can act — judge it by <b>direction accuracy</b>.
       The edge lives in the slow <b>2nd/3rd-order</b> drift. <b>Net edge</b> = % profitable after a ${cost}bps round-trip.
       <b>Daily</b> enters at the next session open; <b>Hourly</b> enters at the next bar after the news
-      ${intraday?.coverage.latency_min != null ? `(+${intraday.coverage.latency_min}min modeled latency)` : ""} — what the live cycle could actually get.
+      ${intraday?.coverage.latency_min != null ? `(+${intraday.coverage.latency_min}min modeled latency)` : ""} — what the live cycle could get.
+      <b>Dynamic exit</b> holds while the node's net consensus still backs the trade and exits on a reverse signal.
     </div>`;
 
-  const toggles = `<div class="rel-controls">
-      <div class="rel-seg" data-group="model">
+  const isDyn = opts.model === "dynamic";
+  const modelCtl = `<div class="rel-seg" data-group="model">
         <button class="rel-btn${opts.model === "daily" ? " is-active" : ""}" data-model="daily">Daily entry</button>
         <button class="rel-btn${opts.model === "hourly" ? " is-active" : ""}" data-model="hourly">Hourly entry</button>
-      </div>
-      <div class="rel-seg" data-group="metric">${metricBtns.map(([m, l]) => `<button class="rel-btn${metric === m ? " is-active" : ""}" data-metric="${m}">${l}</button>`).join("")}</div>
+        <button class="rel-btn${isDyn ? " is-active" : ""}" data-model="dynamic">Dynamic exit</button>
+      </div>`;
+  const otherCtl = isDyn ? "" : `<div class="rel-seg" data-group="metric">${metricBtns.map(([m, l]) => `<button class="rel-btn${metric === m ? " is-active" : ""}" data-metric="${m}">${l}</button>`).join("")}</div>
       <div class="rel-seg" data-group="clean">
         <button class="rel-btn${!opts.clean ? " is-active" : ""}" data-clean="0">all</button>
         <button class="rel-btn${opts.clean ? " is-active" : ""}" data-clean="1">clean</button>
-      </div>
-    </div>`;
+      </div>`;
+  const toggles = `<div class="rel-controls">${modelCtl}${otherCtl}</div>`;
 
   const hourlyEmpty = opts.model === "hourly" && (!intraday || intraday.coverage.outcome_rows === 0);
-  const body = hourlyEmpty
+  const body = isDyn
+    ? dynamicView(sc)
+    : hourlyEmpty
     ? `<div class="rel-card"><p class="rel-sub">No hourly-entry outcomes yet. These need events ingested with a precise news timestamp (GKG), then a validation run — the scorecard fills in as the live cycle catches news in real time.</p></div>`
     : overallCards(src.overall, src.horizons)
       + `<div class="rel-card"><div class="rel-card-title">${opts.model === "hourly" ? "Hourly-entry" : "Daily-entry"} ${METRIC_LABEL[metric]} · order × horizon</div>`
@@ -166,8 +192,8 @@ export function renderDashboard(el: HTMLElement, sc: ReliabilitySummary, opts: R
       <div class="rel-cov-grid">
         <div><span>Daily outcomes</span><b>${dcov.outcome_rows}</b></div>
         <div><span>Hourly outcomes</span><b>${intraday?.coverage.outcome_rows ?? 0}</b></div>
+        <div><span>Dynamic-exit outcomes</span><b>${sc.dynamic?.coverage.outcome_rows ?? 0}</b></div>
         <div><span>Tickered signals</span><b>${dcov.directional_signals}</b></div>
-        <div><span>Events · nodes (daily)</span><b>${dcov.distinct_events} · ${dcov.distinct_nodes}</b></div>
       </div>
       <div class="rel-cov-foot">benchmark: ${sc.meta?.benchmark ?? "sector-excess"} · cost ${cost}bps round-trip`
     + (cov?.latency_min != null ? ` · hourly latency ${cov.latency_min}min` : "")

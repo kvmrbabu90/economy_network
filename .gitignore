@@ -54,3 +54,4 @@ scripts/.ab_cache.json
 # Standalone Signals dashboard app
 signals/node_modules/
 signals/dist/
+signals/.vite/

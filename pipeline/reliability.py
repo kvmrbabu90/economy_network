@@ -162,6 +162,31 @@ def _intraday_block(rows: list[dict]) -> dict:
     }
 
 
+def _dynamic_block(rows: list[dict]) -> dict:
+    """Reverse-signal dynamic-exit rollup: overall + per-order net stats, average holding period,
+    and the exit-reason mix (reverse / faded / maxhold)."""
+    def block(sub):
+        b = _stat_block(sub)
+        b["avg_hold"] = round(sum(r["holding_days"] for r in sub) / len(sub), 1) if sub else 0.0
+        return b
+    hops = sorted({r["hop"] for r in rows})
+    by_hop = [{"hop": h, **block([r for r in rows if r["hop"] == h])} for h in hops]
+    reasons: dict[str, int] = {}
+    for r in rows:
+        reasons[r["exit_reason"]] = reasons.get(r["exit_reason"], 0) + 1
+    return {
+        "overall": block(rows),
+        "by_hop": by_hop,
+        "coverage": {
+            "outcome_rows": len(rows),
+            "distinct_nodes": len({r["node_id"] for r in rows}),
+            "avg_hold": round(sum(r["holding_days"] for r in rows) / len(rows), 1) if rows else 0.0,
+            "exit_reasons": reasons,
+            "max_hold": rows[0]["max_hold"] if rows else None,
+        },
+    }
+
+
 def compute_reliability(conn, write_scorecard: bool = True) -> dict:
     outcomes = [dict(r) for r in conn.execute("SELECT * FROM signal_outcomes").fetchall()]
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -230,6 +255,11 @@ def compute_reliability(conn, write_scorecard: bool = True) -> dict:
     except Exception:
         intraday_rows = []
     intraday = _intraday_block(intraday_rows) if intraday_rows else None
+    try:
+        dynamic_rows = [dict(r) for r in conn.execute("SELECT * FROM dynamic_outcomes").fetchall()]
+    except Exception:
+        dynamic_rows = []
+    dynamic = _dynamic_block(dynamic_rows) if dynamic_rows else None
 
     scorecard = {
         "generated_at": now,
@@ -244,6 +274,7 @@ def compute_reliability(conn, write_scorecard: bool = True) -> dict:
         "coverage": coverage,
         "classes": class_rows,
         "intraday": intraday,
+        "dynamic": dynamic,
     }
     if write_scorecard:
         _SCORECARD.parent.mkdir(parents=True, exist_ok=True)
