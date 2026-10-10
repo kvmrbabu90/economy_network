@@ -79,7 +79,12 @@ def run_cycle(db_path=DB_PATH, *, provider: Optional[str] = None) -> dict:
     _stage("aggregate", lambda: _run_aggregate(db_path), summary)
     # Bound table growth: drop events (and their impacts) older than the aggregation
     # window's reach. Runs after aggregate so we never prune a row still in-window.
-    _stage("prune", lambda: _run_prune(db_path, older_than_days=30), summary)
+    # PRUNE_OLDER_THAN_DAYS raises the cutoff (default 30) so a historical backfill
+    # (scripts/backfill_history.py) can keep its old events alive long enough to be
+    # traced + validated; signal_outcomes is never pruned, so once validated the
+    # reliability record survives even after the events age out again.
+    _prune_days = int(os.environ.get("PRUNE_OLDER_THAN_DAYS", "30"))
+    _stage("prune", lambda: _run_prune(db_path, older_than_days=_prune_days), summary)
     # DEFERRED — auto-retry of aged 'failed' events. run_precompute(retry_failed=True)
     # re-queues *every* failed event indiscriminately, so wiring it into the unattended
     # cycle would re-process permanent failures (bad seed, deleted node) on every run and

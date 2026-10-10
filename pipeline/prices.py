@@ -74,9 +74,12 @@ def _fetch_yfinance(ticker: str, start: str, end: str) -> list[tuple]:
         if d > end:
             continue
         try:
-            out.append((d, float(close)))
+            c = float(close)
         except (TypeError, ValueError):
             continue
+        if c != c:          # NaN (yfinance emits it for untraded/pre-listing days)
+            continue
+        out.append((d, c))
     return out
 
 
@@ -105,8 +108,11 @@ def _fetch(ticker: str, start: str, end: str) -> list[tuple]:
 
 
 def ensure_prices(conn, tickers, start: str, end: str) -> dict:
-    """Ensure each ticker's daily adj-close is cached over [start, end]. Only fetches tickers
-    whose cached data does not already reach `end` (CLAUDE.md #6). Returns a summary."""
+    """Ensure each ticker's daily adj-close is cached over the WHOLE [start, end] window, only
+    fetching the missing span(s) (CLAUDE.md #6). Covers BOTH ends: a historical backfill asks for
+    an earlier `start` than a ticker whose cache begins later (e.g. first seen via recent news),
+    so we must backfill the earlier history too — not just extend forward — or an old-dated
+    signal's base date lands on the wrong (too-late) day and reads immature. Returns a summary."""
     summary = {"requested": 0, "fetched": 0, "cached": 0, "empty": 0, "rows": 0}
     seen: set[str] = set()
     for t in tickers:
@@ -114,17 +120,31 @@ def ensure_prices(conn, tickers, start: str, end: str) -> dict:
             continue
         seen.add(t)
         summary["requested"] += 1
-        _, cmax = store.cached_price_range(conn, t)
-        if cmax is not None and cmax >= end:
+        cmin, cmax = store.cached_price_range(conn, t)
+        # Gaps needed so the cache fully spans [start, end]. yfinance ignores `end` (fetches
+        # start..latest, filtered to <= end), so each gap fetch is precise after that filter.
+        if cmin is None:
+            gaps = [(start, end)]                       # cold ticker: full window
+        else:
+            gaps = []
+            if start < cmin:
+                gaps.append((start, cmin))              # earlier history (backfill)
+            if end > cmax:
+                gaps.append((cmax, end))                # newer bars (forward)
+        if not gaps:
             summary["cached"] += 1
             continue
-        # Fetch from just after what we have (incremental) or the full window on a cold ticker.
-        fetch_start = cmax if cmax else start
-        rows = _fetch(t, fetch_start, end)
-        if not rows:
+        got = 0
+        any_rows = False
+        for g_start, g_end in gaps:
+            rows = _fetch(t, g_start, g_end)
+            if rows:
+                got += store.upsert_prices(conn, t, rows)
+                any_rows = True
+        if any_rows:
+            summary["rows"] += got
+            summary["fetched"] += 1
+        else:
             summary["empty"] += 1
-            continue
-        summary["rows"] += store.upsert_prices(conn, t, rows)
-        summary["fetched"] += 1
     log.info("prices(%s): %s", provider(), summary)
     return summary

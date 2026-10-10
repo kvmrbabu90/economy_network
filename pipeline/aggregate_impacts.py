@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from schema import store
+from pipeline import reliability_tune
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +77,9 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
     # carries a time component (ingested_at defaults to datetime('now') → 'YYYY-MM-DD HH:MM:SS').
     # The precise recency decay + age filter still happens in Python below.
     cutoff = (today - timedelta(days=window_days)).isoformat()
+    # Phase-2 auto-tune (opt-in): per-class reliability multipliers. None when disabled, so the
+    # per-contribution multiply below is a byte-identical x1.0 no-op. Loaded once per run.
+    rel_weights = reliability_tune.load_reliability_weights(conn)
     rows = conn.execute(
         """
         SELECT ei.node_id, ei.event_id, ei.direction, ei.magnitude, ei.hop,
@@ -104,6 +108,10 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
         # Distance decay: news about a neighbor counts less than news about the node itself.
         contrib = w * mag * (IMPACT_HOP_WEIGHT ** hop)
         direction = r["direction"]
+        # Phase-2 reliability auto-tune (opt-in): scale by this signal class's measured
+        # reliability. x1.0 (no change) when disabled, non-directional, or the class lacks
+        # demonstrated skill — so default behavior is byte-identical. See pipeline/reliability_tune.py.
+        contrib *= reliability_tune.multiplier_for(rel_weights, hop, direction, mag)
         a = acc.setdefault(r["node_id"],
                            {"pos": 0.0, "neg": 0.0, "count": 0, "events": [], "seen": {}})
         a["count"] += 1                              # every scanned row (incl. no_effect/dupes)

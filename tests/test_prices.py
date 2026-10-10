@@ -73,3 +73,52 @@ def test_ensure_prices_dedupes_requested_tickers(monkeypatch):
     monkeypatch.setattr(prices, "_fetch", lambda t, s, e: [("2026-10-07", 1.0)])
     summary = prices.ensure_prices(conn, ["AAPL", "AAPL", ""], "2026-10-07", "2026-10-07")
     assert summary["requested"] == 1
+
+
+def test_ensure_prices_backfills_earlier_history(monkeypatch):
+    # A historical backfill asks for an earlier `start` than a ticker first seen via recent news:
+    # the cache (Sep 30 on) must be extended BACKWARD to August, not just forward.
+    conn = _mem()
+    store.upsert_prices(conn, "NVDA", [("2026-09-30", 100.0), ("2026-10-01", 101.0)])
+    calls = []
+
+    def fake(t, s, e):
+        calls.append((s, e))
+        if s == "2026-08-01":                     # the earlier gap -> return August history
+            return [("2026-08-03", 90.0), ("2026-08-04", 91.0)]
+        return []
+
+    monkeypatch.setattr(prices, "_fetch", fake)
+    prices.ensure_prices(conn, ["NVDA"], "2026-08-01", "2026-10-01")
+    assert ("2026-08-01", "2026-09-30") in calls   # earlier gap fetched (start < cached min)
+    ser = store.price_series(conn, "NVDA")
+    assert ser[0][0] == "2026-08-03"               # August now present, ahead of Sep 30
+
+
+def test_ensure_prices_no_gap_when_fully_covered(monkeypatch):
+    conn = _mem()
+    store.upsert_prices(conn, "AAPL", [("2026-09-01", 1.0), ("2026-10-09", 2.0)])
+    monkeypatch.setattr(prices, "_fetch", lambda *a: (_ for _ in ()).throw(AssertionError("should not fetch")))
+    summary = prices.ensure_prices(conn, ["AAPL"], "2026-09-15", "2026-10-09")   # inside cached span
+    assert summary["cached"] == 1 and summary["fetched"] == 0
+
+
+def test_fetch_yfinance_skips_nan(monkeypatch):
+    # yfinance emits NaN closes for untraded/pre-listing days; they must be dropped, not inserted
+    # (the prices.adj_close column is NOT NULL). Mock yfinance with a real pandas frame.
+    import sys
+    import types
+    import pandas as pd
+    idx = pd.to_datetime(["2026-08-03", "2026-08-04", "2026-08-05"])
+    df = pd.DataFrame({"Close": [90.0, float("nan"), 92.0]}, index=idx)
+
+    class _FakeTicker:
+        def __init__(self, _t):
+            pass
+
+        def history(self, **_k):
+            return df
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=_FakeTicker))
+    out = prices._fetch_yfinance("X", "2026-08-01", "2026-08-31")
+    assert out == [("2026-08-03", 90.0), ("2026-08-05", 92.0)]   # NaN row dropped

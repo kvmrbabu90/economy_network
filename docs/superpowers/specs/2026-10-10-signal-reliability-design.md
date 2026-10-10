@@ -65,3 +65,30 @@ abnormal returns (sector-excess is the Phase-1 method; beta is a possible later 
 The historical signal corpus was pruned; the live set is ~days old, so the scorecard starts
 sparse and matures over days (short horizons) to ~a quarter (+60d). A one-time historical
 re-trace backfill (LLM-quota-heavy) would populate it faster — deferred, offered post-reset.
+
+## Operations + Phase 2 (built 2026-10-10)
+Three follow-ups turned the measurement layer into a self-maintaining, improvable system:
+
+1. **Daily auto-run (no LLM).** `scripts/daily_validation.ps1` runs `pipeline/run_validation`
+   once a day (6:00 PM local) via the `EconGraph daily validation` scheduled task, launched
+   through `scripts/run_validation_hidden.vbs` (zero-flash wscript pattern, like the keepalive).
+   Idempotent + incremental, so the scorecard matures on its own.
+
+2. **Historical backfill.** `scripts/backfill_history.py` ingests + traces old GDELT-GKG news so
+   the longer horizons mature immediately. INGEST (sample historical slices → match nodes →
+   dedupe → materiality-threshold → queue; rule-only, NO LLM) / TRACE (bounded precompute
+   batches, the only quota cost) / VALIDATE (after each batch, so `signal_outcomes` — never
+   pruned — persists even after the old events age out). It must NOT run via `run_cycle` (whose
+   prune would delete the old events); `run_cycle` now honors `PRUNE_OLDER_THAN_DAYS` as a safety
+   valve, and the one-shot runner (`scripts/run_backfill_oneshot.ps1`) pauses the hourly cycle for
+   the duration and always re-enables it. Armed as a one-shot task for after the quota reset.
+   Two bugs this surfaced, both fixed (they also harden the daily path): `prices.ensure_prices`
+   now backfills EARLIER history (not just forward), and NaN closes from yfinance are dropped.
+
+3. **Auto-tune hook (opt-in, no LLM).** `pipeline/reliability_tune.py` maps a signal class
+   `(hop, direction, mag_band)` at one horizon to a reliability multiplier, applied to the
+   per-contribution weight in `aggregate_impacts.aggregate()`. A class earns a non-neutral
+   multiplier only with demonstrated skill (n ≥ N_MIN AND a Wilson CI excluding 0.5), then a
+   shrunk, clamped `[0.5, 1.5]` tilt. Gated by `RELIABILITY_TUNE_ENABLED` (default `0`) → every
+   multiplier is 1.0 and aggregation is byte-identical. Lives in the derived node_impact layer,
+   never event_impacts, so it can't feed back into its own measurement.
