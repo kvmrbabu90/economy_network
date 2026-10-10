@@ -613,7 +613,8 @@ def _gkg_candidate(rec, index: dict, cen: dict) -> Optional[tuple[float, dict]]:
     other_orgs = [m[3] for m in matched[1:]]
     cand = {"source": "GDELT-GKG", "url": rec.url,
             "category": _GDELT_CATEGORY_BY_TYPE.get(ntype, "other"),
-            "published_at": rec.published_at, "seed_entity": nname, "seed_node_id": nid}
+            "published_at": rec.published_at, "published_ts": rec.published_ts,
+            "seed_entity": nname, "seed_node_id": nid}
     if rec.title:
         cand["headline"] = rec.title[:200]
     else:

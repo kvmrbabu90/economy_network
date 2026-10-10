@@ -64,10 +64,9 @@ import {
   inMagnitudeBand,
   type ImpactState,
 } from "./impact";
-import { getImpactLive, getNodeImpact, getHealth, startImpactRefresh, getImpactRefreshStatus, getUsage, getReliabilitySummary, type LiveImpact, type UsageGranularity, type ReliabilitySummary } from "./api";
+import { getImpactLive, getNodeImpact, getHealth, startImpactRefresh, getImpactRefreshStatus, getUsage, type LiveImpact, type UsageGranularity } from "./api";
 import { renderCombinedImpactInto, isStale } from "./ui/inspector";
 import { renderUsageChart } from "./ui/usageChart";
-import { renderReliability, type RelMetric } from "./ui/reliabilityPanel";
 import {
   loadArchive,
   saveToArchive,
@@ -2208,44 +2207,13 @@ async function loadUsage(): Promise<void> {
   });
 })();
 
-// Reliability tab: signal-reliability scorecard (hit-rate, IC, calibration).
-// The scorecard is cached after the first fetch so the all/clean toggle
-// re-renders instantly without a round-trip.
-let _relScorecard: ReliabilitySummary | null = null;
-let _relClean = false;
-let _relMetric: RelMetric = "net";   // default to the retail bar: net-of-cost edge
-async function loadReliability(): Promise<void> {
-  const body = document.getElementById("reliability-body");
-  if (!body) return;
-  try {
-    _relScorecard = await getReliabilitySummary();
-    renderReliability(body, _relScorecard, { clean: _relClean, metric: _relMetric });
-  } catch (err) {
-    console.error("reliability load failed", err);
-    body.innerHTML = '<p class="combined-empty">Reliability unavailable.</p>';
-  }
-}
-
-(function wireReliabilityToggle() {
-  const body = document.getElementById("reliability-body");
-  if (!body) return;
-  body.addEventListener("click", (ev) => {
-    const target = ev.target as HTMLElement;
-    const cleanBtn = target.closest<HTMLButtonElement>(".rel-clean-btn");
-    const metricBtn = target.closest<HTMLButtonElement>(".rel-metric-btn");
-    if (!_relScorecard || (!cleanBtn && !metricBtn)) return;
-    if (cleanBtn) _relClean = cleanBtn.dataset.clean === "1";
-    if (metricBtn) _relMetric = (metricBtn.dataset.metric as RelMetric) || "net";
-    renderReliability(body, _relScorecard, { clean: _relClean, metric: _relMetric });
-  });
-})();
+// (The signal-reliability scorecard moved to the standalone Signals dashboard app in /signals.)
 
 (function wireSidebarTabs() {
   const tabs = document.querySelectorAll<HTMLButtonElement>(".sidebar-tab");
   const panelFilters = document.getElementById("panel-filters");
   const panelArchive = document.getElementById("panel-archive");
   const panelUsage = document.getElementById("panel-usage");
-  const panelReliability = document.getElementById("panel-reliability");
   if (!panelFilters || !panelArchive) return;
 
   tabs.forEach((tab) => {
@@ -2258,10 +2226,8 @@ async function loadReliability(): Promise<void> {
       panelFilters.hidden = target !== "filters";
       panelArchive.hidden = target !== "archive";
       if (panelUsage) panelUsage.hidden = target !== "usage";
-      if (panelReliability) panelReliability.hidden = target !== "reliability";
       if (target === "archive") renderArchiveList();
       if (target === "usage") loadUsage().catch(console.error);
-      if (target === "reliability") loadReliability().catch(console.error);
     });
   });
 })();

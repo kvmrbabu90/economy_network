@@ -131,6 +131,37 @@ def _stat_block(rows: list[dict]) -> dict:
     }
 
 
+def _intraday_block(rows: list[dict]) -> dict:
+    """Overall + order×horizon rollups for the intraday-entry model (hourly entry, daily exits)."""
+    horizons = sorted({r["horizon_days"] for r in rows})
+    hops = sorted({r["hop"] for r in rows})
+
+    def cell(pred):
+        sub = [r for r in rows if pred(r)]
+        return _stat_block(sub) if sub else None
+
+    by_hop_horizon = []
+    for hop in hops:
+        for h in horizons:
+            allc = cell(lambda r, hop=hop, h=h: r["hop"] == hop and r["horizon_days"] == h)
+            clnc = cell(lambda r, hop=hop, h=h: r["hop"] == hop and r["horizon_days"] == h and r["clean"] == 1)
+            if allc:
+                by_hop_horizon.append({"hop": hop, "horizon_days": h, "all": allc, "clean": clnc})
+    overall = {str(h): cell(lambda r, h=h: r["horizon_days"] == h) for h in horizons}
+    return {
+        "horizons": horizons,
+        "overall": overall,
+        "by_hop_horizon": by_hop_horizon,
+        "coverage": {
+            "outcome_rows": len(rows),
+            "distinct_events": len({r["event_id"] for r in rows}),
+            "distinct_nodes": len({r["node_id"] for r in rows}),
+            "latency_min": rows[0].get("latency_min") if rows else None,
+            "mature_by_horizon": {str(h): sum(1 for r in rows if r["horizon_days"] == h) for h in horizons},
+        },
+    }
+
+
 def compute_reliability(conn, write_scorecard: bool = True) -> dict:
     outcomes = [dict(r) for r in conn.execute("SELECT * FROM signal_outcomes").fetchall()]
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -193,6 +224,13 @@ def compute_reliability(conn, write_scorecard: bool = True) -> dict:
         "distinct_nodes": len({r["node_id"] for r in outcomes}),
     }
 
+    # --- intraday-entry rollup (separate model: hourly entry, daily-close exits) ---
+    try:
+        intraday_rows = [dict(r) for r in conn.execute("SELECT * FROM intraday_outcomes").fetchall()]
+    except Exception:
+        intraday_rows = []
+    intraday = _intraday_block(intraday_rows) if intraday_rows else None
+
     scorecard = {
         "generated_at": now,
         "meta": {"horizons": horizons, "mag_bands": {"low": f"<{_B[0]}",
@@ -205,6 +243,7 @@ def compute_reliability(conn, write_scorecard: bool = True) -> dict:
         "by_magband": by_magband,
         "coverage": coverage,
         "classes": class_rows,
+        "intraday": intraday,
     }
     if write_scorecard:
         _SCORECARD.parent.mkdir(parents=True, exist_ok=True)

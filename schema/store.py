@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS events (
     url          TEXT,
     category     TEXT,
     published_at TEXT,
+    published_ts TEXT,                 -- full ISO UTC news timestamp (GKG batch stamp); for intraday entry
     ingested_at  TEXT NOT NULL DEFAULT (datetime('now')),
     seed_entity  TEXT,
     seed_node_id TEXT,
@@ -246,6 +247,42 @@ CREATE TABLE IF NOT EXISTS signal_reliability (
     computed_at   TEXT NOT NULL,
     PRIMARY KEY (hop, direction, mag_band, horizon_days, clean)
 );
+
+-- Intraday hourly bars (for the next-bar entry model). ts is ISO ET datetime; adjusted.
+CREATE TABLE IF NOT EXISTS prices_intraday (
+    ticker     TEXT NOT NULL,
+    ts         TEXT NOT NULL,          -- ISO ET datetime of the hourly bar
+    adj_open   REAL NOT NULL,
+    adj_close  REAL NOT NULL,
+    PRIMARY KEY (ticker, ts)
+);
+
+-- Intraday-entry outcomes: ENTER at the next hourly bar after (news time + processing latency),
+-- EXIT at daily close +h trading days. Models what a trader running the hourly cycle could get.
+CREATE TABLE IF NOT EXISTS intraday_outcomes (
+    event_id      TEXT NOT NULL,
+    node_id       TEXT NOT NULL,
+    ticker        TEXT NOT NULL,
+    hop           INTEGER NOT NULL,
+    direction     TEXT NOT NULL,
+    magnitude     REAL NOT NULL,
+    entry_ts      TEXT NOT NULL,        -- ISO ET timestamp of the entry bar
+    entry_date    TEXT NOT NULL,        -- ET date of entry (for daily-close exits)
+    horizon_days  INTEGER NOT NULL,     -- 0 = same-session close, else trading days held
+    stock_ret     REAL NOT NULL,        -- exit_close / entry_open - 1
+    benchmark     TEXT NOT NULL,
+    benchmark_ret REAL NOT NULL,
+    abn_ret       REAL NOT NULL,        -- capturable abnormal (stock - benchmark)
+    hit           INTEGER NOT NULL,
+    net_cap       REAL NOT NULL,        -- direction-signed abn_ret minus round-trip cost
+    net_hit       INTEGER NOT NULL,
+    cost_bps      REAL NOT NULL,
+    latency_min   INTEGER NOT NULL,     -- modeled news->action latency used
+    clean         INTEGER NOT NULL DEFAULT 1,
+    computed_at   TEXT NOT NULL,
+    PRIMARY KEY (event_id, node_id, horizon_days)
+);
+CREATE INDEX IF NOT EXISTS idx_intraday_outcomes_cls ON intraday_outcomes(hop, direction, horizon_days);
 """
 
 
@@ -284,6 +321,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     _migrate_node_impact_driver_count(conn)
     _migrate_enrich_columns(conn)
     _migrate_edge_columns(conn)
+    _migrate_published_ts(conn)
     _migrate_price_adj_open(conn)
     _migrate_signal_outcome_cols(conn)
     _migrate_signal_reliability_cols(conn)
@@ -399,6 +437,19 @@ def _migrate_enrich_columns(conn: sqlite3.Connection) -> None:
         if name not in cols:
             conn.execute(f"ALTER TABLE events ADD COLUMN {name} {decl}")
     conn.commit()
+
+
+def _migrate_published_ts(conn: sqlite3.Connection) -> None:
+    """Add events.published_ts (full ISO UTC news timestamp) to a pre-existing DB (idempotent,
+    no backfill — only GKG events ingested after this ships carry a precise time)."""
+    if not conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='events'"
+    ).fetchone():
+        return
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()}
+    if "published_ts" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN published_ts TEXT")
+        conn.commit()
 
 
 def _migrate_price_adj_open(conn: sqlite3.Connection) -> None:
@@ -610,14 +661,15 @@ def insert_event(conn: sqlite3.Connection, ev: dict[str, Any]) -> None:
     conn.execute(
         """
         INSERT OR IGNORE INTO events
-          (id, headline, source, url, category, published_at, seed_entity, seed_node_id, status, story_sig, gkg_context, seed_ids)
-        VALUES (:id, :headline, :source, :url, :category, :published_at,
+          (id, headline, source, url, category, published_at, published_ts, seed_entity, seed_node_id, status, story_sig, gkg_context, seed_ids)
+        VALUES (:id, :headline, :source, :url, :category, :published_at, :published_ts,
                 :seed_entity, :seed_node_id, :status, :story_sig, :gkg_context, :seed_ids)
         """,
         {
             "id": ev["id"], "headline": ev["headline"], "source": ev.get("source"),
             "url": ev.get("url"), "category": ev.get("category"),
-            "published_at": ev.get("published_at"), "seed_entity": ev.get("seed_entity"),
+            "published_at": ev.get("published_at"), "published_ts": ev.get("published_ts"),
+            "seed_entity": ev.get("seed_entity"),
             "seed_node_id": ev.get("seed_node_id"), "status": ev.get("status", "queued"),
             "story_sig": sig, "gkg_context": ev.get("gkg_context"),
             "seed_ids": ev.get("seed_ids"),
@@ -1045,3 +1097,50 @@ def replace_signal_reliability(conn: sqlite3.Connection, rows: Iterable[dict]) -
 def read_signal_reliability(conn: sqlite3.Connection) -> list[dict]:
     """All reliability rows as dicts (for the API/dashboard)."""
     return [dict(r) for r in conn.execute("SELECT * FROM signal_reliability")]
+
+
+# --- Intraday (hourly bars + next-bar-entry outcomes) ---------------------------------------
+
+def upsert_intraday(conn: sqlite3.Connection, ticker: str, rows: Iterable[tuple]) -> int:
+    """rows = (ts_iso, adj_open, adj_close). Idempotent on (ticker, ts)."""
+    tuples = [(ticker, ts, float(o), float(c)) for ts, o, c in rows
+              if ts and o is not None and c is not None]
+    if not tuples:
+        return 0
+    conn.executemany(
+        "INSERT INTO prices_intraday (ticker, ts, adj_open, adj_close) VALUES (?,?,?,?) "
+        "ON CONFLICT(ticker, ts) DO UPDATE SET adj_open=excluded.adj_open, adj_close=excluded.adj_close",
+        tuples)
+    conn.commit()
+    return len(tuples)
+
+
+def intraday_bars(conn: sqlite3.Connection, ticker: str) -> list[tuple]:
+    """Ascending [(ts, adj_open, adj_close), ...] hourly bars for `ticker`."""
+    return [(r[0], r[1], r[2]) for r in conn.execute(
+        "SELECT ts, adj_open, adj_close FROM prices_intraday WHERE ticker=? ORDER BY ts", (ticker,))]
+
+
+def cached_intraday_range(conn: sqlite3.Connection, ticker: str) -> tuple:
+    r = conn.execute("SELECT MIN(ts), MAX(ts) FROM prices_intraday WHERE ticker=?", (ticker,)).fetchone()
+    return (r[0], r[1]) if r else (None, None)
+
+
+_INTRADAY_OUTCOME_COLS = ("event_id", "node_id", "ticker", "hop", "direction", "magnitude",
+                          "entry_ts", "entry_date", "horizon_days", "stock_ret", "benchmark",
+                          "benchmark_ret", "abn_ret", "hit", "net_cap", "net_hit", "cost_bps",
+                          "latency_min", "clean", "computed_at")
+
+
+def upsert_intraday_outcomes(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
+    tuples = [tuple(r[c] for c in _INTRADAY_OUTCOME_COLS) for r in rows]
+    if not tuples:
+        return 0
+    ph = ",".join("?" * len(_INTRADAY_OUTCOME_COLS))
+    updates = ",".join(f"{c}=excluded.{c}" for c in _INTRADAY_OUTCOME_COLS
+                       if c not in ("event_id", "node_id", "horizon_days"))
+    conn.executemany(
+        f"INSERT INTO intraday_outcomes ({','.join(_INTRADAY_OUTCOME_COLS)}) VALUES ({ph}) "
+        f"ON CONFLICT(event_id, node_id, horizon_days) DO UPDATE SET {updates}", tuples)
+    conn.commit()
+    return len(tuples)

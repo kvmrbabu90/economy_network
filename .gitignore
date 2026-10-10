@@ -50,3 +50,7 @@ check_nio.py
 *_test.json
 # A/B harness local LLM-response cache (machine-specific, not shared)
 scripts/.ab_cache.json
+
+# Standalone Signals dashboard app
+signals/node_modules/
+signals/dist/

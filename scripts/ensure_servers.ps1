@@ -63,7 +63,7 @@ else {
     }
 }
 
-# --- Frontend: healthy == the Vite dev server serves 200 on /.
+# --- Frontend (So What? graph): healthy == the Vite dev server serves 200 on /.
 if (-not (Test-Url 'http://localhost:5180/')) {
     Start-Sleep -Seconds 3
     if (-not (Test-Url 'http://localhost:5180/')) {
@@ -71,6 +71,18 @@ if (-not (Test-Url 'http://localhost:5180/')) {
         Start-Sleep -Seconds 1
         Start-Process -FilePath 'cmd' `
             -ArgumentList '/c', 'npm --prefix web run dev -- --port 5180' `
+            -WorkingDirectory $repo -WindowStyle Hidden
+    }
+}
+
+# --- Signals dashboard (standalone reliability/trading app) on :5182.
+if (-not (Test-Url 'http://localhost:5182/')) {
+    Start-Sleep -Seconds 3
+    if (-not (Test-Url 'http://localhost:5182/')) {
+        Stop-Port 5182
+        Start-Sleep -Seconds 1
+        Start-Process -FilePath 'cmd' `
+            -ArgumentList '/c', 'npm --prefix signals run dev -- --port 5182' `
             -WorkingDirectory $repo -WindowStyle Hidden
     }
 }

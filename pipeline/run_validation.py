@@ -15,7 +15,7 @@ import logging
 import time
 
 from schema import store
-from pipeline import signal_outcomes, reliability
+from pipeline import signal_outcomes, intraday_outcomes, reliability
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +25,9 @@ def run_validation(conn) -> dict:
     store.init_db(conn)   # idempotent: ensures the price/outcome/reliability schema + migrations
     outcomes = signal_outcomes.compute_outcomes(conn)
     conn.commit()
-    scorecard = reliability.compute_reliability(conn)
+    intraday = intraday_outcomes.compute_intraday_outcomes(conn)   # hourly-entry model (needs published_ts)
+    conn.commit()
+    scorecard = reliability.compute_reliability(conn)   # embeds both daily + intraday rollups
     conn.commit()
     took = round(time.monotonic() - t0, 1)
     cov = scorecard["coverage"]

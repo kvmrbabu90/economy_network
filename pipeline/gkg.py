@@ -287,6 +287,7 @@ class GkgRecord:
     amounts: list[tuple[float, str, int]] = field(default_factory=list)
     sharing_image: str = ""
     title: Optional[str] = None
+    published_ts: Optional[str] = None    # full ISO UTC datetime from the 15-min DATE batch stamp
 
 
 def _parse_offset_list(field_val: str) -> list[tuple[str, int]]:
@@ -368,6 +369,15 @@ def _date_to_iso(date_val: str) -> Optional[str]:
     return f"{s[0:4]}-{s[4:6]}-{s[6:8]}" if len(s) >= 8 and s[:8].isdigit() else None
 
 
+def _datetime_to_iso(date_val: str) -> Optional[str]:
+    """14-digit YYYYMMDDHHMMSS -> ISO UTC datetime. The GKG DATE/batch stamp is UTC and is at or
+    after true publication ~99% of the time, so it is a safe (conservative) news-time anchor."""
+    s = (date_val or "").strip()
+    if len(s) >= 14 and s[:14].isdigit():
+        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}T{s[8:10]}:{s[10:12]}:{s[12:14]}+00:00"
+    return None
+
+
 def parse_gkg(lines: Iterable[str]) -> Iterator[GkgRecord]:
     """Parse GKG 2.1 tab-delimited rows into GkgRecord objects.
 
@@ -387,6 +397,7 @@ def parse_gkg(lines: Iterable[str]) -> Iterator[GkgRecord]:
         yield GkgRecord(
             record_id=rid,
             published_at=_date_to_iso(f[_COL_DATE]),
+            published_ts=_datetime_to_iso(f[_COL_DATE]),
             is_translingual=is_t,
             is_web=f[_COL_SRCCOLL].strip() == "1",
             domain=f[_COL_DOMAIN].strip(),
