@@ -24,9 +24,9 @@ def _company(c):
                           "tickers": ["AAPL"], "sector": "Information Technology"})  # bench XLK
 
 
-def _event(c, eid, pub, node, direction, mag, hop):
+def _event(c, eid, pub, node, direction, mag, hop, seed="cik:0000000002"):
     store.insert_event(c, {"id": eid, "headline": "h", "source": "s", "url": "u", "category": "c",
-                           "published_at": pub, "seed_entity": "E", "seed_node_id": "cik:1", "status": "traced"})
+                           "published_at": pub, "seed_entity": "E", "seed_node_id": seed, "status": "traced"})
     store.write_event_impacts(c, eid, [
         {"node_id": node, "direction": direction, "magnitude": mag, "hop": hop, "reasoning": "r"}])
 
@@ -41,32 +41,45 @@ def _px(c):
                                    ("2026-10-09", 104.0, 103.0)])
 
 
-def test_reverse_signal_triggers_exit(conn):
+def test_reverse_signal_triggers_exit_at_next_open(conn):
     _company(conn)
-    _event(conn, "e1", "2026-10-05", "cik:0000000001", "positive", 0.3, 1)   # bullish entry signal
-    _event(conn, "e2", "2026-10-07", "cik:0000000001", "negative", 0.6, 0)   # strong reverse on 10-07
+    _event(conn, "e1", "2026-10-05", "cik:0000000001", "positive", 0.3, 0, seed="cik:A")  # bullish entry
+    _event(conn, "e2", "2026-10-07", "cik:0000000001", "negative", 0.6, 0, seed="cik:B")  # strong reverse 10-07
     _px(conn)
     dx.compute_dynamic_outcomes(conn, max_hold=10)
     r = conn.execute("SELECT * FROM dynamic_outcomes WHERE event_id='e1'").fetchone()
     assert r is not None
     assert r["entry_date"] == "2026-10-06"       # next session open after the 10-05 announcement
-    assert r["exit_date"] == "2026-10-07"        # the reverse flips net negative here
-    assert r["exit_reason"] == "reverse"
-    assert r["holding_days"] == 1
-    # return = exit_close(95)/entry_open(102) - 1 minus benchmark, direction-signed (long)
+    assert r["exit_reason"] == "reverse"         # net flips negative on the 10-07 trigger day
+    assert r["exit_date"] == "2026-10-08"        # exit at the NEXT session open after the trigger
+    assert r["holding_days"] == 2
+    # entry open 10-06 (102) -> exit OPEN 10-08 (95), minus benchmark (XLK open 100 -> 102)
     assert r["stock_ret"] == pytest.approx(95 / 102 - 1, abs=1e-6)
-    assert r["hit"] == 0                          # the long lost; the reverse signal warned us out
+    assert r["benchmark_ret"] == pytest.approx(102 / 100 - 1, abs=1e-6)
+    assert r["hit"] == 0
+
+
+def test_hop_weighting_keeps_a_weak_high_hop_reverse_from_flipping(conn):
+    # hop-0 positive (0.3) vs a hop-2 negative (0.5): raw net would flip negative, but with the
+    # aggregate's hop attenuation (0.25x at hop 2) the thesis stays positive -> NOT a reverse exit.
+    _company(conn)
+    _event(conn, "e1", "2026-10-05", "cik:0000000001", "positive", 0.3, 0, seed="cik:A")
+    _event(conn, "e2", "2026-10-07", "cik:0000000001", "negative", 0.5, 2, seed="cik:B")
+    _px(conn)
+    dx.compute_dynamic_outcomes(conn, max_hold=2)
+    r = conn.execute("SELECT * FROM dynamic_outcomes WHERE event_id='e1'").fetchone()
+    assert r["exit_reason"] == "maxhold"          # held through 10-07 (would be 'reverse' without hop-weight)
 
 
 def test_maxhold_caps_holding_without_a_reverse(conn):
     _company(conn)
-    _event(conn, "e1", "2026-10-05", "cik:0000000001", "positive", 0.5, 1)   # no reverse follows
+    _event(conn, "e1", "2026-10-05", "cik:0000000001", "positive", 0.5, 0, seed="cik:A")  # no reverse
     _px(conn)
     dx.compute_dynamic_outcomes(conn, max_hold=2)
     r = conn.execute("SELECT * FROM dynamic_outcomes WHERE event_id='e1'").fetchone()
     assert r["exit_reason"] == "maxhold"
-    assert r["holding_days"] == 2                 # entry 10-06, capped exit 10-08
-    assert r["exit_date"] == "2026-10-08"
+    assert r["exit_date"] == "2026-10-09"         # trigger capped at 10-08, exit next open 10-09
+    assert r["holding_days"] == 3
 
 
 def test_immature_when_exit_beyond_price_data(conn):
