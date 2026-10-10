@@ -53,8 +53,13 @@ def _fetch_intraday_yf(ticker: str, start: str, end: str) -> list[tuple]:
 
 
 def ensure_intraday(conn, tickers, start: str, end: str) -> dict:
-    """Cache hourly bars over [start, end] (YYYY-MM-DD, ET dates) for each ticker lacking them."""
+    """Cache hourly bars covering [start, end] (YYYY-MM-DD ET dates) for tickers lacking them.
+    `end` is the last SIGNAL date we need; we fetch a few days past it so a late-day action that
+    rolls entry to the next session is covered. The cache gate compares the last cached bar's date
+    against `end` (a real signal date), not against a padded calendar day — else a pad landing on a
+    weekend/holiday would make the gate permanently unsatisfiable and re-fetch everything each run."""
     summary = {"requested": 0, "fetched": 0, "cached": 0, "empty": 0, "rows": 0}
+    fetch_end = (datetime.strptime(end, "%Y-%m-%d") + timedelta(days=4)).strftime("%Y-%m-%d")
     seen: set[str] = set()
     for t in tickers:
         if not t or t in seen:
@@ -66,7 +71,7 @@ def ensure_intraday(conn, tickers, start: str, end: str) -> dict:
             summary["cached"] += 1
             continue
         try:
-            rows = _fetch_intraday_yf(t, start, end)
+            rows = _fetch_intraday_yf(t, start, fetch_end)
         except Exception as exc:
             log.warning("intraday: fetch %s failed: %s", t, exc)
             rows = []

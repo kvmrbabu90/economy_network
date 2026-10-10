@@ -72,7 +72,7 @@ def compute_intraday_outcomes(conn, horizons=HORIZONS) -> dict:
     tickers = {s["ticker"] for s in sigs} | {s["benchmark"] for s in sigs}
     acts = [s["act"] for s in sigs]
     idmin = min(acts).strftime("%Y-%m-%d")
-    idmax = (max(acts) + timedelta(days=4)).strftime("%Y-%m-%d")
+    idmax = max(acts).strftime("%Y-%m-%d")   # last signal date; ensure_intraday pads the fetch itself
     intraday_prices.ensure_intraday(conn, sorted(tickers), idmin, idmax)
     # Daily closes for the exits.
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -86,11 +86,20 @@ def compute_intraday_outcomes(conn, horizons=HORIZONS) -> dict:
         intra[t] = bars
         bench_open[t] = {dt: o for dt, o, _ in bars}
     dclose: dict[str, dict] = {}
+    dopen: dict[str, dict] = {}
     ddates: dict[str, list] = {}
     for t in tickers:
         ser = store.price_ohlc(conn, t)                 # (date, adj_close, adj_open)
         dclose[t] = {d: c for d, c, _ in ser}
+        dopen[t] = {d: o for d, _, o in ser}
         ddates[t] = [d for d, _, _ in ser]
+
+    def _first_open(bars, date_iso):
+        """Open of the day's first (≈9:30) intraday bar — the same-feed intraday anchor."""
+        for dt, o, _ in bars:
+            if dt.date().isoformat() == date_iso:
+                return o
+        return None
 
     direct = signal_outcomes._direct_news_days(conn)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -106,9 +115,9 @@ def compute_intraday_outcomes(conn, horizons=HORIZONS) -> dict:
         if entry is None:                               # no bar yet after the action time
             summary["immature"] += 1
             continue
-        entry_dt, entry_open = entry
-        b_entry_open = bench_open[bm].get(entry_dt)
-        if b_entry_open is None:                         # benchmark has no bar at that hour
+        entry_dt, entry_bar_open = entry
+        b_entry_bar_open = bench_open[bm].get(entry_dt)
+        if b_entry_bar_open is None:                      # benchmark has no bar at that hour
             summary["no_price"] += 1
             continue
         entry_date = entry_dt.date().isoformat()
@@ -116,6 +125,17 @@ def compute_intraday_outcomes(conn, horizons=HORIZONS) -> dict:
         if entry_date not in tcl:                        # entry day's daily close not available yet
             summary["immature"] += 1
             continue
+        # Anchor the entry price to the DAILY adjustment baseline (same as the exit closes), using
+        # the intraday feed only for the same-day, adjustment-invariant open->entry-bar RATIO.
+        # Dividing a daily close by a raw intraday open mixes two feeds' adjustment baselines.
+        s_first = _first_open(sbars, entry_date)
+        b_first = _first_open(intra[bm], entry_date)
+        d_open_s, d_open_b = dopen[tk].get(entry_date), dopen[bm].get(entry_date)
+        if not s_first or not b_first or not d_open_s or not d_open_b:
+            summary["no_price"] += 1
+            continue
+        entry_price = d_open_s * (entry_bar_open / s_first)
+        b_entry_price = d_open_b * (b_entry_bar_open / b_first)
         ei = dd.index(entry_date)
         summary["priced"] += 1
         node_direct = direct.get(s["node_id"], set())
@@ -129,8 +149,8 @@ def compute_intraday_outcomes(conn, horizons=HORIZONS) -> dict:
             s_exit, b_exit = tcl.get(exit_date), bcl.get(exit_date)
             if s_exit is None or b_exit is None:
                 continue
-            cap = s_exit / entry_open - 1.0
-            bench = b_exit / b_entry_open - 1.0
+            cap = s_exit / entry_price - 1.0
+            bench = b_exit / b_entry_price - 1.0
             abn = cap - bench
             hit = 1 if ((pos and abn > 0) or (not pos and abn < 0)) else 0
             net = (abn if pos else -abn) - cost

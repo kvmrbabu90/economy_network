@@ -51,6 +51,14 @@ describe("renderDashboard", () => {
     expect(el.textContent).toContain("60min");                      // latency surfaced
   });
 
+  it("coerces the daily-only dir-acc metric to net in the hourly model", () => {
+    const el = document.createElement("div");
+    renderDashboard(el, sc(), { model: "hourly", metric: "diracc", clean: false });
+    const active = el.querySelector(".rel-btn.is-active[data-metric]") as HTMLElement;
+    expect(active.dataset.metric).toBe("net");                      // not blank, not "diracc"
+    expect(el.querySelector(".rel-cell:not(.rel-cell-empty)")).not.toBeNull();   // heatmap not all-empty
+  });
+
   it("shows an accumulating note for hourly when there is no intraday data", () => {
     const el = document.createElement("div");
     renderDashboard(el, sc(false), { model: "hourly", metric: "net", clean: false });

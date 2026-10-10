@@ -26,26 +26,29 @@ def _seed(conn, direction="positive", published_ts="2026-08-11T14:30:00+00:00", 
                               "seed_entity": "E", "seed_node_id": "cik:1", "status": "traced"})
     store.write_event_impacts(conn, "e1", [
         {"node_id": "cik:0000000001", "direction": direction, "magnitude": 0.5, "hop": hop, "reasoning": "r"}])
-    # hourly bars 10:30 + 11:30 ET; 14:30 UTC = 10:30 ET, +60min latency -> entry at the 11:30 bar
-    store.upsert_intraday(conn, "AAPL", [("2026-08-11T10:30:00-04:00", 100.0, 100.0),
-                                         ("2026-08-11T11:30:00-04:00", 105.0, 106.0)])
-    store.upsert_intraday(conn, "XLK", [("2026-08-11T10:30:00-04:00", 200.0, 200.0),
-                                        ("2026-08-11T11:30:00-04:00", 201.0, 201.0)])
-    store.upsert_prices(conn, "AAPL", [("2026-08-11", 110.0, 105.0), ("2026-08-12", 121.0, 112.0)])
-    store.upsert_prices(conn, "XLK", [("2026-08-11", 203.0, 201.0), ("2026-08-12", 206.0, 204.0)])
+    # Intraday feed at a DIFFERENT scale (~10) than the daily feed (~100) to prove the entry price
+    # anchors to the daily baseline via the same-day open->bar ratio, not the raw intraday open.
+    # 14:30 UTC = 10:30 ET; +60min latency -> entry at the 11:30 bar (open 11 -> ratio 11/10 = 1.1).
+    store.upsert_intraday(conn, "AAPL", [("2026-08-11T10:30:00-04:00", 10.0, 10.0),
+                                         ("2026-08-11T11:30:00-04:00", 11.0, 11.5)])
+    store.upsert_intraday(conn, "XLK", [("2026-08-11T10:30:00-04:00", 10.0, 10.0),
+                                        ("2026-08-11T11:30:00-04:00", 10.0, 10.0)])   # bench flat intraday
+    store.upsert_prices(conn, "AAPL", [("2026-08-11", 121.0, 100.0), ("2026-08-12", 132.0, 112.0)])  # close, open
+    store.upsert_prices(conn, "XLK", [("2026-08-11", 103.0, 100.0), ("2026-08-12", 106.0, 104.0)])
 
 
-def test_entry_is_next_bar_after_news_plus_latency(conn):
+def test_entry_price_anchors_to_daily_baseline(conn):
     _seed(conn)
     io.compute_intraday_outcomes(conn, horizons=(0,))
     r = conn.execute("SELECT * FROM intraday_outcomes").fetchone()
     assert r["entry_ts"] == "2026-08-11T11:30:00-04:00"      # 10:30 news + 60min -> 11:30 bar
     assert r["entry_date"] == "2026-08-11"
     assert r["latency_min"] == 60
-    # capturable = same-session close / entry-bar open - 1, minus benchmark
-    assert r["stock_ret"] == pytest.approx(110 / 105 - 1, abs=1e-6)
-    assert r["benchmark_ret"] == pytest.approx(203 / 201 - 1, abs=1e-6)
-    assert r["abn_ret"] == pytest.approx((110 / 105 - 1) - (203 / 201 - 1), abs=1e-6)
+    # entry_price = daily_open(100) * intraday ratio(11/10) = 110, on the daily baseline;
+    # same-session cap = daily_close(121) / 110 - 1 = 0.10; benchmark flat intraday -> 103/100-1
+    assert r["stock_ret"] == pytest.approx(121 / 110 - 1, abs=1e-6)     # 0.10, NOT 121/11
+    assert r["benchmark_ret"] == pytest.approx(103 / 100 - 1, abs=1e-6)
+    assert r["abn_ret"] == pytest.approx((121 / 110 - 1) - (103 / 100 - 1), abs=1e-6)
     assert r["hit"] == 1 and r["net_hit"] == 1
 
 
@@ -54,7 +57,7 @@ def test_daily_close_exits_from_entry_day(conn):
     io.compute_intraday_outcomes(conn, horizons=(0, 1))
     rows = {r["horizon_days"]: r for r in conn.execute("SELECT * FROM intraday_outcomes")}
     assert set(rows) == {0, 1}
-    assert rows[1]["stock_ret"] == pytest.approx(121 / 105 - 1, abs=1e-6)   # +1 trading day close
+    assert rows[1]["stock_ret"] == pytest.approx(132 / 110 - 1, abs=1e-6)   # +1 day close / entry_price
 
 
 def test_only_events_with_published_ts_are_eligible(conn):

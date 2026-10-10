@@ -117,7 +117,10 @@ export function renderDashboard(el: HTMLElement, sc: ReliabilitySummary, opts: R
     : { overall: sc.overall, cells: sc.by_hop_horizon, horizons: sc.meta?.horizons ?? [1, 5, 20, 60] };
 
   const netReady = Object.values(src.overall).some(hasNet) || src.cells.some((c) => hasNet(c.all));
-  const metric: RelMetric = (!netReady && opts.metric === "net") ? "gross" : opts.metric;
+  let metric: RelMetric = (!netReady && opts.metric === "net") ? "gross" : opts.metric;
+  // The hourly model has no announcement-day direction-accuracy — coerce it to net so the heatmap
+  // isn't blank and a metric button stays active when switching models with "dir acc" selected.
+  if (opts.model === "hourly" && metric === "diracc") metric = "net";
 
   const header = `<header class="rel-head">
       <div class="rel-title">EconGraph <b>Signals</b></div>
