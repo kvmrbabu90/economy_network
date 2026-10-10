@@ -182,6 +182,53 @@ CREATE TABLE IF NOT EXISTS node_impact (
     computed_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_node_impact_direction ON node_impact(direction);
+
+-- Signal-reliability layer (Phase 1 validation). Adjusted daily closes cached per ticker.
+CREATE TABLE IF NOT EXISTS prices (
+    ticker     TEXT NOT NULL,
+    date       TEXT NOT NULL,          -- YYYY-MM-DD trading day
+    adj_close  REAL NOT NULL,          -- split/dividend-adjusted close
+    PRIMARY KEY (ticker, date)
+);
+
+-- One row per (propagation signal x horizon): the signal's node abnormal return after the news.
+CREATE TABLE IF NOT EXISTS signal_outcomes (
+    event_id      TEXT NOT NULL,
+    node_id       TEXT NOT NULL,
+    ticker        TEXT NOT NULL,
+    hop           INTEGER NOT NULL,     -- order: 0 direct, 1 second, 2+ third
+    direction     TEXT NOT NULL,        -- positive | negative (no_effect excluded)
+    magnitude     REAL NOT NULL,
+    base_date     TEXT NOT NULL,        -- first trading day >= published_at (no look-ahead)
+    horizon_days  INTEGER NOT NULL,     -- 1 | 5 | 20 | 60 trading days
+    stock_ret     REAL NOT NULL,
+    benchmark     TEXT NOT NULL,        -- sector ETF ticker or SPY
+    benchmark_ret REAL NOT NULL,
+    abn_ret       REAL NOT NULL,        -- stock_ret - benchmark_ret
+    hit           INTEGER NOT NULL,     -- 1 if sign(abn_ret) matches the predicted direction
+    clean         INTEGER NOT NULL DEFAULT 1,  -- 1 = node had NO own hop-0 news in the window
+    computed_at   TEXT NOT NULL,
+    PRIMARY KEY (event_id, node_id, horizon_days)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_outcomes_cls ON signal_outcomes(hop, direction, horizon_days);
+
+-- Aggregated reliability per signal class (the scorecard the dashboard reads).
+CREATE TABLE IF NOT EXISTS signal_reliability (
+    hop           INTEGER NOT NULL,
+    direction     TEXT NOT NULL,        -- positive | negative | any
+    mag_band      TEXT NOT NULL,        -- '0.05-0.2' ... '0.8-1.0' | 'any'
+    horizon_days  INTEGER NOT NULL,
+    clean         INTEGER NOT NULL,     -- 1 = clean subset only, 0 = all signals
+    n             INTEGER NOT NULL,
+    hit_rate      REAL NOT NULL,
+    ci_low        REAL NOT NULL,        -- Wilson 95% interval on hit_rate
+    ci_high       REAL NOT NULL,
+    mean_abn      REAL NOT NULL,
+    median_abn    REAL NOT NULL,
+    ic            REAL,                 -- Spearman(signed magnitude, abn_ret); NULL if n<MIN
+    computed_at   TEXT NOT NULL,
+    PRIMARY KEY (hop, direction, mag_band, horizon_days, clean)
+);
 """
 
 
@@ -834,3 +881,72 @@ def add_alias_rows(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
     )
     conn.commit()
     return len(tuples)
+
+
+# ---------------------------------------------------------------------------
+# Signal-reliability layer (prices / outcomes / reliability)
+# ---------------------------------------------------------------------------
+
+def upsert_prices(conn: sqlite3.Connection, ticker: str, rows: Iterable[tuple]) -> int:
+    """rows = iterable of (date 'YYYY-MM-DD', adj_close float). Idempotent on (ticker, date)."""
+    tuples = [(ticker, d, float(c)) for d, c in rows if d and c is not None]
+    if not tuples:
+        return 0
+    conn.executemany(
+        "INSERT INTO prices (ticker, date, adj_close) VALUES (?,?,?) "
+        "ON CONFLICT(ticker, date) DO UPDATE SET adj_close=excluded.adj_close", tuples)
+    conn.commit()
+    return len(tuples)
+
+
+def price_series(conn: sqlite3.Connection, ticker: str) -> list[tuple]:
+    """Ascending [(date, adj_close), ...] for `ticker` — the trading-day series."""
+    return [(r[0], r[1]) for r in conn.execute(
+        "SELECT date, adj_close FROM prices WHERE ticker=? ORDER BY date", (ticker,))]
+
+
+def cached_price_range(conn: sqlite3.Connection, ticker: str) -> tuple:
+    """(min_date, max_date) already cached for `ticker`, or (None, None)."""
+    r = conn.execute("SELECT MIN(date), MAX(date) FROM prices WHERE ticker=?", (ticker,)).fetchone()
+    return (r[0], r[1]) if r else (None, None)
+
+
+_OUTCOME_COLS = ("event_id", "node_id", "ticker", "hop", "direction", "magnitude", "base_date",
+                 "horizon_days", "stock_ret", "benchmark", "benchmark_ret", "abn_ret", "hit",
+                 "clean", "computed_at")
+
+
+def upsert_signal_outcomes(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
+    """Upsert signal_outcomes rows (PK event_id, node_id, horizon_days). Idempotent."""
+    tuples = [tuple(r[c] for c in _OUTCOME_COLS) for r in rows]
+    if not tuples:
+        return 0
+    ph = ",".join("?" * len(_OUTCOME_COLS))
+    updates = ",".join(f"{c}=excluded.{c}" for c in _OUTCOME_COLS
+                       if c not in ("event_id", "node_id", "horizon_days"))
+    conn.executemany(
+        f"INSERT INTO signal_outcomes ({','.join(_OUTCOME_COLS)}) VALUES ({ph}) "
+        f"ON CONFLICT(event_id, node_id, horizon_days) DO UPDATE SET {updates}", tuples)
+    conn.commit()
+    return len(tuples)
+
+
+_RELIABILITY_COLS = ("hop", "direction", "mag_band", "horizon_days", "clean", "n", "hit_rate",
+                     "ci_low", "ci_high", "mean_abn", "median_abn", "ic", "computed_at")
+
+
+def replace_signal_reliability(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
+    """Atomically replace the whole signal_reliability scorecard (full recompute each run)."""
+    tuples = [tuple(r.get(c) for c in _RELIABILITY_COLS) for r in rows]
+    conn.execute("DELETE FROM signal_reliability")
+    if tuples:
+        ph = ",".join("?" * len(_RELIABILITY_COLS))
+        conn.executemany(
+            f"INSERT INTO signal_reliability ({','.join(_RELIABILITY_COLS)}) VALUES ({ph})", tuples)
+    conn.commit()
+    return len(tuples)
+
+
+def read_signal_reliability(conn: sqlite3.Connection) -> list[dict]:
+    """All reliability rows as dicts (for the API/dashboard)."""
+    return [dict(r) for r in conn.execute("SELECT * FROM signal_reliability")]

@@ -12,7 +12,7 @@ magnitude, published_at)` — against that node's **abnormal return** (sector-re
 (`order × magnitude-band × direction × horizon`) and score each class on **(a) directional
 hit-rate, (b) magnitude information-coefficient, (c) confidence-calibration**. Only
 **tickered** Company nodes are in scope (~573). Prices from a provider-agnostic layer
-(Stooq default, Tiingo when `TIINGO_API_KEY` set).
+(yfinance default — keyless; Tiingo when `TIINGO_API_KEY` set).
 
 `hop` IS the "order": hop 0 = first-order (direct news), hop 1 = second-order
 (supplier/competitor), hop 2+ = third-order. The order→horizon mapping is MEASURED, not assumed.
@@ -34,9 +34,9 @@ hit-rate, (b) magnitude information-coefficient, (c) confidence-calibration**. O
   but flagged low-power.
 
 ## Components (layered, file/DB-based, restartable — CLAUDE.md #5)
-1. `pipeline/prices.py` — provider-agnostic daily adjusted-close fetch (Stooq | Tiingo) with a
-   disk cache (gzip, sha-sharded, like gkg) and politeness; upserts into the `prices` table.
-   `ensure_prices(conn, tickers, start, end)`. Sector→ETF map lives here.
+1. `pipeline/prices.py` — provider-agnostic daily adjusted-close fetch (yfinance | Tiingo),
+   cached in the `prices` SQLite table (the table IS the cache) with politeness; upserts into
+   the `prices` table. `ensure_prices(conn, tickers, start, end)`. Sector→ETF map lives here.
 2. `pipeline/signal_outcomes.py` — join `event_impacts × events × nodes(ticker,sector)`, compute
    per-(signal × horizon) abnormal returns, hit, clean, maturity; upsert `signal_outcomes`.
    Idempotent + incremental (only newly-mature signals). `compute_outcomes(conn)`.

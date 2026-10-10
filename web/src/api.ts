@@ -616,6 +616,39 @@ export function getUsage(granularity: UsageGranularity, days = 30): Promise<Usag
   return get<UsageResponse>("/usage", { granularity, days });
 }
 
+// Signal reliability (feedback/validation layer). The scorecard is produced
+// out-of-band by pipeline/run_validation.py and served from a cached JSON.
+export interface RelStat {
+  n: number; hits: number; hit_rate: number; ci_low: number; ci_high: number;
+  mean_abn: number; median_abn: number; ic: number | null;
+}
+export interface RelHopHorizon { hop: number; horizon_days: number; all: RelStat; clean: RelStat | null; }
+export interface RelMagBand extends RelStat { mag_band: string; horizon_days: number; }
+export interface RelClass {
+  hop: number; direction: string; mag_band: string; horizon_days: number; clean: number;
+  n: number; hit_rate: number; ci_low: number; ci_high: number;
+  mean_abn: number; median_abn: number; ic: number | null; computed_at: string;
+}
+export interface RelCoverage {
+  directional_signals: number; signals_with_mature_outcome: number; outcome_rows: number;
+  mature_by_horizon: Record<string, number>; distinct_events: number; distinct_nodes: number;
+}
+export interface ReliabilitySummary {
+  status: "ok" | "not_computed";
+  message?: string;
+  generated_at?: string;
+  meta?: { horizons: number[]; mag_bands: Record<string, string>; z: number; ic_min_n: number; benchmark: string };
+  overall: Record<string, RelStat>;
+  by_hop_horizon: RelHopHorizon[];
+  by_magband: RelMagBand[];
+  coverage: RelCoverage;
+  classes: RelClass[];
+}
+
+export function getReliabilitySummary(): Promise<ReliabilitySummary> {
+  return get<ReliabilitySummary>("/reliability/summary");
+}
+
 // So What? V2 · P9 — on-demand "Refresh news". POST starts a background cycle;
 // GET polls its status. Both use a raw fetch (bypassing the global inflight
 // "loading…" counter) so the periodic status poll doesn't flicker the app spinner

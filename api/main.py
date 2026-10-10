@@ -33,6 +33,7 @@ from . import impact as impact_mod
 from . import news as news_mod
 from . import query as q
 from .query import resolve_id
+from pipeline import reliability as reliability_mod
 
 
 log = logging.getLogger("api.main")
@@ -591,3 +592,43 @@ def post_impact_multi(payload: dict = Body(...)):
         return impact_mod.run_multi_impact(texts, db_path=_DB_PATH, provider=provider_override)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+# --- Signal reliability (feedback/validation layer) ------------------------
+# The scorecard is produced out-of-band by `pipeline/run_validation.py` (no LLM)
+# and cached as a JSON file; these endpoints just serve it. `/summary` is the
+# dashboard's single fetch (rollups + coverage); `/classes` is the durable,
+# table-backed per-class grain for drill-down and Phase-2 auto-tuning.
+@app.get("/reliability/summary")
+def get_reliability_summary():
+    sc = reliability_mod.read_scorecard()
+    if sc is None:
+        return {
+            "status": "not_computed",
+            "message": "No scorecard yet — run `python -m pipeline.run_validation`.",
+            "coverage": {"directional_signals": 0, "signals_with_mature_outcome": 0,
+                         "outcome_rows": 0, "mature_by_horizon": {}, "distinct_events": 0,
+                         "distinct_nodes": 0},
+            "overall": {}, "by_hop_horizon": [], "by_magband": [], "classes": [],
+        }
+    return {"status": "ok", **sc}
+
+
+@app.get("/reliability/classes")
+def get_reliability_classes(
+    hop: Optional[int] = Query(None, description="Filter to one order (hop)."),
+    horizon: Optional[int] = Query(None, description="Filter to one horizon (trading days)."),
+    clean: Optional[int] = Query(None, description="1 = clean-subset only, 0 = contaminated."),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    try:
+        rows = store.read_signal_reliability(conn)
+    except sqlite3.OperationalError:
+        rows = []  # pre-reliability DB
+    if hop is not None:
+        rows = [r for r in rows if r["hop"] == hop]
+    if horizon is not None:
+        rows = [r for r in rows if r["horizon_days"] == horizon]
+    if clean is not None:
+        rows = [r for r in rows if r["clean"] == clean]
+    return {"count": len(rows), "classes": rows}

@@ -1829,3 +1829,67 @@ html, body {
 @keyframes ec-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .topbar-btn-icon.spin { display: inline-block; animation: ec-spin 0.9s linear infinite; }
 .topbar-btn:disabled { opacity: 0.7; cursor: progress; }
+
+/* -------- RELIABILITY PANEL (feedback/validation layer) ------------- */
+#reliability-body { display: flex; flex-direction: column; gap: 18px; padding: 2px; }
+.rel-empty { color: var(--text-mute); font-size: 13px; }
+.rel-sub { color: var(--text-faint); font-size: 11px; margin-top: 6px; line-height: 1.4; }
+.rel-section { border-top: 1px solid var(--line-soft); padding-top: 14px; }
+.rel-section:first-child { border-top: none; padding-top: 0; }
+.rel-banner {
+  background: var(--bg-recess); border: 1px solid var(--line);
+  border-radius: 8px; padding: 9px 11px; font-size: 11.5px; color: var(--text-mute); line-height: 1.45;
+}
+.filter-title .rel-toggle { float: right; text-transform: none; letter-spacing: 0; }
+.rel-clean-btn {
+  background: var(--bg-recess); border: 1px solid var(--line); color: var(--text-mute);
+  font-size: 10px; padding: 2px 7px; cursor: pointer; border-radius: 5px; margin-left: 4px;
+}
+.rel-clean-btn.is-active { color: var(--text); border-color: var(--text-mute); background: var(--bg-panel); }
+
+/* Overall per-horizon cards — 2x2 so labels fit the ~260px sidebar */
+.rel-overall { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.rel-ov-card {
+  background: var(--bg-recess); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 4px; text-align: center; overflow: hidden;
+}
+.rel-ov-pending { opacity: 0.5; }
+.rel-ov-pending .rel-ov-pct { font-size: 12px; font-weight: 600; }
+.rel-ov-h { font-size: 10px; color: var(--text-faint); letter-spacing: 0.05em; }
+.rel-ov-pct { font-size: 22px; font-weight: 700; line-height: 1.2; }
+.rel-ov-ci { font-size: 9.5px; color: var(--text-faint); }
+.rel-ov-n { font-size: 10px; color: var(--text-mute); margin-top: 1px; }
+
+/* Heatmap: 1 label column + 4 horizon columns */
+.rel-grid { display: grid; grid-template-columns: 1.5fr repeat(4, 1fr); gap: 3px; }
+.rel-grid-head { font-size: 10px; color: var(--text-faint); text-align: center; padding-bottom: 2px; }
+.rel-row-label { font-size: 10.5px; color: var(--text-mute); display: flex; align-items: center; padding-right: 4px; }
+.rel-cell {
+  position: relative; border-radius: 5px; min-height: 34px; display: flex;
+  flex-direction: column; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: #0c0f12;
+}
+.rel-cell-n { font-size: 8.5px; font-weight: 500; opacity: 0.8; }
+.rel-cell-empty { background: var(--bg-recess); color: var(--text-faint); font-weight: 500; font-size: 10px; }
+.rel-lown { opacity: 0.55; background-image: repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(0,0,0,0.14) 3px, rgba(0,0,0,0.14) 6px); }
+
+.rel-legend { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 10px; color: var(--text-faint); }
+.rel-leg-grad { flex: 1; height: 7px; border-radius: 4px; background: linear-gradient(90deg, rgb(244,114,128), rgb(58,63,68), rgb(45,212,191)); }
+.rel-legend em { font-style: normal; }
+
+/* Calibration bars */
+.rel-bars { display: flex; flex-direction: column; gap: 7px; }
+.rel-bar-row { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 8px; }
+.rel-bar-lab { font-size: 11px; color: var(--text-mute); }
+.rel-bar-track { position: relative; height: 16px; background: var(--bg-recess); border-radius: 4px; overflow: hidden; }
+.rel-bar-fill { height: 100%; border-radius: 4px; }
+.rel-bar-coin { position: absolute; top: -2px; bottom: -2px; left: 50%; width: 0; border-left: 1px dashed var(--text-faint); }
+.rel-bar-val { font-size: 11px; color: var(--text); white-space: nowrap; }
+.rel-bar-val em { font-style: normal; color: var(--text-faint); font-size: 10px; }
+.rel-bands-legend { font-size: 10px; color: var(--text-faint); margin-top: 5px; }
+
+/* Coverage */
+.rel-coverage { display: flex; flex-direction: column; gap: 5px; }
+.rel-cov-row { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-mute); }
+.rel-cov-row b { color: var(--text); font-weight: 600; }
+.rel-cov-foot { font-size: 10px; color: var(--text-faint); margin-top: 6px; line-height: 1.4; }
