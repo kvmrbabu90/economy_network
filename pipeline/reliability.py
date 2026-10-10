@@ -182,7 +182,7 @@ def _dynamic_block(rows: list[dict]) -> dict:
             "distinct_nodes": len({r["node_id"] for r in rows}),
             "avg_hold": round(sum(r["holding_days"] for r in rows) / len(rows), 1) if rows else 0.0,
             "exit_reasons": reasons,
-            "max_hold": rows[0]["max_hold"] if rows else None,
+            "max_hold": max((r["max_hold"] for r in rows), default=None),
         },
     }
 

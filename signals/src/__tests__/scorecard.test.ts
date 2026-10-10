@@ -24,8 +24,11 @@ const sc = (withIntraday = true): ReliabilitySummary => ({
     coverage: { outcome_rows: 22, distinct_events: 4, distinct_nodes: 9, latency_min: 60, mature_by_horizon: { "0": 12, "1": 10 } },
   } : null,
   dynamic: {
-    overall: { ...stat(18, 0.61, null, 0.56), avg_hold: 3.4 },
-    by_hop: [{ hop: 1, ...stat(10, 0.6, null, 0.55), avg_hold: 3.0 }, { hop: 2, ...stat(8, 0.63, null, 0.58), avg_hold: 3.8 }],
+    // dynamic rows carry no ann_abn/gap_abn, so the real _dynamic_block always emits dir_acc/mean_gap
+    // as null — mirror that here so the mock can't mask a regression if the view ever reads them.
+    overall: { ...stat(18, 0.61, null, 0.56), dir_acc: null, mean_gap: null, avg_hold: 3.4 },
+    by_hop: [{ hop: 1, ...stat(10, 0.6, null, 0.55), dir_acc: null, mean_gap: null, avg_hold: 3.0 },
+             { hop: 2, ...stat(8, 0.63, null, 0.58), dir_acc: null, mean_gap: null, avg_hold: 3.8 }],
     coverage: { outcome_rows: 18, distinct_nodes: 12, avg_hold: 3.4, exit_reasons: { reverse: 7, faded: 9, maxhold: 2 }, max_hold: 10 },
   },
 });
@@ -72,13 +75,39 @@ describe("renderDashboard", () => {
     expect(el.textContent).toContain("avg hold");
     expect(el.textContent).toContain("3.4d");
     expect(el.textContent).toContain("reverse 7");          // exit-reason mix
+    expect(el.querySelectorAll(".rel-bar-row").length).toBe(2);    // one per order (hops 1, 2)
+    expect(el.textContent).toContain("3.8d");               // per-order (hop-2) avg hold rendered
     expect(el.querySelectorAll("[data-metric]").length).toBe(0);   // no metric toggle in dynamic
     expect(el.querySelectorAll("[data-clean]").length).toBe(0);    // no clean toggle in dynamic
+  });
+
+  it("dims the dynamic headline when the sample is below the low-n threshold", () => {
+    const el = document.createElement("div");
+    renderDashboard(el, sc(), { model: "dynamic", metric: "net", clean: false });
+    // overall n=18 (>=10) is not dimmed; the hop-2 by-order row (n=8) is.
+    expect(el.querySelector(".rel-ov-card.rel-lown")).toBeNull();
+    expect(el.querySelectorAll(".rel-bar-row.rel-lown").length).toBe(1);
+  });
+
+  it("renders an empty exit-reason mix without throwing", () => {
+    const el = document.createElement("div");
+    const base = sc();
+    const dyn = { ...base.dynamic!, coverage: { ...base.dynamic!.coverage, exit_reasons: {} } };
+    renderDashboard(el, { ...base, dynamic: dyn }, { model: "dynamic", metric: "net", clean: false });
+    expect(el.textContent).toContain("— · nodes");          // falls back to the em dash, no "undefined"
   });
 
   it("shows a dynamic-exit accumulating note when there is no dynamic data", () => {
     const el = document.createElement("div");
     renderDashboard(el, { ...sc(), dynamic: null }, { model: "dynamic", metric: "net", clean: false });
+    expect(el.textContent).toContain("No dynamic-exit outcomes yet");
+  });
+
+  it("shows the dynamic-exit accumulating note when the block has zero rows", () => {
+    const el = document.createElement("div");
+    const base = sc();
+    const dyn = { ...base.dynamic!, coverage: { ...base.dynamic!.coverage, outcome_rows: 0 } };
+    renderDashboard(el, { ...base, dynamic: dyn }, { model: "dynamic", metric: "net", clean: false });
     expect(el.textContent).toContain("No dynamic-exit outcomes yet");
   });
 

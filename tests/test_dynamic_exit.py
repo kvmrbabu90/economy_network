@@ -1,5 +1,5 @@
 """Reverse-signal dynamic exit: exits when the node's net consensus flips (reverse) or at the
-max-hold cap; return measured entry-open -> exit-close. Deterministic; no network."""
+max-hold cap; return measured entry-open -> exit-open. Deterministic; no network."""
 from __future__ import annotations
 
 import pytest
@@ -46,7 +46,8 @@ def test_reverse_signal_triggers_exit_at_next_open(conn):
     _event(conn, "e1", "2026-10-05", "cik:0000000001", "positive", 0.3, 0, seed="cik:A")  # bullish entry
     _event(conn, "e2", "2026-10-07", "cik:0000000001", "negative", 0.6, 0, seed="cik:B")  # strong reverse 10-07
     _px(conn)
-    dx.compute_dynamic_outcomes(conn, max_hold=10)
+    # max_hold=2 so the 5-day price window satisfies the full-maturity gate (entry_i+max_hold+1 < n)
+    dx.compute_dynamic_outcomes(conn, max_hold=2)
     r = conn.execute("SELECT * FROM dynamic_outcomes WHERE event_id='e1'").fetchone()
     assert r is not None
     assert r["entry_date"] == "2026-10-06"       # next session open after the 10-05 announcement
@@ -88,3 +89,58 @@ def test_immature_when_exit_beyond_price_data(conn):
     _px(conn)
     dx.compute_dynamic_outcomes(conn, max_hold=10)
     assert conn.execute("SELECT COUNT(*) c FROM dynamic_outcomes WHERE event_id='e1'").fetchone()["c"] == 0
+
+
+def test_selection_bias_gate_requires_full_maxhold_maturity(conn):
+    # A clear day-2 reverse, but only 5 trading days and max_hold=10 -> not enough forward data for
+    # the full holding window, so it must be IMMATURE. (Before the up-front gate this fast reverse
+    # would have sneaked in near the data edge while slower long holds were dropped -> the
+    # holding-length-dependent selection bias the review flagged.)
+    _company(conn)
+    _event(conn, "e1", "2026-10-05", "cik:0000000001", "positive", 0.3, 0, seed="cik:A")
+    _event(conn, "e2", "2026-10-07", "cik:0000000001", "negative", 0.9, 0, seed="cik:B")
+    _px(conn)
+    summary = dx.compute_dynamic_outcomes(conn, max_hold=10)
+    assert conn.execute("SELECT COUNT(*) c FROM dynamic_outcomes WHERE event_id='e1'").fetchone()["c"] == 0
+    assert summary["immature"] >= 1
+
+
+def test_entry_mag_is_bounded_by_tanh(conn):
+    # Two strong same-day positives: the raw signed sum would exceed 1, but entry_mag must saturate
+    # into (-1, 1) to live on the same scale as the live aggregate's tanh consensus + the threshold.
+    _company(conn)
+    _event(conn, "e1", "2026-10-05", "cik:0000000001", "positive", 1.0, 0, seed="cik:A")
+    _event(conn, "e2", "2026-10-05", "cik:0000000001", "positive", 1.0, 0, seed="cik:B")
+    _px(conn)
+    dx.compute_dynamic_outcomes(conn, max_hold=2)
+    r = conn.execute("SELECT entry_mag FROM dynamic_outcomes WHERE event_id='e1'").fetchone()
+    assert r is not None
+    assert -1.0 < r["entry_mag"] < 1.0
+    assert r["entry_mag"] > 0.5          # strong bullish consensus, just saturated
+
+
+def _dyn_row(eid):
+    return {"event_id": eid, "node_id": "cik:0000000001", "ticker": "AAPL", "hop": 0,
+            "direction": "positive", "magnitude": 0.3, "entry_date": "2026-10-06",
+            "exit_date": "2026-10-08", "holding_days": 2, "exit_reason": "reverse",
+            "stock_ret": 0.01, "benchmark": "XLK", "benchmark_ret": 0.0, "abn_ret": 0.01,
+            "hit": 1, "net_cap": 0.008, "net_hit": 1, "entry_mag": 0.5, "cost_bps": 20.0,
+            "max_hold": 10, "computed_at": "t"}
+
+
+def test_upsert_preserves_pruned_event_rows_but_clears_present_regressions(conn):
+    # One present event, one that will be pruned; a dynamic row for each.
+    for eid in ("ev_present", "ev_pruned"):
+        store.insert_event(conn, {"id": eid, "headline": "h", "source": "s", "url": "u",
+                                  "category": "c", "published_at": "2026-10-05", "seed_entity": "E",
+                                  "seed_node_id": "cik:X", "status": "traced"})
+    store.upsert_dynamic_outcomes(conn, [_dyn_row("ev_present"), _dyn_row("ev_pruned")])
+    assert conn.execute("SELECT COUNT(*) c FROM dynamic_outcomes").fetchone()["c"] == 2
+    # Prune ev_pruned from events (its mature outcome is finalized history) and regress the present
+    # signal (recompute yields no current rows). The next write must clear only the present-event
+    # row and keep the pruned-event one.
+    conn.execute("DELETE FROM events WHERE id='ev_pruned'")
+    conn.commit()
+    store.upsert_dynamic_outcomes(conn, [])
+    ids = {r["event_id"] for r in conn.execute("SELECT event_id FROM dynamic_outcomes")}
+    assert ids == {"ev_pruned"}

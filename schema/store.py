@@ -1091,16 +1091,19 @@ _OUTCOME_COLS = ("event_id", "node_id", "ticker", "hop", "direction", "magnitude
 
 
 def upsert_signal_outcomes(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
-    """Upsert signal_outcomes rows (PK event_id, node_id, horizon_days). Idempotent."""
+    """Rewrite signal_outcomes for events that still exist (recompute is authoritative, so a
+    regressed/re-traced signal cannot leave a stale row), while PRESERVING rows whose source event
+    has been pruned — a settled mature outcome is deterministic, so those are finalized backtest
+    history. PK (event_id, node_id, horizon_days). Idempotent."""
     tuples = [tuple(r[c] for c in _OUTCOME_COLS) for r in rows]
-    if not tuples:
-        return 0
-    ph = ",".join("?" * len(_OUTCOME_COLS))
-    updates = ",".join(f"{c}=excluded.{c}" for c in _OUTCOME_COLS
-                       if c not in ("event_id", "node_id", "horizon_days"))
-    conn.executemany(
-        f"INSERT INTO signal_outcomes ({','.join(_OUTCOME_COLS)}) VALUES ({ph}) "
-        f"ON CONFLICT(event_id, node_id, horizon_days) DO UPDATE SET {updates}", tuples)
+    conn.execute("DELETE FROM signal_outcomes WHERE event_id IN (SELECT id FROM events)")
+    if tuples:
+        ph = ",".join("?" * len(_OUTCOME_COLS))
+        updates = ",".join(f"{c}=excluded.{c}" for c in _OUTCOME_COLS
+                           if c not in ("event_id", "node_id", "horizon_days"))
+        conn.executemany(
+            f"INSERT INTO signal_outcomes ({','.join(_OUTCOME_COLS)}) VALUES ({ph}) "
+            f"ON CONFLICT(event_id, node_id, horizon_days) DO UPDATE SET {updates}", tuples)
     conn.commit()
     return len(tuples)
 
@@ -1161,15 +1164,17 @@ _INTRADAY_OUTCOME_COLS = ("event_id", "node_id", "ticker", "hop", "direction", "
 
 
 def upsert_intraday_outcomes(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
+    """Authoritative for events that still exist (clears regressed/re-traced rows), preserving
+    pruned-event rows as finalized history. PK (event_id, node_id, horizon_days)."""
     tuples = [tuple(r[c] for c in _INTRADAY_OUTCOME_COLS) for r in rows]
-    if not tuples:
-        return 0
-    ph = ",".join("?" * len(_INTRADAY_OUTCOME_COLS))
-    updates = ",".join(f"{c}=excluded.{c}" for c in _INTRADAY_OUTCOME_COLS
-                       if c not in ("event_id", "node_id", "horizon_days"))
-    conn.executemany(
-        f"INSERT INTO intraday_outcomes ({','.join(_INTRADAY_OUTCOME_COLS)}) VALUES ({ph}) "
-        f"ON CONFLICT(event_id, node_id, horizon_days) DO UPDATE SET {updates}", tuples)
+    conn.execute("DELETE FROM intraday_outcomes WHERE event_id IN (SELECT id FROM events)")
+    if tuples:
+        ph = ",".join("?" * len(_INTRADAY_OUTCOME_COLS))
+        updates = ",".join(f"{c}=excluded.{c}" for c in _INTRADAY_OUTCOME_COLS
+                           if c not in ("event_id", "node_id", "horizon_days"))
+        conn.executemany(
+            f"INSERT INTO intraday_outcomes ({','.join(_INTRADAY_OUTCOME_COLS)}) VALUES ({ph}) "
+            f"ON CONFLICT(event_id, node_id, horizon_days) DO UPDATE SET {updates}", tuples)
     conn.commit()
     return len(tuples)
 
@@ -1181,14 +1186,17 @@ _DYNAMIC_OUTCOME_COLS = ("event_id", "node_id", "ticker", "hop", "direction", "m
 
 
 def upsert_dynamic_outcomes(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
+    """Authoritative for events that still exist (clears a regressed/re-traced signal's stale row),
+    preserving rows whose source event has been pruned as finalized backtest history. PK
+    (event_id, node_id)."""
     tuples = [tuple(r[c] for c in _DYNAMIC_OUTCOME_COLS) for r in rows]
-    if not tuples:
-        return 0
-    ph = ",".join("?" * len(_DYNAMIC_OUTCOME_COLS))
-    updates = ",".join(f"{c}=excluded.{c}" for c in _DYNAMIC_OUTCOME_COLS
-                       if c not in ("event_id", "node_id"))
-    conn.executemany(
-        f"INSERT INTO dynamic_outcomes ({','.join(_DYNAMIC_OUTCOME_COLS)}) VALUES ({ph}) "
-        f"ON CONFLICT(event_id, node_id) DO UPDATE SET {updates}", tuples)
+    conn.execute("DELETE FROM dynamic_outcomes WHERE event_id IN (SELECT id FROM events)")
+    if tuples:
+        ph = ",".join("?" * len(_DYNAMIC_OUTCOME_COLS))
+        updates = ",".join(f"{c}=excluded.{c}" for c in _DYNAMIC_OUTCOME_COLS
+                           if c not in ("event_id", "node_id"))
+        conn.executemany(
+            f"INSERT INTO dynamic_outcomes ({','.join(_DYNAMIC_OUTCOME_COLS)}) VALUES ({ph}) "
+            f"ON CONFLICT(event_id, node_id) DO UPDATE SET {updates}", tuples)
     conn.commit()
     return len(tuples)

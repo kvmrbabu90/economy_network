@@ -107,13 +107,14 @@ function dynamicView(sc: ReliabilitySummary): string {
   const o = dyn.overall;
   const net = o.net_hit_rate ?? o.hit_rate;
   const lo = o.net_ci_low ?? o.ci_low, hi = o.net_ci_high ?? o.ci_high;
+  const ovLowN = (o.n ?? 0) < LOW_N ? " rel-lown" : "";   // dim headline when the sample is thin
   const cards = `<div class="rel-overall">
-    <div class="rel-ov-card"><div class="rel-ov-h">net edge</div><div class="rel-ov-pct" style="color:${hitColor(net)}">${pct(net)}</div><div class="rel-ov-ci">CI ${pct(lo)}–${pct(hi)}</div><div class="rel-ov-n">gross ${pct(o.hit_rate)} · n=${o.n}</div></div>
+    <div class="rel-ov-card${ovLowN}"><div class="rel-ov-h">net edge</div><div class="rel-ov-pct" style="color:${hitColor(net)}">${pct(net)}</div><div class="rel-ov-ci">CI ${pct(lo)}–${pct(hi)}</div><div class="rel-ov-n">gross ${pct(o.hit_rate)} · n=${o.n}</div></div>
     <div class="rel-ov-card"><div class="rel-ov-h">avg hold</div><div class="rel-ov-pct">${dyn.coverage.avg_hold}d</div><div class="rel-ov-n">cap ${dyn.coverage.max_hold ?? "—"}d</div></div>
     <div class="rel-ov-card"><div class="rel-ov-h">mean net / trade</div><div class="rel-ov-pct" style="font-size:22px">${((o.mean_net ?? 0) * 100).toFixed(2)}%</div></div>
   </div>`;
   const rows = dyn.by_hop.map((h) =>
-    `<div class="rel-bar-row"><span class="rel-bar-lab">${HOP_LABEL[h.hop ?? 0] ?? `hop ${h.hop}`}</span>`
+    `<div class="rel-bar-row${(h.n ?? 0) < LOW_N ? " rel-lown" : ""}"><span class="rel-bar-lab">${HOP_LABEL[h.hop ?? 0] ?? `hop ${h.hop}`}</span>`
     + `<span class="rel-bar-val">net ${pct(h.net_hit_rate ?? h.hit_rate)} · mean ${((h.mean_net ?? 0) * 100).toFixed(2)}% · ${h.avg_hold ?? "—"}d · <em>n=${h.n}</em></span></div>`).join("");
   const reasons = Object.entries(dyn.coverage.exit_reasons).map(([k, v]) => `${k} ${v}`).join(" · ") || "—";
   return cards
@@ -139,10 +140,12 @@ export function renderDashboard(el: HTMLElement, sc: ReliabilitySummary, opts: R
     : { overall: sc.overall, cells: sc.by_hop_horizon, horizons: sc.meta?.horizons ?? [1, 5, 20, 60] };
 
   const netReady = Object.values(src.overall).some(hasNet) || src.cells.some((c) => hasNet(c.all));
-  let metric: RelMetric = (!netReady && opts.metric === "net") ? "gross" : opts.metric;
-  // The hourly model has no announcement-day direction-accuracy — coerce it to net so the heatmap
-  // isn't blank and a metric button stays active when switching models with "dir acc" selected.
+  let metric: RelMetric = opts.metric;
+  // The hourly model has no announcement-day direction-accuracy — coerce it to net FIRST so a
+  // metric button stays active when switching models with "dir acc" selected, ...
   if (opts.model === "hourly" && metric === "diracc") metric = "net";
+  // ... then fall back to gross if net isn't ready yet, so the heatmap is never left blank.
+  if (!netReady && metric === "net") metric = "gross";
 
   const header = `<header class="rel-head">
       <div class="rel-title">EconGraph <b>Signals</b></div>
