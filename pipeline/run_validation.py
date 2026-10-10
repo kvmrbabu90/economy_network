@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 
 def run_validation(conn) -> dict:
     t0 = time.monotonic()
+    store.init_db(conn)   # idempotent: ensures the price/outcome/reliability schema + migrations
     outcomes = signal_outcomes.compute_outcomes(conn)
     conn.commit()
     scorecard = reliability.compute_reliability(conn)

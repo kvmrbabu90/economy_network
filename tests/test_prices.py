@@ -139,4 +139,24 @@ def test_fetch_yfinance_skips_nan(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=_FakeTicker))
     out = prices._fetch_yfinance("X", "2026-08-01", "2026-08-31")
-    assert out == [("2026-08-03", 90.0), ("2026-08-05", 92.0)]   # NaN row dropped
+    # 3-tuples (date, close, open); no Open column here -> open is None; NaN close row dropped
+    assert out == [("2026-08-03", 90.0, None), ("2026-08-05", 92.0, None)]
+
+
+def test_fetch_yfinance_reads_adjusted_open(monkeypatch):
+    import sys
+    import types
+    import pandas as pd
+    idx = pd.to_datetime(["2026-08-03", "2026-08-04"])
+    df = pd.DataFrame({"Open": [89.0, float("nan")], "Close": [90.0, 91.0]}, index=idx)
+
+    class _FakeTicker:
+        def __init__(self, _t):
+            pass
+
+        def history(self, **_k):
+            return df
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=_FakeTicker))
+    out = prices._fetch_yfinance("X", "2026-08-01", "2026-08-31")
+    assert out == [("2026-08-03", 90.0, 89.0), ("2026-08-04", 91.0, None)]   # NaN open -> None

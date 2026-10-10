@@ -1,10 +1,16 @@
-"""Compute per-signal market outcomes for the reliability layer.
+"""Compute per-signal market outcomes for the reliability layer, framed for a RETAIL trader.
 
-For each propagation signal (an `event_impacts` row on a TICKERED node with a directional
-verdict), measure the node's ABNORMAL return (stock minus sector-ETF benchmark) at a panel of
-forward horizons, with no look-ahead. Writes `signal_outcomes`. Idempotent + incremental: a
-signal x horizon is computed only once enough future price data exists (maturity gating), so
-re-running fills in newly-mature outcomes.
+First-order news is priced in before a retail trader can act (quant/algo, often the open gap), so
+we measure what is actually CAPTURABLE: enter at the NEXT session's OPEN after the announcement
+(the first trading day >= published_at), and decompose each signal into
+
+  * ann_abn  — the priced-in abnormal move on the announcement session (direction check only; NOT
+               capturable by anyone entering after),
+  * gap_abn  — the overnight from the announcement close to the entry open (also missed),
+  * abn_ret  — the CAPTURABLE abnormal drift, entry_open -> exit_close at +h trading days,
+  * net_cap  — that, direction-signed and net of a flat round-trip cost (the retail bar).
+
+No look-ahead (entry is strictly after the announcement session's open) and maturity-gated.
 
     from pipeline import signal_outcomes
     signal_outcomes.compute_outcomes(conn)
@@ -22,7 +28,11 @@ from pipeline import prices
 log = logging.getLogger(__name__)
 
 HORIZONS = tuple(int(h) for h in os.environ.get("RELIABILITY_HORIZONS", "1,5,20,60").split(","))
-# Lead days before the first signal so the base-date lookup always has a trading day to land on.
+# Flat round-trip transaction cost (bps) deducted ONCE per signal (per-trade, not per-day). Default
+# 10 bps is a conservative retail estimate for liquid S&P names at the open (open = widest spread);
+# ~5 bps is optimistic, stress at 15-20. Per Rule-605 / microstructure research.
+COST_BPS = float(os.environ.get("RELIABILITY_COST_BPS", "10"))
+# Lead days before the first signal so the announcement-day lookup always has a prior bar.
 _LOOKBACK_PAD_DAYS = 7
 
 
@@ -97,72 +107,97 @@ def compute_outcomes(conn, horizons=HORIZONS) -> dict:
     start = datetime.fromordinal(start).strftime("%Y-%m-%d")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     tickers = {s["ticker"] for s in sigs} | {s["benchmark"] for s in sigs}
-    # Refresh a window at least as long as the longest horizon's calendar span so a maturing
-    # signal's base and end bars share ONE split/dividend-adjustment baseline (else multi-day
-    # returns are biased by a provider restatement between the two fetches). ~1.7 cal/trading day.
     refresh_days = int(max(horizons) * 1.7) + 10
     prices.ensure_prices(conn, sorted(tickers), start, today, refresh_days=refresh_days)
 
-    # In-memory series + date lists, built once.
-    series: dict[str, dict] = {}
+    # In-memory close + open dicts and the per-ticker trading-day list, built once.
+    close: dict[str, dict] = {}
+    opens: dict[str, dict] = {}
     dates: dict[str, list] = {}
     for t in tickers:
-        ser = store.price_series(conn, t)
-        series[t] = {d: c for d, c in ser}
-        dates[t] = [d for d, _ in ser]
+        ser = store.price_ohlc(conn, t)                       # (date, adj_close, adj_open)
+        close[t] = {d: c for d, c, _ in ser}
+        opens[t] = {d: o for d, _, o in ser if o is not None}
+        dates[t] = [d for d, _, _ in ser]
 
     direct_days = _direct_news_days(conn)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cost = COST_BPS / 10000.0
     out_rows = []
     for s in sigs:
         tk, bm = s["ticker"], s["benchmark"]
-        tdates, bseries = dates.get(tk, []), series.get(bm, {})
-        if not tdates or not bseries:
+        pub, pos = s["pub"], s["direction"] == "positive"
+        tdates, tclose, topen = dates.get(tk, []), close.get(tk, {}), opens.get(tk, {})
+        bclose, bopen = close.get(bm, {}), opens.get(bm, {})
+        if not tdates or not bclose:
             summary["no_price"] += 1
             continue
-        bi = _base_index(tdates, s["pub"])
-        if bi is None:
+        ai = _base_index(tdates, pub)                         # announcement session (first >= pub)
+        if ai is None:
             summary["immature"] += 1
             continue
-        base_date = tdates[bi]
-        base_px = series[tk][base_date]
-        base_bm = bseries.get(base_date)
-        if base_bm is None:
+        ann_date = tdates[ai]
+        # Enter at the NEXT session's open: strictly AFTER the published date (no look-ahead). For
+        # a trading-day pub that is ai+1; for weekend/holiday news (ann_date already > pub) the
+        # first open after the news IS ann_date, so entry == announcement session.
+        entry_i = ai if ann_date > pub else ai + 1
+        if entry_i >= len(tdates):
+            summary["immature"] += 1
+            continue
+        entry_date = tdates[entry_i]
+        entry_open, b_entry_open = topen.get(entry_date), bopen.get(entry_date)
+        if entry_open is None or b_entry_open is None:        # need the entry open for both legs
             summary["no_price"] += 1
             continue
         summary["priced"] += 1
+
+        # ann_abn: announcement-session abnormal move (the priced-in, non-capturable repricing).
+        ann_abn = None
+        if ai - 1 >= 0:
+            pc, cc = tclose.get(tdates[ai - 1]), tclose.get(ann_date)
+            bpc, bcc = bclose.get(tdates[ai - 1]), bclose.get(ann_date)
+            if pc and cc is not None and bpc and bcc is not None:
+                ann_abn = round((cc / pc - 1.0) - (bcc / bpc - 1.0), 6)
+        # gap_abn: announcement close -> entry open overnight (missed). None when entry == ann.
+        gap_abn = None
+        if entry_i > ai:
+            ac, bac = tclose.get(ann_date), bclose.get(ann_date)
+            if ac and bac:
+                gap_abn = round((entry_open / ac - 1.0) - (b_entry_open / bac - 1.0), 6)
+
         node_direct = direct_days.get(s["node_id"], set())
+        lo_inclusive = s["hop"] != 0
         for h in horizons:
-            ei = bi + h
-            if ei >= len(tdates):
+            xi = entry_i + h
+            if xi >= len(tdates):
                 summary["immature"] += 1
                 continue
-            end_date = tdates[ei]
-            end_bm = bseries.get(end_date)
-            if end_bm is None:
+            exit_date = tdates[xi]
+            s_exit, b_exit = tclose.get(exit_date), bclose.get(exit_date)
+            if s_exit is None or b_exit is None:
                 continue
-            stock_ret = series[tk][end_date] / base_px - 1.0
-            bench_ret = end_bm / base_bm - 1.0
-            abn = stock_ret - bench_ret
-            hit = 1 if ((s["direction"] == "positive" and abn > 0) or
-                        (s["direction"] == "negative" and abn < 0)) else 0
-            # clean = node had no OWN direct (hop-0) news in the window, other than this event.
-            # For a propagated (hop>=1) signal the signal itself is NOT hop-0, so include the base
-            # day — same-day own direct news (breaking after the base close) drives the base->end
-            # return and must mark the sample contaminated. For a hop-0 signal, exclude the base
-            # day so the signal doesn't flag ITSELF (its own event is dated on base_date).
-            lo_inclusive = s["hop"] != 0
+            cap_ret = s_exit / entry_open - 1.0               # capturable: entry open -> exit close
+            bench_cap = b_exit / b_entry_open - 1.0
+            cap_abn = cap_ret - bench_cap
+            hit = 1 if ((pos and cap_abn > 0) or (not pos and cap_abn < 0)) else 0
+            dir_cap = cap_abn if pos else -cap_abn            # return in the predicted direction
+            net = dir_cap - cost                              # net of one round-trip cost
+            # clean = node had no OWN direct (hop-0) news across the measured window
+            # [ann_date, exit_date]; base-inclusive for propagated signals, exclusive for hop-0
+            # (so a hop-0 signal never flags itself on its own announcement day).
             clean = 1
             for d in node_direct:
-                if ((base_date <= d) if lo_inclusive else (base_date < d)) and d <= end_date:
+                if ((ann_date <= d) if lo_inclusive else (ann_date < d)) and d <= exit_date:
                     clean = 0
                     break
             out_rows.append({
                 "event_id": s["event_id"], "node_id": s["node_id"], "ticker": tk, "hop": s["hop"],
-                "direction": s["direction"], "magnitude": s["magnitude"], "base_date": base_date,
-                "horizon_days": h, "stock_ret": round(stock_ret, 6), "benchmark": bm,
-                "benchmark_ret": round(bench_ret, 6), "abn_ret": round(abn, 6), "hit": hit,
-                "clean": clean, "computed_at": now})
+                "direction": s["direction"], "magnitude": s["magnitude"], "base_date": entry_date,
+                "horizon_days": h, "stock_ret": round(cap_ret, 6), "benchmark": bm,
+                "benchmark_ret": round(bench_cap, 6), "abn_ret": round(cap_abn, 6), "hit": hit,
+                "clean": clean, "ann_abn": ann_abn, "gap_abn": gap_abn,
+                "net_cap": round(net, 6), "net_hit": 1 if net > 0 else 0, "cost_bps": COST_BPS,
+                "computed_at": now})
     summary["written"] = store.upsert_signal_outcomes(conn, out_rows)
     log.info("outcomes: %s", summary)
     return summary

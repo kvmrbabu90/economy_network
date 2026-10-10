@@ -188,10 +188,16 @@ CREATE TABLE IF NOT EXISTS prices (
     ticker     TEXT NOT NULL,
     date       TEXT NOT NULL,          -- YYYY-MM-DD trading day
     adj_close  REAL NOT NULL,          -- split/dividend-adjusted close
+    adj_open   REAL,                   -- split/dividend-adjusted open (for next-open entry); nullable
     PRIMARY KEY (ticker, date)
 );
 
--- One row per (propagation signal x horizon): the signal's node abnormal return after the news.
+-- One row per (propagation signal x horizon). Returns are decomposed around a RETAIL-realistic
+-- entry: the announcement session is the first trading day >= published_at; we ENTER at the NEXT
+-- session's open (no look-ahead, matches PEAD practice). ann_abn = announcement-day abnormal move
+-- (the instant repricing, NOT capturable by anyone entering after); abn_ret/stock_ret = the
+-- CAPTURABLE abnormal drift entry_open -> exit_close; net_cap = that, direction-signed and net of
+-- a round-trip cost. base_date holds the ENTRY date.
 CREATE TABLE IF NOT EXISTS signal_outcomes (
     event_id      TEXT NOT NULL,
     node_id       TEXT NOT NULL,
@@ -199,14 +205,19 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
     hop           INTEGER NOT NULL,     -- order: 0 direct, 1 second, 2+ third
     direction     TEXT NOT NULL,        -- positive | negative (no_effect excluded)
     magnitude     REAL NOT NULL,
-    base_date     TEXT NOT NULL,        -- first trading day >= published_at (no look-ahead)
-    horizon_days  INTEGER NOT NULL,     -- 1 | 5 | 20 | 60 trading days
-    stock_ret     REAL NOT NULL,
+    base_date     TEXT NOT NULL,        -- ENTRY trading day (next open after the announcement)
+    horizon_days  INTEGER NOT NULL,     -- 1 | 5 | 20 | 60 trading days held from entry
+    stock_ret     REAL NOT NULL,        -- capturable: exit_close / entry_open - 1
     benchmark     TEXT NOT NULL,        -- sector ETF ticker or SPY
-    benchmark_ret REAL NOT NULL,
-    abn_ret       REAL NOT NULL,        -- stock_ret - benchmark_ret
+    benchmark_ret REAL NOT NULL,        -- benchmark capturable return over the same entry->exit
+    abn_ret       REAL NOT NULL,        -- capturable abnormal return (stock_ret - benchmark_ret)
     hit           INTEGER NOT NULL,     -- 1 if sign(abn_ret) matches the predicted direction
     clean         INTEGER NOT NULL DEFAULT 1,  -- 1 = node had NO own hop-0 news in the window
+    ann_abn       REAL,                 -- announcement-day abnormal move (priced-in; direction check)
+    gap_abn       REAL,                 -- ann_close -> entry_open abnormal (overnight, not captured)
+    net_cap       REAL,                 -- direction-signed abn_ret minus round-trip cost
+    net_hit       INTEGER,              -- 1 if net_cap > 0 (made money net of cost, in direction)
+    cost_bps      REAL,                 -- round-trip cost applied, in basis points
     computed_at   TEXT NOT NULL,
     PRIMARY KEY (event_id, node_id, horizon_days)
 );
@@ -220,12 +231,18 @@ CREATE TABLE IF NOT EXISTS signal_reliability (
     horizon_days  INTEGER NOT NULL,
     clean         INTEGER NOT NULL,     -- 1 = clean subset only, 0 = all signals
     n             INTEGER NOT NULL,
-    hit_rate      REAL NOT NULL,
+    hit_rate      REAL NOT NULL,        -- capturable directional hit-rate (gross)
     ci_low        REAL NOT NULL,        -- Wilson 95% interval on hit_rate
     ci_high       REAL NOT NULL,
-    mean_abn      REAL NOT NULL,
+    mean_abn      REAL NOT NULL,        -- mean capturable abnormal return
     median_abn    REAL NOT NULL,
-    ic            REAL,                 -- Spearman(signed magnitude, abn_ret); NULL if n<MIN
+    ic            REAL,                 -- Spearman(signed magnitude, capturable abn_ret); NULL if n<MIN
+    net_hit_rate  REAL,                 -- fraction profitable NET of round-trip cost (the retail bar)
+    net_ci_low    REAL,
+    net_ci_high   REAL,
+    mean_net      REAL,                 -- mean net capturable return (direction-signed, after cost)
+    dir_acc       REAL,                 -- announcement-day direction accuracy (extraction quality)
+    mean_gap      REAL,                 -- mean abnormal overnight gap (missed, not captured)
     computed_at   TEXT NOT NULL,
     PRIMARY KEY (hop, direction, mag_band, horizon_days, clean)
 );
@@ -267,6 +284,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     _migrate_node_impact_driver_count(conn)
     _migrate_enrich_columns(conn)
     _migrate_edge_columns(conn)
+    _migrate_price_adj_open(conn)
+    _migrate_signal_outcome_cols(conn)
+    _migrate_signal_reliability_cols(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -378,6 +398,56 @@ def _migrate_enrich_columns(conn: sqlite3.Connection) -> None:
                        ("enrich_tier", "INTEGER"), ("enrich_version", "INTEGER")):
         if name not in cols:
             conn.execute(f"ALTER TABLE events ADD COLUMN {name} {decl}")
+    conn.commit()
+
+
+def _migrate_price_adj_open(conn: sqlite3.Connection) -> None:
+    """Add prices.adj_open to a pre-existing DB (idempotent, nullable). Opens for the active
+    window are backfilled naturally by ensure_prices' trailing refresh on the next run."""
+    if not conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='prices'"
+    ).fetchone():
+        return
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(prices)").fetchall()}
+    if "adj_open" not in cols:
+        conn.execute("ALTER TABLE prices ADD COLUMN adj_open REAL")
+        conn.commit()
+
+
+def _migrate_signal_outcome_cols(conn: sqlite3.Connection) -> None:
+    """Add the gap/capturable/net decomposition columns to signal_outcomes (idempotent).
+    Outcomes are fully recomputed by compute_outcomes, so new columns fill on the next run."""
+    if not conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='signal_outcomes'"
+    ).fetchone():
+        return
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(signal_outcomes)").fetchall()}
+    added = False
+    for name, decl in (("ann_abn", "REAL"), ("gap_abn", "REAL"), ("net_cap", "REAL"),
+                       ("net_hit", "INTEGER"), ("cost_bps", "REAL")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE signal_outcomes ADD COLUMN {name} {decl}")
+            added = True
+    if added:
+        # Existing rows were computed with the OLD close-to-close-at-base logic, which is
+        # semantically incompatible with the new next-open-entry gap/capturable decomposition
+        # (and they have NULL net fields). Clear them once so they recompute cleanly.
+        conn.execute("DELETE FROM signal_outcomes")
+    conn.commit()
+
+
+def _migrate_signal_reliability_cols(conn: sqlite3.Connection) -> None:
+    """Add the net/direction-accuracy/gap aggregates to signal_reliability (idempotent). The table
+    is DELETE+re-inserted every run, so these fill on the next compute_reliability."""
+    if not conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='signal_reliability'"
+    ).fetchone():
+        return
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(signal_reliability)").fetchall()}
+    for name, decl in (("net_hit_rate", "REAL"), ("net_ci_low", "REAL"), ("net_ci_high", "REAL"),
+                       ("mean_net", "REAL"), ("dir_acc", "REAL"), ("mean_gap", "REAL")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE signal_reliability ADD COLUMN {name} {decl}")
     conn.commit()
 
 
@@ -888,21 +958,35 @@ def add_alias_rows(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
 # ---------------------------------------------------------------------------
 
 def upsert_prices(conn: sqlite3.Connection, ticker: str, rows: Iterable[tuple]) -> int:
-    """rows = iterable of (date 'YYYY-MM-DD', adj_close float). Idempotent on (ticker, date)."""
-    tuples = [(ticker, d, float(c)) for d, c in rows if d and c is not None]
+    """rows = iterable of (date 'YYYY-MM-DD', adj_close, [adj_open]). adj_open is optional (older
+    2-tuples still work). Idempotent on (ticker, date); re-fetching overwrites BOTH prices so a
+    later split/dividend restatement keeps the whole series on one baseline."""
+    tuples = []
+    for row in rows:
+        d, c = row[0], row[1]
+        o = row[2] if len(row) > 2 else None
+        if d and c is not None:
+            tuples.append((ticker, d, float(c), None if o is None else float(o)))
     if not tuples:
         return 0
     conn.executemany(
-        "INSERT INTO prices (ticker, date, adj_close) VALUES (?,?,?) "
-        "ON CONFLICT(ticker, date) DO UPDATE SET adj_close=excluded.adj_close", tuples)
+        "INSERT INTO prices (ticker, date, adj_close, adj_open) VALUES (?,?,?,?) "
+        "ON CONFLICT(ticker, date) DO UPDATE SET adj_close=excluded.adj_close, "
+        "adj_open=COALESCE(excluded.adj_open, prices.adj_open)", tuples)
     conn.commit()
     return len(tuples)
 
 
 def price_series(conn: sqlite3.Connection, ticker: str) -> list[tuple]:
-    """Ascending [(date, adj_close), ...] for `ticker` — the trading-day series."""
+    """Ascending [(date, adj_close), ...] for `ticker` — the trading-day series (close only)."""
     return [(r[0], r[1]) for r in conn.execute(
         "SELECT date, adj_close FROM prices WHERE ticker=? ORDER BY date", (ticker,))]
+
+
+def price_ohlc(conn: sqlite3.Connection, ticker: str) -> list[tuple]:
+    """Ascending [(date, adj_close, adj_open), ...] for `ticker` — close + open per trading day."""
+    return [(r[0], r[1], r[2]) for r in conn.execute(
+        "SELECT date, adj_close, adj_open FROM prices WHERE ticker=? ORDER BY date", (ticker,))]
 
 
 def cached_price_range(conn: sqlite3.Connection, ticker: str) -> tuple:
@@ -913,7 +997,7 @@ def cached_price_range(conn: sqlite3.Connection, ticker: str) -> tuple:
 
 _OUTCOME_COLS = ("event_id", "node_id", "ticker", "hop", "direction", "magnitude", "base_date",
                  "horizon_days", "stock_ret", "benchmark", "benchmark_ret", "abn_ret", "hit",
-                 "clean", "computed_at")
+                 "clean", "ann_abn", "gap_abn", "net_cap", "net_hit", "cost_bps", "computed_at")
 
 
 def upsert_signal_outcomes(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
@@ -932,7 +1016,8 @@ def upsert_signal_outcomes(conn: sqlite3.Connection, rows: Iterable[dict]) -> in
 
 
 _RELIABILITY_COLS = ("hop", "direction", "mag_band", "horizon_days", "clean", "n", "hit_rate",
-                     "ci_low", "ci_high", "mean_abn", "median_abn", "ic", "computed_at")
+                     "ci_low", "ci_high", "mean_abn", "median_abn", "ic", "net_hit_rate",
+                     "net_ci_low", "net_ci_high", "mean_net", "dir_acc", "mean_gap", "computed_at")
 
 
 def replace_signal_reliability(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:

@@ -97,15 +97,25 @@ def _median(vs: list[float]) -> float:
 
 
 def _stat_block(rows: list[dict]) -> dict:
-    """Summary stats for an arbitrary group of outcome rows. `directional_abn` is the realized
-    abnormal return re-signed into the predicted direction, so IC>0 means stronger-predicted =>
-    more-favorable move regardless of direction."""
+    """Summary stats for a group of outcome rows. All hit/abn fields are the CAPTURABLE (entry-open
+    -> exit) abnormal return. `net_*` is that return direction-signed and net of round-trip cost —
+    the retail bar. `dir_acc` is announcement-day direction accuracy (extraction quality, from the
+    priced-in ann_abn); `mean_gap` is the missed overnight. `directional_abn` re-signs the abnormal
+    into the predicted direction so IC>0 means stronger-predicted => more-favorable capturable move."""
     n = len(rows)
     hits = sum(r["hit"] for r in rows)
     abn = [r["abn_ret"] for r in rows]
     dir_abn = [r["abn_ret"] if r["direction"] == "positive" else -r["abn_ret"] for r in rows]
     mags = [r["magnitude"] for r in rows]
     lo, hi = _wilson(hits, n)
+    # Net of round-trip cost — did you make money, in the predicted direction, after costs?
+    net_hits = sum(1 for r in rows if r.get("net_hit"))
+    nets = [r["net_cap"] for r in rows if r.get("net_cap") is not None]
+    nlo, nhi = _wilson(net_hits, n)
+    # Announcement-day direction accuracy (priced-in move went the predicted way) — extraction check.
+    ann_rows = [r for r in rows if r.get("ann_abn") is not None]
+    ann_ok = sum(1 for r in ann_rows if (r["direction"] == "positive") == (r["ann_abn"] > 0))
+    gaps = [r["gap_abn"] for r in rows if r.get("gap_abn") is not None]
     return {
         "n": n, "hits": hits,
         "hit_rate": round(hits / n, 4) if n else 0.0,
@@ -113,6 +123,11 @@ def _stat_block(rows: list[dict]) -> dict:
         "mean_abn": round(sum(abn) / n, 6) if n else 0.0,
         "median_abn": round(_median(abn), 6),
         "ic": _spearman(mags, dir_abn),
+        "net_hit_rate": round(net_hits / n, 4) if n else 0.0,
+        "net_ci_low": nlo, "net_ci_high": nhi,
+        "mean_net": round(sum(nets) / len(nets), 6) if nets else 0.0,
+        "dir_acc": round(ann_ok / len(ann_rows), 4) if ann_rows else None,
+        "mean_gap": round(sum(gaps) / len(gaps), 6) if gaps else None,
     }
 
 
@@ -132,7 +147,9 @@ def compute_reliability(conn, write_scorecard: bool = True) -> dict:
             "hop": hop, "direction": direction, "mag_band": band, "horizon_days": horizon,
             "clean": clean, "n": b["n"], "hit_rate": b["hit_rate"], "ci_low": b["ci_low"],
             "ci_high": b["ci_high"], "mean_abn": b["mean_abn"], "median_abn": b["median_abn"],
-            "ic": b["ic"], "computed_at": now})
+            "ic": b["ic"], "net_hit_rate": b["net_hit_rate"], "net_ci_low": b["net_ci_low"],
+            "net_ci_high": b["net_ci_high"], "mean_net": b["mean_net"], "dir_acc": b["dir_acc"],
+            "mean_gap": b["mean_gap"], "computed_at": now})
     written = store.replace_signal_reliability(conn, class_rows)
 
     # --- rollups for the dashboard ---
@@ -180,7 +197,9 @@ def compute_reliability(conn, write_scorecard: bool = True) -> dict:
         "generated_at": now,
         "meta": {"horizons": horizons, "mag_bands": {"low": f"<{_B[0]}",
                  "med": f"{_B[0]}-{_B[1]}", "high": f">={_B[1]}"},
-                 "z": _Z, "ic_min_n": _IC_MIN_N, "benchmark": "sector-ETF excess (SPY fallback)"},
+                 "z": _Z, "ic_min_n": _IC_MIN_N, "benchmark": "sector-ETF excess (SPY fallback)",
+                 "entry": "next session open after the announcement (retail-realistic, no look-ahead)",
+                 "cost_bps": float(os.environ.get("RELIABILITY_COST_BPS", "10"))},
         "overall": overall,
         "by_hop_horizon": by_hop_horizon,
         "by_magband": by_magband,

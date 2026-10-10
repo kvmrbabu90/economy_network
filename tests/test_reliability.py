@@ -43,9 +43,10 @@ def test_spearman_monotonic_and_degenerate():
 
 def _outcome(**kw):
     base = {"event_id": "e", "node_id": "n", "ticker": "AAPL", "hop": 1,
-            "direction": "positive", "magnitude": 0.5, "base_date": "2026-10-07",
+            "direction": "positive", "magnitude": 0.5, "base_date": "2026-10-08",
             "horizon_days": 1, "stock_ret": 0.02, "benchmark": "XLK",
             "benchmark_ret": 0.01, "abn_ret": 0.01, "hit": 1, "clean": 1,
+            "ann_abn": 0.02, "gap_abn": 0.001, "net_cap": 0.009, "net_hit": 1, "cost_bps": 10.0,
             "computed_at": "2026-10-10T00:00:00+00:00"}
     base.update(kw)
     return base

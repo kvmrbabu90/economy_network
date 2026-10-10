@@ -65,8 +65,12 @@ def load_reliability_weights(conn, horizon: int | None = None, clean: int | None
             continue
         if clean is not None and r["clean"] != clean:
             continue
-        weights[(r["hop"], r["direction"], r["mag_band"])] = _multiplier(
-            r["hit_rate"], r["ci_low"], r["ci_high"], r["n"])
+        # Tune on the NET-of-cost capturable hit-rate (the retail bar), falling back to the gross
+        # capturable rate on a pre-migration DB that lacks the net columns.
+        hr = r["net_hit_rate"] if r.get("net_hit_rate") is not None else r["hit_rate"]
+        lo = r["net_ci_low"] if r.get("net_ci_low") is not None else r["ci_low"]
+        hi = r["net_ci_high"] if r.get("net_ci_high") is not None else r["ci_high"]
+        weights[(r["hop"], r["direction"], r["mag_band"])] = _multiplier(hr, lo, hi, r["n"])
     return weights
 
 

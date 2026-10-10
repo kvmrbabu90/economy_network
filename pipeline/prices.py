@@ -69,18 +69,26 @@ def _fetch_yfinance(ticker: str, start: str, end: str) -> list[tuple]:
     df = yf.Ticker(_yahoo_symbol(ticker)).history(start=start, auto_adjust=True, raise_errors=False)
     if df is None or df.empty or "Close" not in df.columns:
         return []
+    has_open = "Open" in df.columns
     out: list[tuple] = []
-    for ts, close in df["Close"].items():
+    for ts, row in df.iterrows():
         d = ts.strftime("%Y-%m-%d")
         if d > end:
             continue
         try:
-            c = float(close)
-        except (TypeError, ValueError):
+            c = float(row["Close"])
+        except (TypeError, ValueError, KeyError):
             continue
         if c != c:          # NaN (yfinance emits it for untraded/pre-listing days)
             continue
-        out.append((d, c))
+        o = None
+        if has_open:
+            try:
+                ov = float(row["Open"])
+                o = ov if ov == ov else None     # drop NaN open
+            except (TypeError, ValueError, KeyError):
+                o = None
+        out.append((d, c, o))   # (date, adj_close, adj_open) — auto_adjust scales OHLC together
     return out
 
 
@@ -95,8 +103,9 @@ def _fetch_tiingo(ticker: str, start: str, end: str) -> list[tuple]:
     for row in r.json():
         d = (row.get("date") or "")[:10]
         c = row.get("adjClose", row.get("close"))
+        o = row.get("adjOpen", row.get("open"))
         if d and c is not None:
-            out.append((d, float(c)))
+            out.append((d, float(c), None if o is None else float(o)))
     return out
 
 

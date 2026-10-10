@@ -621,13 +621,19 @@ export function getUsage(granularity: UsageGranularity, days = 30): Promise<Usag
 export interface RelStat {
   n: number; hits: number; hit_rate: number; ci_low: number; ci_high: number;
   mean_abn: number; median_abn: number; ic: number | null;
+  // Retail framing: net = capturable return net of round-trip cost; dir_acc = announcement-day
+  // direction accuracy (priced-in, extraction quality); mean_gap = missed overnight.
+  net_hit_rate?: number; net_ci_low?: number; net_ci_high?: number; mean_net?: number;
+  dir_acc?: number | null; mean_gap?: number | null;
 }
 export interface RelHopHorizon { hop: number; horizon_days: number; all: RelStat; clean: RelStat | null; }
 export interface RelMagBand extends RelStat { mag_band: string; horizon_days: number; }
 export interface RelClass {
   hop: number; direction: string; mag_band: string; horizon_days: number; clean: number;
   n: number; hit_rate: number; ci_low: number; ci_high: number;
-  mean_abn: number; median_abn: number; ic: number | null; computed_at: string;
+  mean_abn: number; median_abn: number; ic: number | null;
+  net_hit_rate?: number; net_ci_low?: number; net_ci_high?: number; mean_net?: number;
+  dir_acc?: number | null; mean_gap?: number | null; computed_at: string;
 }
 export interface RelCoverage {
   directional_signals: number; signals_with_mature_outcome: number; outcome_rows: number;
@@ -637,7 +643,7 @@ export interface ReliabilitySummary {
   status: "ok" | "not_computed";
   message?: string;
   generated_at?: string;
-  meta?: { horizons: number[]; mag_bands: Record<string, string>; z: number; ic_min_n: number; benchmark: string };
+  meta?: { horizons: number[]; mag_bands: Record<string, string>; z: number; ic_min_n: number; benchmark: string; entry?: string; cost_bps?: number };
   overall: Record<string, RelStat>;
   by_hop_horizon: RelHopHorizon[];
   by_magband: RelMagBand[];

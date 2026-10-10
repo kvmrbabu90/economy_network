@@ -1893,3 +1893,12 @@ html, body {
 .rel-cov-row { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-mute); }
 .rel-cov-row b { color: var(--text); font-weight: 600; }
 .rel-cov-foot { font-size: 10px; color: var(--text-faint); margin-top: 6px; line-height: 1.4; }
+
+/* Reliability — retail framing + metric toggle */
+.rel-framing { font-size: 11px; color: var(--text-mute); line-height: 1.5; background: var(--bg-recess);
+  border: 1px solid var(--line-soft); border-radius: 8px; padding: 9px 11px; }
+.rel-framing b { color: var(--text); font-weight: 600; }
+.rel-metric-row { display: flex; gap: 4px; margin: 0 0 8px; }
+.rel-metric-btn { flex: 1; background: var(--bg-recess); border: 1px solid var(--line); color: var(--text-mute);
+  font-size: 10.5px; padding: 3px 0; cursor: pointer; border-radius: 5px; }
+.rel-metric-btn.is-active { color: var(--text); border-color: var(--text-mute); background: var(--bg-panel); font-weight: 600; }

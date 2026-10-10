@@ -33,13 +33,26 @@ function icColor(ic: number): string {
   return d >= 0 ? mix(GRAY, TEAL, d) : mix(GRAY, CORAL, -d);
 }
 
+export type RelMetric = "net" | "gross" | "diracc";
+const METRIC_LABEL: Record<RelMetric, string> = {
+  net: "net edge", gross: "gross hit", diracc: "direction acc",
+};
+
+// The rate + optional CI for the selected metric. net = capturable, net of round-trip cost (the
+// retail bar); gross = capturable directional hit; diracc = announcement-day direction accuracy.
+function rateOf(s: RelStat, m: RelMetric): { rate: number | null; lo?: number; hi?: number } {
+  if (m === "net") return { rate: s.net_hit_rate ?? null, lo: s.net_ci_low, hi: s.net_ci_high };
+  if (m === "diracc") return { rate: s.dir_acc ?? null };
+  return { rate: s.hit_rate, lo: s.ci_low, hi: s.ci_high };
+}
+
 function statFor(sc: ReliabilitySummary, hop: number, horizon: number, clean: boolean): RelStat | null {
   const cell = sc.by_hop_horizon.find((c: RelHopHorizon) => c.hop === hop && c.horizon_days === horizon);
   if (!cell) return null;
   return clean ? cell.clean : cell.all;
 }
 
-function heatCell(stat: RelStat | null, kind: "hit" | "ic"): string {
+function heatCell(stat: RelStat | null, kind: "hit" | "ic", metric: RelMetric): string {
   if (!stat || stat.n === 0) return `<div class="rel-cell rel-cell-empty" title="no mature signals yet">·</div>`;
   const lowN = stat.n < LOW_N;
   if (kind === "ic") {
@@ -48,18 +61,20 @@ function heatCell(stat: RelStat | null, kind: "hit" | "ic"): string {
     return `<div class="rel-cell${lowN ? " rel-lown" : ""}" style="background:${bg}" `
       + `title="IC ${stat.ic.toFixed(2)} · n=${stat.n}">${stat.ic.toFixed(2)}<span class="rel-cell-n">n=${stat.n}</span></div>`;
   }
-  const bg = hitColor(stat.hit_rate);
-  return `<div class="rel-cell${lowN ? " rel-lown" : ""}" style="background:${bg}" `
-    + `title="hit ${pct1(stat.hit_rate)} · 95% CI ${pct(stat.ci_low)}–${pct(stat.ci_high)} · n=${stat.n}">`
-    + `${pct(stat.hit_rate)}<span class="rel-cell-n">n=${stat.n}</span></div>`;
+  const { rate, lo, hi } = rateOf(stat, metric);
+  if (rate === null) return `<div class="rel-cell rel-cell-empty" title="n=${stat.n}, no ${METRIC_LABEL[metric]}">n=${stat.n}</div>`;
+  const ci = lo !== undefined && hi !== undefined ? ` · 95% CI ${pct(lo)}–${pct(hi)}` : "";
+  return `<div class="rel-cell${lowN ? " rel-lown" : ""}" style="background:${hitColor(rate)}" `
+    + `title="${METRIC_LABEL[metric]} ${pct1(rate)}${ci} · n=${stat.n}">`
+    + `${pct(rate)}<span class="rel-cell-n">n=${stat.n}</span></div>`;
 }
 
-function heatmap(sc: ReliabilitySummary, kind: "hit" | "ic", clean: boolean): string {
+function heatmap(sc: ReliabilitySummary, kind: "hit" | "ic", clean: boolean, metric: RelMetric): string {
   const head = `<div class="rel-grid-head"></div>` +
     HORIZONS.map((h) => `<div class="rel-grid-head">+${h}d</div>`).join("");
   const rows = HOPS.map((hop) => {
     const label = `<div class="rel-row-label" title="hop ${hop}">${HOP_LABEL[hop] ?? `hop ${hop}`}</div>`;
-    const cells = HORIZONS.map((h) => heatCell(statFor(sc, hop, h, clean), kind)).join("");
+    const cells = HORIZONS.map((h) => heatCell(statFor(sc, hop, h, clean), kind, metric)).join("");
     return label + cells;
   }).join("");
   return `<div class="rel-grid">${head}${rows}</div>`;
@@ -90,14 +105,17 @@ function calibration(sc: ReliabilitySummary): string {
 }
 
 function overall(sc: ReliabilitySummary): string {
+  // Lead with the NET edge (profitable after costs) — the retail bar — and show gross beneath.
   const cards = HORIZONS.map((h) => {
     const s = sc.overall[String(h)];
     if (!s) return `<div class="rel-ov-card rel-ov-pending"><div class="rel-ov-h">+${h}d</div><div class="rel-ov-pct">pending</div></div>`;
+    const net = s.net_hit_rate ?? s.hit_rate;
+    const lo = s.net_ci_low ?? s.ci_low, hi = s.net_ci_high ?? s.ci_high;
     return `<div class="rel-ov-card">`
-      + `<div class="rel-ov-h">+${h}d</div>`
-      + `<div class="rel-ov-pct" style="color:${hitColor(s.hit_rate)}">${pct(s.hit_rate)}</div>`
-      + `<div class="rel-ov-ci">CI ${pct(s.ci_low)}–${pct(s.ci_high)}</div>`
-      + `<div class="rel-ov-n">n=${s.n}</div>`
+      + `<div class="rel-ov-h">+${h}d net</div>`
+      + `<div class="rel-ov-pct" style="color:${hitColor(net)}">${pct(net)}</div>`
+      + `<div class="rel-ov-ci">CI ${pct(lo)}–${pct(hi)}</div>`
+      + `<div class="rel-ov-n">gross ${pct(s.hit_rate)} · n=${s.n}</div>`
       + `</div>`;
   }).join("");
   return `<div class="rel-overall">${cards}</div>`;
@@ -112,11 +130,20 @@ function coverageBlock(sc: ReliabilitySummary): string {
     + `<div class="rel-cov-row"><span>Signals with a mature outcome</span><b>${c.signals_with_mature_outcome}</b></div>`
     + `<div class="rel-cov-row"><span>Events · nodes covered</span><b>${c.distinct_events} · ${c.distinct_nodes}</b></div>`
     + `<div class="rel-cov-row"><span>Mature outcomes by horizon</span><b>${matured}</b></div>`
-    + `<div class="rel-cov-foot">benchmark: ${sc.meta?.benchmark ?? "sector-excess"} · computed ${gen}</div>`
+    + `<div class="rel-cov-foot">benchmark: ${sc.meta?.benchmark ?? "sector-excess"} · entry: next open · `
+    + `cost: ${sc.meta?.cost_bps ?? 10}bps round-trip · computed ${gen}</div>`
     + `</div>`;
 }
 
-export interface RelViewOpts { clean: boolean }
+export interface RelViewOpts { clean: boolean; metric: RelMetric }
+
+const METRIC_BTN: [RelMetric, string][] = [["net", "net"], ["gross", "gross"], ["diracc", "dir acc"]];
+
+function metricLegend(metric: RelMetric): string {
+  const mid = metric === "net" ? "break-even after cost" : metric === "diracc" ? "coin-flip" : "coin-flip";
+  return `<div class="rel-legend"><span>worse</span><i class="rel-leg-grad"></i><span>better</span>`
+    + `<em>${pct(0.5)} = ${mid}</em></div>`;
+}
 
 /** Render the whole Reliability panel into `el`. Pure wrt the scorecard + opts. */
 export function renderReliability(el: HTMLElement, sc: ReliabilitySummary, opts: RelViewOpts): void {
@@ -127,24 +154,32 @@ export function renderReliability(el: HTMLElement, sc: ReliabilitySummary, opts:
   }
   const total = sc.coverage.outcome_rows;
   const horizonsMature = sc.meta?.horizons?.length ?? 0;
+  const cost = sc.meta?.cost_bps ?? 10;
   const sparse = (total < 120 || horizonsMature < HORIZONS.length)
-    ? `<div class="rel-banner">Early data — ${total} mature outcome${total === 1 ? "" : "s"} across ${horizonsMature} of ${HORIZONS.length} horizons. Intervals are wide and fill in over days (short horizons) to ~a quarter (+60d).</div>`
+    ? `<div class="rel-banner">Early data — ${total} mature outcome${total === 1 ? "" : "s"} across ${horizonsMature} of ${HORIZONS.length} horizons. Intervals are wide and fill in over days to ~a quarter (+60d).</div>`
     : "";
+  const framing = `<div class="rel-framing">Entry = <b>next open after the news</b> (what a retail trader can actually get). `
+    + `<b>Net edge</b> = % profitable after a ${cost}bps round-trip. 1st-order is usually priced in — judge it by `
+    + `<b>direction accuracy</b>; the edge lives in 2nd/3rd-order <b>net</b> drift.</div>`;
+  const metricBtns = METRIC_BTN.map(([m, lbl]) =>
+    `<button class="rel-metric-btn${opts.metric === m ? " is-active" : ""}" data-metric="${m}">${lbl}</button>`).join("");
   el.innerHTML =
     sparse +
+    framing +
     overall(sc) +
     `<div class="rel-section">`
-    + `<div class="filter-title">Directional hit-rate · order × horizon`
+    + `<div class="filter-title">Order × horizon`
     + `<span class="rel-toggle">`
     + `<button class="rel-clean-btn${!opts.clean ? " is-active" : ""}" data-clean="0">all</button>`
     + `<button class="rel-clean-btn${opts.clean ? " is-active" : ""}" data-clean="1">clean</button>`
     + `</span></div>`
-    + heatmap(sc, "hit", opts.clean)
-    + `<div class="rel-legend"><span>worse</span><i class="rel-leg-grad"></i><span>better</span><em>coin-flip = gray</em></div>`
+    + `<div class="rel-metric-row">${metricBtns}</div>`
+    + heatmap(sc, "hit", opts.clean, opts.metric)
+    + metricLegend(opts.metric)
     + `</div>`
     + `<div class="rel-section"><div class="filter-title">Magnitude information coefficient</div>`
-    + heatmap(sc, "ic", opts.clean)
-    + `<div class="rel-sub">Spearman(predicted magnitude, favorable abnormal return). Positive = stronger calls move more.</div>`
+    + heatmap(sc, "ic", opts.clean, opts.metric)
+    + `<div class="rel-sub">Spearman(predicted magnitude, favorable capturable return). Positive = stronger calls move more.</div>`
     + `</div>`
     + `<div class="rel-section"><div class="filter-title">Confidence calibration</div>`
     + calibration(sc)

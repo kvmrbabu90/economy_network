@@ -67,7 +67,7 @@ import {
 import { getImpactLive, getNodeImpact, getHealth, startImpactRefresh, getImpactRefreshStatus, getUsage, getReliabilitySummary, type LiveImpact, type UsageGranularity, type ReliabilitySummary } from "./api";
 import { renderCombinedImpactInto, isStale } from "./ui/inspector";
 import { renderUsageChart } from "./ui/usageChart";
-import { renderReliability } from "./ui/reliabilityPanel";
+import { renderReliability, type RelMetric } from "./ui/reliabilityPanel";
 import {
   loadArchive,
   saveToArchive,
@@ -2213,12 +2213,13 @@ async function loadUsage(): Promise<void> {
 // re-renders instantly without a round-trip.
 let _relScorecard: ReliabilitySummary | null = null;
 let _relClean = false;
+let _relMetric: RelMetric = "net";   // default to the retail bar: net-of-cost edge
 async function loadReliability(): Promise<void> {
   const body = document.getElementById("reliability-body");
   if (!body) return;
   try {
     _relScorecard = await getReliabilitySummary();
-    renderReliability(body, _relScorecard, { clean: _relClean });
+    renderReliability(body, _relScorecard, { clean: _relClean, metric: _relMetric });
   } catch (err) {
     console.error("reliability load failed", err);
     body.innerHTML = '<p class="combined-empty">Reliability unavailable.</p>';
@@ -2229,10 +2230,13 @@ async function loadReliability(): Promise<void> {
   const body = document.getElementById("reliability-body");
   if (!body) return;
   body.addEventListener("click", (ev) => {
-    const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>(".rel-clean-btn");
-    if (!btn || !_relScorecard) return;
-    _relClean = btn.dataset.clean === "1";
-    renderReliability(body, _relScorecard, { clean: _relClean });
+    const target = ev.target as HTMLElement;
+    const cleanBtn = target.closest<HTMLButtonElement>(".rel-clean-btn");
+    const metricBtn = target.closest<HTMLButtonElement>(".rel-metric-btn");
+    if (!_relScorecard || (!cleanBtn && !metricBtn)) return;
+    if (cleanBtn) _relClean = cleanBtn.dataset.clean === "1";
+    if (metricBtn) _relMetric = (metricBtn.dataset.metric as RelMetric) || "net";
+    renderReliability(body, _relScorecard, { clean: _relClean, metric: _relMetric });
   });
 })();
 
