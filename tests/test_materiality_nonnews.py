@@ -88,6 +88,12 @@ MATERIAL_OR_DEFER = [
     "Ford stock rises 5% as truck bookings climb",
     "Boeing shares gain 4% on growing 737 backlog",
     "Netflix stock climbs 6% on subscriber additions",
+    # code-review #1: the HARD "trades steady as …" template must still DEFER when a STRONG
+    # material event is named (recall/M&A/FDA/money) — only the weak earnings/growth co-occurrence
+    # is hard-dropped. These name a real event inside the template and must NOT be blind-dropped:
+    "Pfizer stock trades steady as it recalls 2M units amid quarterly earnings",
+    "Boeing shares hold steady as it wins a $10 billion Air Force contract",
+    "Merck stock trades flat as FDA approves its new cancer drug",
 ]
 
 

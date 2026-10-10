@@ -31,3 +31,17 @@ def test_ground_keeps_standalone_money_and_org():
     cap = ArticleCapsule(event_type="other", money="$12 billion", affected=["Pfizer"])
     _ground(cap, "Pfizer said the deal is worth $12 billion in cash.")
     assert cap.money == "$12 billion" and cap.affected == ["Pfizer"]
+
+
+def test_ground_drops_money_that_is_only_part_of_a_decimal():
+    # code-review #5: "12" must NOT ground against "12.5" — the only figure in the text is 12.5,
+    # not a standalone 12 (the old (?<!\d)…(?!\d) boundary let "12" match before the decimal point).
+    cap = ArticleCapsule(event_type="other", money="12%")
+    _ground(cap, "The stock rose 12.5% to a record high on heavy volume.")
+    assert cap.money is None
+
+
+def test_ground_keeps_decimal_money_against_itself():
+    cap = ArticleCapsule(event_type="other", money="12.5%")
+    _ground(cap, "The stock rose 12.5% to a record high.")
+    assert cap.money == "12.5%"

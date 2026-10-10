@@ -984,14 +984,27 @@ _NONNEWS_HARD_RE = re.compile(
     r"\s+(as|amid|on|after|despite|while|following)\b", re.I)
 
 
+def _has_strong_material_trigger(headline: str) -> bool:
+    """The STRONG, unambiguous subset of material triggers (M&A, recall, FDA, lawsuit,
+    incident, money, supply/volume event) — everything EXCEPT _MATERIAL_EARNINGS_RE, whose
+    loose 'earnings … grow*' co-occurrence is the false positive the hard commentary rule
+    exists to drop ('stock trades steady as earnings and LNG growth underpin valuation').
+    A hard-template headline that ALSO names one of these must defer, not be blind-dropped."""
+    return bool(_MATERIAL_MONEY_RE.search(headline)
+                or _MATERIAL_WORDS_RE.search(headline)
+                or _MATERIAL_EVENT_RE.search(headline))
+
+
 def _looks_like_non_news(headline: Optional[str]) -> bool:
     """True when the headline is investment commentary / advice / analyst action /
     dividend-or-earnings logistics — i.e. NOT a concrete business event. Returns False
     (defer to the LLM gate) whenever a hard material trigger is also present, so a real
     event wrapped in a price-move or opinion hook is never blind-dropped."""
     h = headline or ""
-    # Hard commentary templates drop even when a (often incidental) material word is present.
-    if _NONNEWS_HARD_RE.search(h):
+    # Hard commentary templates drop even past a WEAK (earnings/growth) material trigger — but
+    # a STRONG material event still defers, so e.g. "Pfizer stock trades steady as it recalls 2M
+    # units" (recall) is NOT blind-dropped, while "… as earnings and growth underpin valuation" is.
+    if _NONNEWS_HARD_RE.search(h) and not _has_strong_material_trigger(h):
         return True
     if _has_material_trigger(h):
         return False

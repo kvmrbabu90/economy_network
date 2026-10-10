@@ -190,7 +190,10 @@ PathLike = Union[str, Path]
 
 def connect(db_path: PathLike = "econgraph.db") -> sqlite3.Connection:
     """Open a SQLite connection with sensible defaults for this project."""
-    conn = sqlite3.connect(str(db_path))
+    # Guard the None/empty footgun: str(None) -> "None" would silently open a STRAY empty DB
+    # file named 'None' in the cwd (reads as "the whole graph vanished"). Fall back to the
+    # canonical path so an accidental connect(None) still hits the real database.
+    conn = sqlite3.connect(str(db_path or default_db_path()))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # Wait up to 5s for a busy writer instead of raising 'database is locked'.

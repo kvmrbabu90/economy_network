@@ -125,8 +125,9 @@ def _ground(cap: ArticleCapsule, reduced_text: str) -> ArticleCapsule:
     if cap.money:
         num = re.search(r"\d+(?:[.,]\d+)?", cap.money)
         raw = num.group().replace(",", "") if num else ""
-        # (?<!\d)…(?!\d): the number must not be embedded in a longer number.
-        if not raw or not re.search(rf"(?<!\d){re.escape(raw)}(?!\d)", reduced_text.replace(",", "")):
+        # (?<![\d.])…(?![\d.]): the number must be STANDALONE — not adjacent to a digit OR a
+        # decimal point, so "12" grounds against "$12" but NOT against "2012", "1200" or "12.5".
+        if not raw or not re.search(rf"(?<![\d.]){re.escape(raw)}(?![\d.])", reduced_text.replace(",", "")):
             cap.money = None
     return cap
 
@@ -188,12 +189,8 @@ def enrich(conn, *, limit: int = ENRICH_MAX_EVENTS, provider: str = ENRICH_LLM_P
     """Enrich the router-selected candidate set. Returns a summary."""
     rows = _select_candidates(conn, limit, queued_only=queued_only)
     summary = {"seen": 0, "done": 0, "no_content": 0, "skipped": 0, "failed": 0, "fetch_fail": 0}
-    # PRE-FLIGHT: skip the batch cleanly if the Claude CLI is logged out (same reason as
-    # precompute) — leave events un-enriched so they retry after `claude login`.
-    if rows and (auth_err := _impact.check_claude_auth(provider)):
-        summary["auth_error"] = True
-        log.error("enrich: Claude CLI NOT LOGGED IN (%s) — skipping; run `claude login`.", auth_err)
-        return summary
+    # No pre-flight auth probe here (unlike precompute): _summarize re-raises ClaudeAuthError, so
+    # the per-item catch below defers the batch on the first event — no extra billed CLI call.
     deadline = time.monotonic() + wallclock_s
     for r in rows:
         if time.monotonic() > deadline:

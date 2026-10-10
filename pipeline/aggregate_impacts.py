@@ -173,9 +173,8 @@ def aggregate(conn, *, today: Optional[date] = None, window_days: int = IMPACT_W
             magnitude *= (1.0 - IMPACT_MIXED_DAMP * (minority / majority))
         if mixed and 0 < magnitude < 0.15:
             magnitude = 0.15
-        # top_events shows real drivers only: drop zero-weighted rows (unscored /
-        # no_effect) — they still count toward event_count but aren't "contributions".
-        contributing = [e for e in a["events"] if e["weighted"] != 0.0]
+        # top_events shows real drivers only (the nonzero-weighted rows already computed above
+        # for direct_count) — unscored/no_effect rows count toward event_count but aren't drivers.
         top = sorted(contributing, key=lambda e: -abs(e["weighted"]))[:top_n]
         # Skip inert nodes: no direction, no mass, no drivers. Emitting them bloats the
         # payload and produces the "N events, no drivers" contradiction on the map.
