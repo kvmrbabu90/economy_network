@@ -151,19 +151,23 @@ def compute_outcomes(conn, horizons=HORIZONS) -> dict:
             continue
         summary["priced"] += 1
 
-        # ann_abn: announcement-session abnormal move (the priced-in, non-capturable repricing).
-        ann_abn = None
-        if ai - 1 >= 0:
-            pc, cc = tclose.get(tdates[ai - 1]), tclose.get(ann_date)
-            bpc, bcc = bclose.get(tdates[ai - 1]), bclose.get(ann_date)
-            if pc and cc is not None and bpc and bcc is not None:
-                ann_abn = round((cc / pc - 1.0) - (bcc / bpc - 1.0), 6)
-        # gap_abn: announcement close -> entry open overnight (missed). None when entry == ann.
-        gap_abn = None
+        # Priced-in / missed decomposition — a DISJOINT partition of the move before you can act
+        # (NOT capturable by a next-open entrant). Trading-day pub: ann_abn = the announcement
+        # SESSION move (close[ai-1]->close[ai]) and gap_abn = the overnight close[ai]->entry open.
+        # Weekend/holiday pub (entry == the announcement session): the whole missed move is ONE
+        # gap, the last pre-pub close -> entry open; record it as gap_abn with ann_abn = None (so
+        # it never overlaps the capturable leg, which also starts at that session's open).
+        ann_abn = gap_abn = None
+        prev_c = tclose.get(tdates[ai - 1]) if ai - 1 >= 0 else None
+        b_prev_c = bclose.get(tdates[ai - 1]) if ai - 1 >= 0 else None
         if entry_i > ai:
             ac, bac = tclose.get(ann_date), bclose.get(ann_date)
+            if prev_c and ac is not None and b_prev_c and bac is not None:
+                ann_abn = round((ac / prev_c - 1.0) - (bac / b_prev_c - 1.0), 6)
             if ac and bac:
                 gap_abn = round((entry_open / ac - 1.0) - (b_entry_open / bac - 1.0), 6)
+        elif prev_c and b_prev_c:
+            gap_abn = round((entry_open / prev_c - 1.0) - (b_entry_open / b_prev_c - 1.0), 6)
 
         node_direct = direct_days.get(s["node_id"], set())
         lo_inclusive = s["hop"] != 0

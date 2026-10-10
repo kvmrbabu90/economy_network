@@ -108,9 +108,11 @@ def test_weekend_news_enters_first_session_not_skipped(conn):
     _px(conn, "XLK", [("2026-10-05", 100.0, 100.0), ("2026-10-07", 103.0, 101.0),
                       ("2026-10-08", 106.0, 104.0)])
     signal_outcomes.compute_outcomes(conn, horizons=(1,))
-    r = conn.execute("SELECT base_date, gap_abn FROM signal_outcomes").fetchone()
+    r = conn.execute("SELECT base_date, ann_abn, gap_abn FROM signal_outcomes").fetchone()
     assert r["base_date"] == "2026-10-07"   # entered the first session, not skipped to 10-08
-    assert r["gap_abn"] is None             # entry == announcement session -> no overnight leg
+    assert r["ann_abn"] is None             # no separate pre-entry announcement session
+    # the missed move is the single pre-pub-close -> entry-open gap (10-05 close -> 10-07 open)
+    assert r["gap_abn"] == pytest.approx((105 / 100 - 1) - (101 / 100 - 1), abs=1e-6)
 
 
 def test_maturity_gating_needs_entry_plus_horizon(conn):

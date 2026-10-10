@@ -30,8 +30,8 @@ def test_ensure_prices_caches_and_is_incremental(monkeypatch):
 
     def fake_fetch(ticker, start, end):
         calls.append((ticker, start, end))
-        # Two days of synthetic data regardless of window.
-        return [("2026-10-07", 100.0), ("2026-10-08", 101.0)]
+        # Two days of synthetic data (with opens) regardless of window.
+        return [("2026-10-07", 100.0, 99.0), ("2026-10-08", 101.0, 100.0)]
 
     monkeypatch.setattr(prices, "_fetch", fake_fetch)
     s1 = prices.ensure_prices(conn, ["AAPL"], "2026-10-07", "2026-10-08")
@@ -97,10 +97,22 @@ def test_ensure_prices_backfills_earlier_history(monkeypatch):
 
 def test_ensure_prices_no_gap_when_fully_covered(monkeypatch):
     conn = _mem()
-    store.upsert_prices(conn, "AAPL", [("2026-09-01", 1.0), ("2026-10-09", 2.0)])
+    store.upsert_prices(conn, "AAPL", [("2026-09-01", 1.0, 1.0), ("2026-10-09", 2.0, 2.0)])  # opens present
     monkeypatch.setattr(prices, "_fetch", lambda *a: (_ for _ in ()).throw(AssertionError("should not fetch")))
     summary = prices.ensure_prices(conn, ["AAPL"], "2026-09-15", "2026-10-09")   # inside cached span
     assert summary["cached"] == 1 and summary["fetched"] == 0
+
+
+def test_ensure_prices_backfills_missing_opens(monkeypatch):
+    # A row cached before adj_open existed (NULL open) must trigger a re-fetch even when the date
+    # range is otherwise fully covered, else a next-open entry on that date is silently dropped.
+    conn = _mem()
+    store.upsert_prices(conn, "AAPL", [("2026-10-05", 100.0), ("2026-10-09", 110.0)])  # 2-tuples -> NULL opens
+    assert store.price_ohlc(conn, "AAPL")[0][2] is None
+    monkeypatch.setattr(prices, "_fetch", lambda t, s, e: [("2026-10-05", 100.0, 99.0), ("2026-10-09", 110.0, 108.0)])
+    summary = prices.ensure_prices(conn, ["AAPL"], "2026-10-05", "2026-10-09")   # range fully covered...
+    assert summary["fetched"] == 1                                               # ...but opens were missing
+    assert dict((d, o) for d, _, o in store.price_ohlc(conn, "AAPL"))["2026-10-05"] == 99.0
 
 
 def test_ensure_prices_refresh_days_refetches_trailing_window(monkeypatch):

@@ -995,6 +995,16 @@ def cached_price_range(conn: sqlite3.Connection, ticker: str) -> tuple:
     return (r[0], r[1]) if r else (None, None)
 
 
+def earliest_missing_open(conn: sqlite3.Connection, ticker: str, since: str) -> Optional[str]:
+    """Earliest cached date on/after `since` whose adj_open is NULL (e.g. a row cached before the
+    adj_open column existed), or None. Lets ensure_prices self-heal historical opens so a
+    next-open entry isn't silently dropped for old signals."""
+    r = conn.execute(
+        "SELECT MIN(date) FROM prices WHERE ticker=? AND date>=? AND adj_open IS NULL",
+        (ticker, since)).fetchone()
+    return r[0] if r and r[0] else None
+
+
 _OUTCOME_COLS = ("event_id", "node_id", "ticker", "hop", "direction", "magnitude", "base_date",
                  "horizon_days", "stock_ret", "benchmark", "benchmark_ret", "abn_ret", "hit",
                  "clean", "ann_abn", "gap_abn", "net_cap", "net_hit", "cost_bps", "computed_at")

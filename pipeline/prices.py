@@ -152,6 +152,11 @@ def ensure_prices(conn, tickers, start: str, end: str, refresh_days: int = 0) ->
                 candidates.append(cmax)                # forward extension
         if refresh_from is not None:
             candidates.append(refresh_from)            # re-adjust the trailing window every run
+        # Backfill historical opens: a row cached before adj_open existed is NULL-open; re-fetch
+        # from the earliest such date so an old-dated signal's next-open entry isn't dropped.
+        miss = store.earliest_missing_open(conn, t, start)
+        if miss is not None:
+            candidates.append(miss)
         if not candidates:
             summary["cached"] += 1
             continue

@@ -104,18 +104,25 @@ function calibration(sc: ReliabilitySummary): string {
     + `<div class="rel-sub">at +${h}d · dashed line = 50% coin-flip</div>${legend}`;
 }
 
+function hasNet(s: RelStat | null | undefined): boolean {
+  return !!s && s.net_hit_rate !== undefined && s.net_hit_rate !== null;
+}
+
 function overall(sc: ReliabilitySummary): string {
   // Lead with the NET edge (profitable after costs) — the retail bar — and show gross beneath.
+  // On a pre-migration scorecard (no net fields) label honestly as the gross "hit", not "net".
   const cards = HORIZONS.map((h) => {
     const s = sc.overall[String(h)];
     if (!s) return `<div class="rel-ov-card rel-ov-pending"><div class="rel-ov-h">+${h}d</div><div class="rel-ov-pct">pending</div></div>`;
-    const net = s.net_hit_rate ?? s.hit_rate;
-    const lo = s.net_ci_low ?? s.ci_low, hi = s.net_ci_high ?? s.ci_high;
+    const net = hasNet(s);
+    const lead = net ? (s.net_hit_rate as number) : s.hit_rate;
+    const lo = net ? (s.net_ci_low ?? s.ci_low) : s.ci_low;
+    const hi = net ? (s.net_ci_high ?? s.ci_high) : s.ci_high;
     return `<div class="rel-ov-card">`
-      + `<div class="rel-ov-h">+${h}d net</div>`
-      + `<div class="rel-ov-pct" style="color:${hitColor(net)}">${pct(net)}</div>`
+      + `<div class="rel-ov-h">+${h}d ${net ? "net" : "hit"}</div>`
+      + `<div class="rel-ov-pct" style="color:${hitColor(lead)}">${pct(lead)}</div>`
       + `<div class="rel-ov-ci">CI ${pct(lo)}–${pct(hi)}</div>`
-      + `<div class="rel-ov-n">gross ${pct(s.hit_rate)} · n=${s.n}</div>`
+      + `<div class="rel-ov-n">${net ? `gross ${pct(s.hit_rate)} · ` : ""}n=${s.n}</div>`
       + `</div>`;
   }).join("");
   return `<div class="rel-overall">${cards}</div>`;
@@ -161,8 +168,14 @@ export function renderReliability(el: HTMLElement, sc: ReliabilitySummary, opts:
   const framing = `<div class="rel-framing">Entry = <b>next open after the news</b> (what a retail trader can actually get). `
     + `<b>Net edge</b> = % profitable after a ${cost}bps round-trip. 1st-order is usually priced in — judge it by `
     + `<b>direction accuracy</b>; the edge lives in 2nd/3rd-order <b>net</b> drift.</div>`;
+  // On a pre-migration scorecard the net-of-cost fields are absent; fall back to the gross metric
+  // (rather than render blank cells) and say so, instead of silently showing gross under a "net" label.
+  const netReady = Object.values(sc.overall).some(hasNet) || sc.by_hop_horizon.some((c) => hasNet(c.all));
+  const metric: RelMetric = (!netReady && opts.metric === "net") ? "gross" : opts.metric;
+  const netNote = (!netReady && opts.metric === "net")
+    ? `<div class="rel-sub">Net-of-cost metrics appear after the next validation run — showing gross for now.</div>` : "";
   const metricBtns = METRIC_BTN.map(([m, lbl]) =>
-    `<button class="rel-metric-btn${opts.metric === m ? " is-active" : ""}" data-metric="${m}">${lbl}</button>`).join("");
+    `<button class="rel-metric-btn${metric === m ? " is-active" : ""}" data-metric="${m}">${lbl}</button>`).join("");
   el.innerHTML =
     sparse +
     framing +
@@ -174,8 +187,9 @@ export function renderReliability(el: HTMLElement, sc: ReliabilitySummary, opts:
     + `<button class="rel-clean-btn${opts.clean ? " is-active" : ""}" data-clean="1">clean</button>`
     + `</span></div>`
     + `<div class="rel-metric-row">${metricBtns}</div>`
-    + heatmap(sc, "hit", opts.clean, opts.metric)
-    + metricLegend(opts.metric)
+    + netNote
+    + heatmap(sc, "hit", opts.clean, metric)
+    + metricLegend(metric)
     + `</div>`
     + `<div class="rel-section"><div class="filter-title">Magnitude information coefficient</div>`
     + heatmap(sc, "ic", opts.clean, opts.metric)
