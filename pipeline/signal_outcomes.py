@@ -97,7 +97,11 @@ def compute_outcomes(conn, horizons=HORIZONS) -> dict:
     start = datetime.fromordinal(start).strftime("%Y-%m-%d")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     tickers = {s["ticker"] for s in sigs} | {s["benchmark"] for s in sigs}
-    prices.ensure_prices(conn, sorted(tickers), start, today)
+    # Refresh a window at least as long as the longest horizon's calendar span so a maturing
+    # signal's base and end bars share ONE split/dividend-adjustment baseline (else multi-day
+    # returns are biased by a provider restatement between the two fetches). ~1.7 cal/trading day.
+    refresh_days = int(max(horizons) * 1.7) + 10
+    prices.ensure_prices(conn, sorted(tickers), start, today, refresh_days=refresh_days)
 
     # In-memory series + date lists, built once.
     series: dict[str, dict] = {}
@@ -142,10 +146,15 @@ def compute_outcomes(conn, horizons=HORIZONS) -> dict:
             abn = stock_ret - bench_ret
             hit = 1 if ((s["direction"] == "positive" and abn > 0) or
                         (s["direction"] == "negative" and abn < 0)) else 0
-            # clean = node had no OWN direct (hop-0) news in (base, end], other than this event.
+            # clean = node had no OWN direct (hop-0) news in the window, other than this event.
+            # For a propagated (hop>=1) signal the signal itself is NOT hop-0, so include the base
+            # day — same-day own direct news (breaking after the base close) drives the base->end
+            # return and must mark the sample contaminated. For a hop-0 signal, exclude the base
+            # day so the signal doesn't flag ITSELF (its own event is dated on base_date).
+            lo_inclusive = s["hop"] != 0
             clean = 1
             for d in node_direct:
-                if base_date < d <= end_date:
+                if ((base_date <= d) if lo_inclusive else (base_date < d)) and d <= end_date:
                     clean = 0
                     break
             out_rows.append({

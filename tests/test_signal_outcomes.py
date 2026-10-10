@@ -99,6 +99,25 @@ def test_clean_flag_false_when_node_has_own_direct_news_in_window(conn):
     assert hop1["clean"] == 0   # contaminated by the node's own first-order news
 
 
+def test_clean_flag_false_when_own_direct_news_on_base_day(conn):
+    # A propagated (hop>=1) signal whose node has its OWN direct (hop-0) news dated EXACTLY on the
+    # base day must be contaminated — that news (breaking after the base close) drives the forward
+    # return. The window is base-inclusive for hop>=1 (the signal itself is hop-1, not in the set).
+    _company(conn, "cik:0000000001", "AAPL", "Information Technology")
+    _event(conn, "e1", "2026-10-07")   # hop-1 signal, base_date = 2026-10-07
+    store.write_event_impacts(conn, "e1", [
+        {"node_id": "cik:0000000001", "direction": "positive", "magnitude": 0.5, "hop": 1, "reasoning": "r"}])
+    _event(conn, "e2", "2026-10-07")   # AAPL's own hop-0 news, same day
+    store.write_event_impacts(conn, "e2", [
+        {"node_id": "cik:0000000001", "direction": "negative", "magnitude": 0.2, "hop": 0, "reasoning": "own"}])
+    store.upsert_prices(conn, "AAPL", [("2026-10-07", 110.0), ("2026-10-08", 121.0)])
+    store.upsert_prices(conn, "XLK", [("2026-10-07", 200.0), ("2026-10-08", 206.0)])
+    signal_outcomes.compute_outcomes(conn, horizons=(1,))
+    assert conn.execute("SELECT clean FROM signal_outcomes WHERE event_id='e1'").fetchone()["clean"] == 0
+    # The hop-0 signal does NOT flag itself on its own base day.
+    assert conn.execute("SELECT clean FROM signal_outcomes WHERE event_id='e2'").fetchone()["clean"] == 1
+
+
 def test_untickered_and_no_effect_signals_are_skipped(conn):
     _company(conn, "cik:0000000001", "AAPL", "Information Technology")
     store.upsert_node(conn, {"id": "slug:x-corp", "type": "Company", "name": "X", "tickers": []})

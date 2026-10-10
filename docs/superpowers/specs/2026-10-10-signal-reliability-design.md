@@ -92,3 +92,16 @@ Three follow-ups turned the measurement layer into a self-maintaining, improvabl
    shrunk, clamped `[0.5, 1.5]` tilt. Gated by `RELIABILITY_TUNE_ENABLED` (default `0`) → every
    multiplier is 1.0 and aggregation is byte-identical. Lives in the derived node_impact layer,
    never event_impacts, so it can't feed back into its own measurement.
+
+### Two non-obvious invariants (from the post-build review — keep these)
+- **Event retention ≥ longest horizon.** A signal's outcome can only be computed while its event
+  + event_impacts still exist. The hourly cycle's prune MUST retain events at least as long as the
+  longest horizon's calendar span (+60 trading days ≈ 84 cal days), or that horizon can never
+  mature for naturally-ingested events. The deployment sets `PRUNE_OLDER_THAN_DAYS=95` on the
+  cycle task (code default stays 30 for map-only use). `signal_outcomes` itself is never pruned, so
+  once an outcome is written it survives the event aging out.
+- **Adjusted closes are mutable, not immutable.** CLAUDE.md #6 ("never re-fetch cached") is for
+  EDGAR filings. A provider back-adjusts the WHOLE price series on each split/dividend, so a base
+  bar cached long ago drifts off the baseline of a later-fetched end bar — biasing the base→end
+  return. `ensure_prices(refresh_days=...)` re-fetches a trailing window ≥ the longest horizon each
+  run so base and end share one baseline at maturity; `compute_outcomes` passes it automatically.

@@ -146,6 +146,13 @@ def main() -> int:
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+    # Safety: this is the only quota-consuming path. 0/negative is falsy (= "no cap") in the
+    # ingest+trace guards, which would let a one-shot drain the whole queue; refuse it.
+    if args.max_events <= 0:
+        log.warning("--max-events %d would be uncapped; clamping to 250. Pass a positive cap.",
+                    args.max_events)
+        args.max_events = 250
+
     conn = store.connect(args.db)
     store.init_db(conn)
     try:

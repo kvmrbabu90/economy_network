@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime, timedelta
 from typing import Optional
 
 import requests
@@ -107,13 +108,24 @@ def _fetch(ticker: str, start: str, end: str) -> list[tuple]:
         return []
 
 
-def ensure_prices(conn, tickers, start: str, end: str) -> dict:
-    """Ensure each ticker's daily adj-close is cached over the WHOLE [start, end] window, only
-    fetching the missing span(s) (CLAUDE.md #6). Covers BOTH ends: a historical backfill asks for
-    an earlier `start` than a ticker whose cache begins later (e.g. first seen via recent news),
-    so we must backfill the earlier history too — not just extend forward — or an old-dated
-    signal's base date lands on the wrong (too-late) day and reads immature. Returns a summary."""
+def ensure_prices(conn, tickers, start: str, end: str, refresh_days: int = 0) -> dict:
+    """Ensure each ticker's daily adj-close is cached and consistent over [start, end].
+
+    Fetches from the EARLIEST date that still needs data, in ONE request per ticker (yfinance
+    returns start..latest regardless of `end`), covering: a cold ticker (full window), a backfill
+    of earlier history when `start` precedes the cache (else an old-dated signal's base lands on
+    the wrong day and reads immature), and a forward extension to `end`.
+
+    `refresh_days` > 0 ALSO re-fetches+overwrites the trailing `refresh_days` calendar window every
+    run. Adjusted closes are NOT immutable the way EDGAR filings are (CLAUDE.md #6 was written for
+    those): a provider back-adjusts the whole series on each split/dividend, so a base bar cached
+    months ago sits on a STALE baseline while a later-fetched end bar is current — biasing the
+    multi-day return a signal's base->end span measures. Refreshing a window at least as long as
+    the longest horizon keeps base and end on ONE baseline at the moment an outcome matures."""
     summary = {"requested": 0, "fetched": 0, "cached": 0, "empty": 0, "rows": 0}
+    refresh_from = None
+    if refresh_days and refresh_days > 0:
+        refresh_from = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=refresh_days)).strftime("%Y-%m-%d")
     seen: set[str] = set()
     for t in tickers:
         if not t or t in seen:
@@ -121,28 +133,22 @@ def ensure_prices(conn, tickers, start: str, end: str) -> dict:
         seen.add(t)
         summary["requested"] += 1
         cmin, cmax = store.cached_price_range(conn, t)
-        # Gaps needed so the cache fully spans [start, end]. yfinance ignores `end` (fetches
-        # start..latest, filtered to <= end), so each gap fetch is precise after that filter.
+        candidates: list[str] = []
         if cmin is None:
-            gaps = [(start, end)]                       # cold ticker: full window
+            candidates.append(start)                   # cold ticker: full window
         else:
-            gaps = []
             if start < cmin:
-                gaps.append((start, cmin))              # earlier history (backfill)
+                candidates.append(start)               # backfill earlier history
             if end > cmax:
-                gaps.append((cmax, end))                # newer bars (forward)
-        if not gaps:
+                candidates.append(cmax)                # forward extension
+        if refresh_from is not None:
+            candidates.append(refresh_from)            # re-adjust the trailing window every run
+        if not candidates:
             summary["cached"] += 1
             continue
-        got = 0
-        any_rows = False
-        for g_start, g_end in gaps:
-            rows = _fetch(t, g_start, g_end)
-            if rows:
-                got += store.upsert_prices(conn, t, rows)
-                any_rows = True
-        if any_rows:
-            summary["rows"] += got
+        rows = _fetch(t, min(candidates), end)         # one fetch from the earliest need
+        if rows:
+            summary["rows"] += store.upsert_prices(conn, t, rows)
             summary["fetched"] += 1
         else:
             summary["empty"] += 1

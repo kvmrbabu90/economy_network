@@ -54,8 +54,8 @@ def test_ensure_prices_incremental_fetch_starts_at_cached_max(monkeypatch):
         return [("2026-10-08", 51.0)]
 
     monkeypatch.setattr(prices, "_fetch", fake_fetch)
-    prices.ensure_prices(conn, ["MSFT"], "2026-10-01", "2026-10-08")
-    # Incremental: fetch begins at the cached max, not the original start.
+    prices.ensure_prices(conn, ["MSFT"], "2026-10-07", "2026-10-08")   # start == cached min
+    # Forward-only: one fetch beginning at the cached max (no earlier history needed).
     assert seen["start"] == "2026-10-07"
     assert store.price_series(conn, "MSFT") == [("2026-10-07", 50.0), ("2026-10-08", 51.0)]
 
@@ -90,7 +90,7 @@ def test_ensure_prices_backfills_earlier_history(monkeypatch):
 
     monkeypatch.setattr(prices, "_fetch", fake)
     prices.ensure_prices(conn, ["NVDA"], "2026-08-01", "2026-10-01")
-    assert ("2026-08-01", "2026-09-30") in calls   # earlier gap fetched (start < cached min)
+    assert calls[0][0] == "2026-08-01"             # single fetch starts at the earlier start
     ser = store.price_series(conn, "NVDA")
     assert ser[0][0] == "2026-08-03"               # August now present, ahead of Sep 30
 
@@ -101,6 +101,24 @@ def test_ensure_prices_no_gap_when_fully_covered(monkeypatch):
     monkeypatch.setattr(prices, "_fetch", lambda *a: (_ for _ in ()).throw(AssertionError("should not fetch")))
     summary = prices.ensure_prices(conn, ["AAPL"], "2026-09-15", "2026-10-09")   # inside cached span
     assert summary["cached"] == 1 and summary["fetched"] == 0
+
+
+def test_ensure_prices_refresh_days_refetches_trailing_window(monkeypatch):
+    # Adjusted closes are mutable (restated on each split/dividend). refresh_days must re-fetch
+    # the trailing window EVEN when fully cached, so a signal's base + end share one baseline.
+    conn = _mem()
+    store.upsert_prices(conn, "AAPL", [("2026-09-01", 1.0), ("2026-10-09", 2.0)])
+    calls = []
+
+    def fake(t, s, e):
+        calls.append(s)
+        return [("2026-10-09", 2.5)]               # a re-stated (adjusted) close
+
+    monkeypatch.setattr(prices, "_fetch", fake)
+    summary = prices.ensure_prices(conn, ["AAPL"], "2026-10-05", "2026-10-09", refresh_days=30)
+    assert summary["fetched"] == 1                 # NOT skipped despite full coverage
+    assert calls and calls[0] == "2026-09-09"      # fetched from end - 30 days
+    assert dict(store.price_series(conn, "AAPL"))["2026-10-09"] == 2.5   # overwritten baseline
 
 
 def test_fetch_yfinance_skips_nan(monkeypatch):
