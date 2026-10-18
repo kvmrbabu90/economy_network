@@ -71,6 +71,14 @@ def normalize_sector(sector: str | None) -> str | None:
     return _SECTOR_ALIASES.get(s, s)
 
 
+MODEL_VARIANTS = ("market", "sector_etf", "ff6")       # primary, robustness 1, robustness 2
+
+
+def variant_suffix(variant: str = "market", rule: str = "sigma3") -> str:
+    """'' for the primary analysis (market model, 3-sigma shocks); a stable suffix for robustness runs."""
+    return "" if (variant, rule) == ("market", "sigma3") else f"__{variant}_{rule}"
+
+
 def period_of(date_iso: str) -> str | None:
     """'exploration' | 'holdout' | None for an ISO date string (YYYY-MM-DD)."""
     d = str(date_iso)[:10]
