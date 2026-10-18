@@ -9,7 +9,10 @@ from research.dominoes import returns as rt
 def load(variant: str = "market") -> tuple[rt.Panel, rt.AbnormalModel]:
     if variant not in config.MODEL_VARIANTS:
         raise ValueError(f"unknown model variant {variant!r}")
-    panel = rt.build_panel(fetch_prices.load_prices())
+    if not io.frame_path("prices_raw").exists():
+        raise FileNotFoundError("prices_raw snapshot missing: dollar volume needs the unadjusted close "
+                                "(run the `prices` stage)")
+    panel = rt.build_panel(fetch_prices.load_prices(), raw=fetch_prices.load_prices_raw())
     if variant == "market":
         return panel, rt.AbnormalModel(panel, "market")
     if variant == "sector_etf":

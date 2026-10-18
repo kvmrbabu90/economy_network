@@ -53,6 +53,55 @@ def test_fetch_caches_never_refetches_and_pins_the_end_date(tmp_path, monkeypatc
     assert man["end"] == "2026-10-18" and man["failed"] == ["DEAD"]
 
 
+def test_parse_yf_frame_can_read_the_unadjusted_close_column():
+    idx = pd.to_datetime(["2020-01-02", "2020-01-03"])
+    cols = pd.MultiIndex.from_tuples([("AAA", "Adj Close"), ("AAA", "Close"), ("AAA", "Volume")])
+    raw = pd.DataFrame([[9.0, 10.0, 100.0], [9.9, 11.0, 200.0]], index=idx, columns=cols)
+    out = fp.parse_yf_frame(raw, ["AAA"], close_col="Close")
+    assert list(out["AAA"]["close"]) == [10.0, 11.0]
+    assert list(fp.parse_yf_frame(raw, ["AAA"], close_col="Adj Close")["AAA"]["close"]) == [9.0, 9.9]
+
+
+def test_raw_snapshot_is_separate_pinned_to_the_price_manifest_and_never_refetched(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOMINO_STORE", str(tmp_path))
+    with pytest.raises(FileNotFoundError):
+        fp.fetch_raw(["AAA"], downloader=lambda s, a, b: {})      # needs the adjusted snapshot's manifest first
+
+    def adj(symbols, start, end):
+        return {s: pd.DataFrame({"date": pd.to_datetime(["2020-01-02", "2020-01-03"]),
+                                 "close": [1.0, 1.1], "volume": [10.0, 20.0]}) for s in symbols}
+
+    fp.fetch(["AAA", "BBB"], "2013-09-01", "2026-10-17", downloader=adj)
+    before = (tmp_path / "prices.parquet").read_bytes()
+    calls, spans = [], []
+
+    def raw(symbols, start, end):
+        calls.append(list(symbols))
+        spans.append((start, end))
+        return {s: pd.DataFrame({"date": pd.to_datetime(["2020-01-02", "2020-01-03"]),
+                                 "close": [2.0, 2.2], "volume": [10.0, 20.0]}) for s in symbols}
+
+    r1 = fp.fetch_raw(["AAA", "BBB"], downloader=raw)
+    assert r1["fetched"] == 2 and spans == [("2013-09-01", "2026-10-17")]
+    r2 = fp.fetch_raw(["AAA", "BBB"], downloader=raw)
+    assert r2["skipped_cached"] == 2 and len(calls) == 1
+    assert (tmp_path / "prices.parquet").read_bytes() == before        # adjusted snapshot untouched
+    got = fp.load_prices_raw()
+    assert set(got.columns) >= {"symbol", "date", "close_raw", "volume"} and got["close_raw"].max() == 2.2
+
+
+def test_raw_sanity_counts_volume_mismatches_and_bad_adjustment_ratios():
+    d = pd.to_datetime(["2020-01-02", "2020-01-03", "2020-01-06"])
+    prices = pd.DataFrame({"symbol": ["A"] * 3 + ["B"] * 3, "date": list(d) * 2,
+                           "close": [0.9, 0.95, 1.0, 2.0, 2.0, 2.0], "volume": [5.0, 5.0, 5.0, 7.0, 7.0, 7.0]})
+    raw = pd.DataFrame({"symbol": ["A"] * 3 + ["B"] * 3, "date": list(d) * 2,
+                        "close_raw": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0], "volume": [5.0, 5.0, 5.0, 7.0, 14.0, 7.0]})
+    s = fp.raw_sanity(prices, raw)
+    assert s["volume_mismatch_rows"] == 1 and s["volume_mismatch_symbols"] == ["B"]
+    assert s["ratio_violation_symbols"] == ["B"]          # adjusted close above the raw close
+    assert s["symbols_missing_raw"] == []
+
+
 _FIVE = """This file was created by CMPT_ME_BEME_OP_INV_RETS_DAILY using the 202508 CRSP database.
 The 1-month TBill return is from Ibbotson and Associates Inc.
 

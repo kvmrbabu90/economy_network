@@ -108,8 +108,40 @@ def test_dollar_volume_and_abnormal_volume_use_minus80_to_minus21():
     assert dv == pytest.approx(np.mean(panel.close[win, i] * panel.volume[win, i]))
     av = rt.abnormal_volume(panel, np.array([i]), np.array([e]))[0]
     assert av == pytest.approx(panel.volume[e, i] / np.mean(panel.volume[win, i]))
-    panel.volume[e - 80:e - 39, i] = np.nan               # 41 of the 60 window days blanked -> 19 valid
+    panel.dvx[e - 80:e - 39, i] = np.nan                  # 41 of the 60 window days blanked -> 19 valid
     assert np.isnan(rt.dollar_volume(panel, np.array([i]), np.array([e]))[0])
+
+
+def test_dollar_volume_uses_the_unadjusted_close_and_its_own_volume_when_a_raw_snapshot_is_given():
+    prices, _ = synth.synth_prices(n_days=400, symbols=("AAA", "BBB"), seed=3)
+    raw = prices.rename(columns={"close": "close_raw"}).copy()
+    raw = raw[raw["symbol"] != "BBB"]                      # BBB has no raw history
+    raw.loc[raw["symbol"] == "AAA", "close_raw"] *= 1.25   # back-adjusted closes sit 20% below the raw close
+    raw.loc[raw["symbol"] == "AAA", "volume"] *= 2.0
+    panel = rt.build_panel(prices, raw=raw)
+    i, b, e = panel.col["AAA"], panel.col["BBB"], 300
+    win = slice(e - 80, e - 20)
+    want = np.mean(panel.close[win, i] * 1.25 * panel.volume[win, i] * 2.0)
+    assert rt.dollar_volume(panel, np.array([i]), np.array([e]))[0] == pytest.approx(want)
+    assert np.isnan(rt.dollar_volume(panel, np.array([b]), np.array([e]))[0])       # never falls back
+    av = rt.abnormal_volume(panel, np.array([i]), np.array([e]))[0]                  # volume-only, cached series
+    assert av == pytest.approx(panel.volume[e, i] / np.mean(panel.volume[win, i]))
+
+
+def test_context_load_requires_the_raw_snapshot_for_dollar_volume(tmp_path, monkeypatch):
+    from research.dominoes import context, io
+    from research.dominoes import fetch_prices as fp
+    monkeypatch.setenv("DOMINO_STORE", str(tmp_path))
+    prices, _ = synth.synth_prices(n_days=300, symbols=("AAA",), seed=4)
+    io.write_frame("prices", prices, fp.PRICE_SCHEMA)
+    with pytest.raises(FileNotFoundError, match="prices_raw"):
+        context.load("market")
+    raw = prices.rename(columns={"close": "close_raw"})
+    raw["close_raw"] *= 3.0
+    io.write_frame("prices_raw", raw, fp.RAW_SCHEMA)
+    panel, _ = context.load("market")
+    i = panel.col["AAA"]
+    assert np.allclose(panel.dvx[:, i], panel.close[:, i] * 3.0 * panel.volume[:, i], equal_nan=True)
 
 
 def test_sector_etf_variant_is_plain_excess_return():

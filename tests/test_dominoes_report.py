@@ -20,6 +20,7 @@ SPEC = "docs/superpowers/specs/2026-10-18-domino-study-design.md"
 def _seed_store(world) -> None:
     prices, firms, links, pairs = world
     io.write_frame("prices", prices, fp.PRICE_SCHEMA)
+    io.write_frame("prices_raw", prices.rename(columns={"close": "close_raw"}), fp.RAW_SCHEMA)
     io.write_frame("firms", firms.assign(name=firms["ticker"]), sl.FIRM_SCHEMA)
     io.write_frame("links", links, sl.LINK_SCHEMA)
     io.write_frame("any_edge_pairs", pairs, sl.PAIR_SCHEMA)

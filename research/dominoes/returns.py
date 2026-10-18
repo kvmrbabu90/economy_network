@@ -26,10 +26,11 @@ class Panel:
     dates: pd.DatetimeIndex
     symbols: list[str]
     col: dict[str, int]
-    close: np.ndarray        # (T, N)
+    close: np.ndarray        # (T, N) total-return-adjusted close
     volume: np.ndarray       # (T, N)
     r: np.ndarray            # (T, N) cleaned simple returns; NaN when unknown
     n_bad_prints: int
+    dvx: np.ndarray          # (T, N) traded dollars per day: unadjusted close x volume (raw snapshot)
 
 
 def clean_bad_prints(r: np.ndarray) -> tuple[np.ndarray, int]:
@@ -49,23 +50,35 @@ def clean_bad_prints(r: np.ndarray) -> tuple[np.ndarray, int]:
     return out, int(flag.sum())
 
 
-def build_panel(prices: pd.DataFrame, market: str = config.MARKET_TICKER) -> Panel:
+def _wide(p: pd.DataFrame, value: str, cal: pd.DatetimeIndex, symbols: list[str]) -> np.ndarray:
+    # copy=True: pandas 3 copy-on-write hands back read-only views from to_numpy().
+    return (p.pivot_table(index="date", columns="symbol", values=value, aggfunc="last")
+            .reindex(index=cal, columns=symbols).to_numpy(dtype=float, copy=True))
+
+
+def build_panel(prices: pd.DataFrame, market: str = config.MARKET_TICKER, raw: pd.DataFrame | None = None) -> Panel:
+    """`raw` (symbol, date, close_raw, volume) is the unadjusted-close snapshot used for dollar volume; a symbol
+    absent from it gets NaN dollar volume (never the adjusted close). Without `raw` (synthetic tests, where the
+    adjusted and raw closes coincide) dollar volume is close x volume."""
     p = prices.copy()
     p["date"] = pd.to_datetime(p["date"]).dt.normalize()
     cal = pd.DatetimeIndex(sorted(p.loc[p["symbol"] == market, "date"].unique()))
     symbols = sorted(p["symbol"].unique())
-    # copy=True: pandas 3 copy-on-write hands back read-only views from to_numpy().
-    close = (p.pivot_table(index="date", columns="symbol", values="close", aggfunc="last")
-             .reindex(index=cal, columns=symbols).to_numpy(dtype=float, copy=True))
-    vol = (p.pivot_table(index="date", columns="symbol", values="volume", aggfunc="last")
-           .reindex(index=cal, columns=symbols).to_numpy(dtype=float, copy=True))
+    close = _wide(p, "close", cal, symbols)
+    vol = _wide(p, "volume", cal, symbols)
+    if raw is None:
+        dvx = close * vol
+    else:
+        q = raw.copy()
+        q["date"] = pd.to_datetime(q["date"]).dt.normalize()
+        dvx = _wide(q, "close_raw", cal, symbols) * _wide(q, "volume", cal, symbols)
     r = np.full_like(close, np.nan)
     with np.errstate(divide="ignore", invalid="ignore"):
         r[1:] = close[1:] / close[:-1] - 1.0
     r[~np.isfinite(r)] = np.nan
     r, n_bad = clean_bad_prints(r)
     return Panel(dates=cal, symbols=symbols, col={s: i for i, s in enumerate(symbols)},
-                 close=close, volume=vol, r=r, n_bad_prints=n_bad)
+                 close=close, volume=vol, r=r, n_bad_prints=n_bad, dvx=dvx)
 
 
 def _window_bounds(T: int, est: tuple[int, int]):
@@ -268,8 +281,9 @@ def _window_mean(values: np.ndarray, cols, e, win: tuple[int, int], min_n: int) 
 
 
 def dollar_volume(panel: Panel, cols, e) -> np.ndarray:
-    """Average close x volume over [e-80, e-21]; NaN with fewer than 20 valid days (§13.5)."""
-    return _window_mean(panel.close * panel.volume, cols, e, config.DV_WINDOW, config.MIN_DV_DAYS)
+    """Average traded dollars (unadjusted close x volume) over [e-80, e-21]; NaN with fewer than 20 valid
+    days (§13.5)."""
+    return _window_mean(panel.dvx, cols, e, config.DV_WINDOW, config.MIN_DV_DAYS)
 
 
 def abnormal_volume(panel: Panel, cols, e) -> np.ndarray:
