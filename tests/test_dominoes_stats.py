@@ -76,3 +76,68 @@ def test_block_bootstrap_ci_is_reproducible_and_brackets_the_mean():
 
 def test_week_of_is_iso_year_week():
     assert st.week_of("2021-01-03") == "2020-W53" and st.week_of("2021-01-04") == "2021-W01"
+
+
+# --- review fixes (Task 10) -------------------------------------------------------------------------------
+def test_missing_cluster_labels_raise_instead_of_merging_or_crashing():
+    v = [0.01, 0.02, 0.03, 0.04]
+    cl = np.array(["2020-01-02", None, "2020-01-03", "2020-01-03"], dtype=object)
+    for fn in (lambda: st.clustered_mean(v, cl), lambda: st.clustered_ols(v, [1.0, 2.0, 3.0, 5.0], cl),
+               lambda: st.block_bootstrap_ci(v, cl, n_boot=50, seed=1),
+               lambda: st.clustered_mean_2way(v, cl, ["a", "b", "a", "b"])):
+        with pytest.raises(ValueError, match="missing cluster"):
+            fn()
+
+
+def test_clustered_ols_gives_nan_when_x_has_no_variation():
+    y = [0.1, 0.2, 0.3, 0.4, 0.5]
+    for x in ([0.0731] * 5, [2.0] * 5):
+        r = st.clustered_ols(y, x, ["a", "a", "b", "b", "c"])
+        assert np.isnan(r["slope"]) and np.isnan(r["se"]) and np.isnan(r["t"])
+
+
+def test_clustered_ols_with_one_cluster_keeps_the_slope_but_no_se():
+    r = st.clustered_ols([1.0, 2.0, 3.1, 3.9], [1.0, 2.0, 3.0, 4.0], ["a"] * 4)
+    assert np.isfinite(r["slope"]) and np.isnan(r["se"]) and np.isnan(r["t"])
+
+
+def test_bootstrap_ci_is_nan_with_a_single_cluster():
+    lo, hi = st.block_bootstrap_ci([0.03, 0.03, 0.05], ["d", "d", "d"], n_boot=100, seed=1)
+    assert np.isnan(lo) and np.isnan(hi)
+
+
+def test_two_way_clustered_mean_matches_cgm_by_hand():
+    rng = np.random.default_rng(5)
+    n = 200
+    c1 = rng.integers(0, 25, n)
+    c2 = rng.integers(0, 15, n)
+    v = rng.normal(0.01, 0.05, n) + 0.02 * np.sin(c1) + 0.02 * np.cos(c2)
+    r = st.clustered_mean_2way(v, c1, c2)
+    u = v - v.mean()
+
+    def meat(c):
+        g = np.unique(c)
+        return len(g) / (len(g) - 1) * sum(u[c == k].sum() ** 2 for k in g) / n ** 2
+
+    c12 = c1 * 1000 + c2
+    V = meat(c1) + meat(c2) - meat(c12)
+    assert r["mean"] == pytest.approx(v.mean())
+    assert r["se"] == pytest.approx(np.sqrt(V)) and not r["fallback"]
+    assert r["df"] == min(len(np.unique(c1)), len(np.unique(c2))) - 1
+    assert r["p_one_pos"] == pytest.approx(sps.t.sf(r["t"], r["df"]))
+
+
+def test_two_way_falls_back_to_the_larger_one_way_variance_when_cgm_is_not_positive():
+    # intersection cells coincide with c1 and c2's cluster sums cancel exactly -> V1 + V2 - V12 = 0
+    v = np.array([1.0, -0.8, -1.0, 0.8, 1.2, -1.0, -1.1, 0.9]) * 0.01
+    c1 = np.array([0, 0, 1, 1, 2, 2, 3, 3])
+    c2 = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+    r = st.clustered_mean_2way(v, c1, c2)
+    one1 = st.clustered_mean(v, c1)["se"]
+    one2 = st.clustered_mean(v, c2)["se"]
+    assert r["fallback"] and r["se"] == pytest.approx(max(one1, one2))
+
+
+def test_two_way_is_nan_when_either_dimension_has_one_cluster():
+    r = st.clustered_mean_2way([0.01, 0.02, 0.03], ["d1", "d2", "d3"], ["B", "B", "B"])
+    assert np.isnan(r["se"]) and np.isnan(r["t"])
