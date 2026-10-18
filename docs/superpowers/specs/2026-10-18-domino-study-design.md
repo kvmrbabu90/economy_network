@@ -221,3 +221,7 @@ The holdout stays closed until the exploration readout is committed.
   9. **Robustness check 5.** "A's sector ETF moved ≥ 2σ" means the ETF's own market-model AR on day 0 is at least 2σ in absolute value. The ETF's model is estimated the same way as a firm's.
   10. **Robustness check 3, top 1%.** The threshold is each firm's 99th percentile of |AR| across all its dates in the study period.
   11. **Holdout gate.** Holdout events are not built until the exploration readout is committed. The code enforces this with a marker file that records the readout's commit hash.
+- 2026-10-18 (building the pipeline, **before any price data was downloaded**): 12. **US listings only.**
+  - Each firm uses its first US-style ticker: 1–5 capital letters, with an optional one-letter share class.
+  - The share-class dot becomes a dash for Yahoo, so `BRK.B` becomes `BRK-B`.
+  - One firm has only a foreign listing (`300750.SZ`), so the universe is 572, not 573. That listing trades on a different calendar and time zone, so a US day-0 shock would show up in its next close. That could create a false "slow ripple".
