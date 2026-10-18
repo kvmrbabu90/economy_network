@@ -280,3 +280,16 @@ The holdout stays closed until the exploration readout is committed.
   - Why this one: it was chosen from about 126 H6 cells because it has a mechanism (bigger news should travel further along the supply chain), and an independent robustness run echoes it.
   - It is a single secondary test and never a verdict input.
   - No other H6 pattern is claimed. In particular, the customer [+1,+5] effect showing up mainly in unweighted links has no mechanism, so it is not registered.
+- 2026-10-18 (after the holdout). The verdict, recorded in `readout-holdout.md` (commit `b45b4e0`), is **same-day ripple only** (supplier, competitor) and **no ripple** (customer); H6-F1 was not confirmed. Then, report-only changes with nothing re-measured:
+  - **Wording fixes in the holdout readout** (final code review):
+    - rows that were not exploration candidates show the raw holdout move and "not a candidate";
+    - a caveat that the same-day effect cannot separate transmission from shared news or sub-industry co-movement;
+    - uncommitted holdout moves are listed as leads that cannot be claimed;
+    - two-way diagnostics are added for H1;
+    - the data-availability wording no longer asserts delisting.
+  - **Hash verification.** The committed power and results JSON copies are now stored byte-for-byte (`.gitattributes -text`), so their `sha256` equals the exploration readout's integrity table. Future runs write LF.
+  - **Data notes** (`verification.md`):
+    - nine symbols have no usable Yahoo history, not seven (PSKY and WBD added);
+    - three corporate-action artifacts (DHR spin-off, KDP special dividend, KT dividend) passed the reverting-only bad-print rule and seeded about 14 of 55,926 events;
+    - R8 "manual only" is empty for supplier and customer, because all manual `supplies` edges involve the excluded 300750.SZ.
+  - **Independent verification.** It re-derived every reported number, the verdict and the placebo; see `docs/research/domino-study/verification.md`.

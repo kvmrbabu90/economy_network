@@ -1,6 +1,6 @@
 # Domino study — holdout readout (2022+)
 
-Generated 2026-10-18 from code commit `a59f50e`. The exploration readout (`readout-exploration.md`) was committed before any holdout event was built, and the gate verified its integrity table against the research store.
+Generated 2026-10-18 from code commit `6bc906f`. The exploration readout (`readout-exploration.md`) was committed before any holdout event was built, and the gate verified its integrity table against the research store.
 
 ## Plain-language summary
 
@@ -8,6 +8,10 @@ Generated 2026-10-18 from code commit `a59f50e`. The exploration readout (`reado
 - customer [+1,+5]: not confirmed (did not replicate; below the 0.5% floor; did not beat the placebo); holdout mean -0.08% in the exploration direction.
 - Same-day supplier: confirmed (holdout mean +0.34%).
 - Same-day competitor: confirmed (holdout mean +1.00%).
+- What 'same day' does and does not show: a same-day ripple cannot separate A→B transmission from shared same-day news or finer sub-industry co-movement, because look-alikes are matched only on GICS sector. It is measured close to close, so it says nothing about speed within the day.
+- Descriptively, competitor [+1,+5] moved +0.17% (t 3.03) in the holdout, but it was not nominated by exploration and is below the 0.5% floor, so it cannot be claimed — it is a lead for a new pre-registered test on fresh data.
+- Descriptively, competitor [+1,+20] moved +0.25% (t 2.38) in the holdout, but it was not nominated by exploration and is below the 0.5% floor, so it cannot be claimed — it is a lead for a new pre-registered test on fresh data.
+- Descriptively, competitor [+1,+60] moved +0.48% (t 2.28) in the holdout, but it was not nominated by exploration and is below the 0.5% floor, so it cannot be claimed — it is a lead for a new pre-registered test on fresh data.
 - Research only: close-to-close returns, no trading costs beyond the 50 bp floor, no news latency.
 
 ## Verdict (spec §7)
@@ -23,7 +27,7 @@ Generated 2026-10-18 from code commit `a59f50e`. The exploration readout (`reado
 ## Data
 
 - Prices: yfinance, total-return adjusted for returns; 2013-09-01 to 2026-10-17 (end exclusive); 580 symbols fetched, unavailable: CAJ, ERJ, SATS, TEF.
-- Symbols with fewer than 200 price rows (delisted or taken private; never usable): AVB, EA, EQR, PSKY, WBD. Survivorship: firms that left the market are missing (§11).
+- Symbols with fewer than 200 price rows in the Yahoo snapshot (never usable; likely delisted, taken private or re-tickered — the cause was not verified): AVB, EA, EQR, PSKY, WBD. Survivorship: firms missing from the snapshot are missing here (§11).
 - Sector ETFs that start late (robustness 1 cannot use those sectors before then plus a ~1-year estimation window): XLC from 2018-06-19, XLRE from 2015-10-08.
 - Dollar volume uses a separate unadjusted-close snapshot (no dividend look-ahead): 1829819 common rows; volume mismatches 0; adjusted-above-raw rows 0; symbols without raw history 0 (their dollar volume is missing, never imputed).
 - Study links (directed, 'if A shocks, B is A's role'): supplier 145, customer 145, competitor 1304; ordered pairs holding more than one role: 14.
@@ -31,19 +35,19 @@ Generated 2026-10-18 from code commit `a59f50e`. The exploration readout (`reado
 
 ## H2 — slow ripple, holdout chain
 
-A test passes only if all hold: it passed exploration; the holdout has the same sign with one-sided p < 0.05; the holdout mean is at least 0.5% in that direction; and it beats the 95th percentile of the placebo (each linked firm relabelled to one random same-sector firm that is not linked to the shocked firm). Means are shown in the exploration direction. The last column is the exploratory two-way (date × linked firm) one-sided p (⚠ = a pass it does not confirm).
+A test passes only if all hold: it passed exploration; the holdout has the same sign with one-sided p < 0.05; the holdout mean is at least 0.5% in that direction; and it beats the 95th percentile of the placebo (each linked firm relabelled to one random same-sector firm that is not linked to the shocked firm). Candidates' means and t are shown in the exploration direction; rows that were not exploration candidates were not tested and show the raw holdout move only. The last column is the exploratory two-way (date × linked firm) one-sided p (⚠ = a pass it does not confirm).
 
 | Role | Window | Exploration pass | Direction | Holdout mean (in direction) | t (in direction) | p one-sided | Replicates | ≥ 0.5% | Placebo 95th pct (in direction) | Beats placebo | Result | p two-way |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| supplier | [+1,+5] | no | + | +0.17% | 1.46 | 0.0721 | no | no | not run | no | fail | 0.0839 |
-| supplier | [+1,+20] | no | + | +0.16% | 0.65 | 0.2582 | no | no | not run | no | fail | 0.2490 |
-| supplier | [+1,+60] | no | + | +0.30% | 0.79 | 0.2140 | no | no | not run | no | fail | 0.2440 |
+| supplier | [+1,+5] | no | — | +0.17% (raw) | 1.46 (raw) | — | — | — | not run | — | not a candidate | — |
+| supplier | [+1,+20] | no | — | +0.16% (raw) | 0.65 (raw) | — | — | — | not run | — | not a candidate | — |
+| supplier | [+1,+60] | no | — | +0.30% (raw) | 0.79 (raw) | — | — | — | not run | — | not a candidate | — |
 | customer | [+1,+5] | yes | + | -0.08% | -0.59 | 0.7235 | no | no | +0.20% (n 500/500) | no | fail | 0.7250 |
-| customer | [+1,+20] | no | + | -0.33% | -1.47 | 0.9283 | no | no | not run | no | fail | 0.9261 |
-| customer | [+1,+60] | no | + | -0.21% | -0.50 | 0.6930 | no | no | not run | no | fail | 0.6880 |
-| competitor | [+1,+5] | no | − | -0.17% | -3.03 | 0.9987 | no | no | not run | no | fail | 0.9977 |
-| competitor | [+1,+20] | no | + | +0.25% | 2.38 | 0.0088 | yes | no | not run | no | fail | 0.0117 |
-| competitor | [+1,+60] | no | + | +0.48% | 2.28 | 0.0114 | yes | no | not run | no | fail | 0.0147 |
+| customer | [+1,+20] | no | — | -0.33% (raw) | -1.47 (raw) | — | — | — | not run | — | not a candidate | — |
+| customer | [+1,+60] | no | — | -0.21% (raw) | -0.50 (raw) | — | — | — | not run | — | not a candidate | — |
+| competitor | [+1,+5] | no | — | +0.17% (raw) | 3.03 (raw) | — | — | — | not run | — | not a candidate | — |
+| competitor | [+1,+20] | no | — | +0.25% (raw) | 2.38 (raw) | — | — | — | not run | — | not a candidate | — |
+| competitor | [+1,+60] | no | — | +0.48% (raw) | 2.28 (raw) | — | — | — | not run | — | not a candidate | — |
 
 Placebo diagnostics (evaluable only with ≥ 90% finite permutations and median coverage ≥ 50% of the real events; SD ratio = placebo SD / real date-clustered SE, ⚠ below 0.8):
 
@@ -53,11 +57,13 @@ Placebo diagnostics (evaluable only with ≥ 90% finite permutations and median 
 
 ## H1 — same-day ripple, holdout
 
-| Role | Exploration | Holdout mean [0,0] | t | p one-sided | Result |
-|---|---|---|---|---|---|
-| supplier | candidate | +0.34% | 4.01 | <0.0001 | **PASS** |
-| customer | fail | +0.13% | 1.43 | 0.0761 | fail |
-| competitor | candidate | +1.00% | 21.52 | <0.0001 | **PASS** |
+The last two columns are the exploratory two-way (date × linked firm) diagnostics: the exploration t (⚠ = a candidate below |t| = 3) and the holdout one-sided p (⚠ = a pass it does not confirm).
+
+| Role | Exploration | Holdout mean [0,0] | t | p one-sided | Result | Exploration t two-way | Holdout p two-way |
+|---|---|---|---|---|---|---|---|
+| supplier | candidate | +0.34% | 4.01 | <0.0001 | **PASS** | 2.83 ⚠ | 0.0018 |
+| customer | fail | +0.13% | 1.43 | 0.0761 | fail | 1.66 | 0.1494 |
+| competitor | candidate | +1.00% | 21.52 | <0.0001 | **PASS** | 10.37 | <0.0001 |
 
 ## H3 — pre-trend in both periods
 
