@@ -60,6 +60,16 @@ SEED = 20261018
 
 HOLDOUT_MARKER = "holdout_unlocked.txt"
 
+# --- Task-10 review fixes, fixed before any outcome data (logged in spec §13) ---
+TOP1PCT_MIN_POOL = 100         # robustness 3b: a firm-period needs >= 100 valid |AR| days for a 99th percentile
+PLACEBO_MIN_FINITE = 0.90      # placebo evaluable only if >= 90% of permutations give a finite statistic ...
+PLACEBO_MIN_COVERAGE = 0.50    # ... and the median placebo event count is >= 50% of the real finite count
+PLACEBO_SD_RATIO_FLAG = 0.80   # diagnostic: placebo SD / real date-clustered SE below this is flagged
+POWER_UCB_Q = 0.80             # descriptive conservative MDE uses the 80th percentile of the bootstrap SE
+POWER_METHOD_VERSION = 2       # bump whenever the power check's computation changes
+H6_MIN_YEAR_EVENTS = 30        # H6 B-size terciles are formed within an event year with >= 30 events
+COSHOCK_LOOKBACK = 10          # exploratory R10: B had its own shock in [e-10, e]
+
 _SECTOR_ALIASES = {"Healthcare": "Health Care"}
 
 
@@ -95,3 +105,11 @@ def period_of(date_iso: str) -> str | None:
     if d >= HOLDOUT_START:
         return "holdout"
     return None
+
+
+def exploration_last_row(dates) -> int:
+    """Index of the last trading day on or before the end of exploration (2021-12-31) in a sorted calendar;
+    -1 if none. Exploration outcomes may not use any row after it (embargo, §13)."""
+    import numpy as np
+    import pandas as pd
+    return int(np.searchsorted(pd.DatetimeIndex(dates).values, np.datetime64(EXPLORATION[1]), side="right")) - 1

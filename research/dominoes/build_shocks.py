@@ -4,8 +4,13 @@ A firm shocks on day e when |AR(e; e)| >= 3 sigma, where AR and sigma come from 
 estimation window [e-270, e-21] (>= 200 valid days). Dedup (§13.2): a candidate is dropped if ANY earlier
 candidate of the same firm — kept or dropped — lies within the previous 10 trading days; dedup runs over
 all dates (pre-2015 included) before the period filter keeps exploration/holdout shocks only.
-Rules: 'sigma3' (primary), 'sigma4' and 'top1pct' (each firm's 99th percentile of |AR| over the study
-period, §13.10).
+Rules: 'sigma3' (primary), 'sigma4' and 'top1pct' (each firm's 99th percentile of |AR| computed WITHIN each
+period: dates up to 2021-12-31 — including pre-2015 dedup-only candidates — use the 2015-2021 pool, dates from
+2022 use the 2022+ pool; a firm-period with fewer than 100 valid days gets no top-1% shocks; §13 amendment).
+
+First-domino drift s*CAR(A) (H5) is written for exploration shocks only, and only for windows that end by
+2021-12-31 (embargo). Holdout shocks carry their day-0 attributes (AR, sigma, z, s, abnormal volume, sector-ETF z)
+but never outcome data before the holdout is opened; holdout H5 is computed in the gated holdout measure stage.
 """
 from __future__ import annotations
 
@@ -41,7 +46,10 @@ def detect(panel: rt.Panel, model: rt.AbnormalModel, firms: pd.DataFrame,
         etf_model = model
     T = panel.r.shape[0]
     t_all = np.arange(T)
-    study = np.asarray(panel.dates >= pd.Timestamp(config.EXPLORATION[0]))
+    last_x = config.exploration_last_row(panel.dates)
+    early = t_all <= last_x                                          # up to 2021-12-31 (pre-2015 included)
+    expl_pool = early & np.asarray(panel.dates >= pd.Timestamp(config.EXPLORATION[0]))
+    hold_pool = ~early
     recs: list[dict] = []
     for f in firms.itertuples(index=False):
         if f.symbol not in panel.col:
@@ -53,10 +61,11 @@ def detect(panel: rt.Panel, model: rt.AbnormalModel, firms: pd.DataFrame,
             z = ar / sig
         valid = np.isfinite(ar) & np.isfinite(z)
         if rule == "top1pct":
-            pool = np.abs(ar[valid & study])
-            if pool.size == 0:
-                continue
-            cand = valid & (np.abs(ar) >= np.percentile(pool, 99))
+            cand = np.zeros(T, dtype=bool)
+            for pool_mask, applies in ((expl_pool, early), (hold_pool, ~early)):
+                pool = np.abs(ar[valid & pool_mask])
+                if pool.size >= config.TOP1PCT_MIN_POOL:
+                    cand |= applies & valid & (np.abs(ar) >= np.percentile(pool, 99))
         else:
             cand = valid & (np.abs(z) >= (config.SHOCK_SIGMA if rule == "sigma3" else 4.0))
         for t in dedup(np.nonzero(cand)[0]):
@@ -72,9 +81,11 @@ def detect(panel: rt.Panel, model: rt.AbnormalModel, firms: pd.DataFrame,
 
     df = pd.DataFrame(recs)
     cols, e, s = df["col"].to_numpy(), df["e_idx"].to_numpy(), df["s"].to_numpy()
+    expl = (df["period"] == "exploration").to_numpy()
     for name, (a, b) in (("cara_w5", config.WINDOWS["w5"]), ("cara_w20", config.WINDOWS["w20"]),
                          ("cara_w60", config.WINDOWS["w60"])):
-        df[name] = s * model.car(cols, e, a, b)
+        cara = s * model.car(cols, e, a, b)
+        df[name] = np.where(expl & (e + b <= last_x), cara, np.nan)     # holdout: never; exploration: embargo
     df["abn_vol"] = rt.abnormal_volume(panel, cols, e)
     etf_z = np.full(len(df), np.nan)
     if etf_model is not None:

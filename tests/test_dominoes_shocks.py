@@ -85,6 +85,58 @@ def test_sigma4_rule_raises_the_threshold():
     assert _at(bs.detect(panel, model, firms, rule="sigma4"), 600) is None
 
 
+def _setup_boundary(plants: dict[str, float], start: str = "2019-06-03", n_days: int = 1000,
+                    noise_scale_from: tuple[str, float] | None = None):
+    """A world straddling the exploration/holdout boundary (2021-12-31 | 2022-01-03). Plants are keyed by date."""
+    dates = pd.bdate_range(start, periods=n_days)
+    rng = np.random.default_rng(12)
+    noise = rng.uniform(-H, H, n_days)
+    if noise_scale_from:
+        day, k = noise_scale_from
+        noise[dates >= pd.Timestamp(day)] *= k
+    for d, v in plants.items():
+        noise[dates.get_loc(pd.Timestamp(d))] = v
+    prices, _ = synth.synth_prices(n_days=n_days, symbols=("AAA", "XLK"), seed=12, start=start,
+                                   idio_override={"AAA": noise})
+    panel = rt.build_panel(prices)
+    firms = pd.DataFrame({"firm_id": ["cik:A"], "ticker": ["AAA"], "symbol": ["AAA"],
+                          "sector": ["Information Technology"]})
+    return panel, rt.AbnormalModel(panel, "market"), firms
+
+
+def test_holdout_shocks_never_carry_first_domino_cars():
+    panel, model, firms = _setup_boundary({"2022-03-01": 6 * SIG})
+    sh = bs.detect(panel, model, firms)
+    row = sh[sh["date"] == pd.Timestamp("2022-03-01")].iloc[0]
+    assert row["period"] == "holdout" and row["s"] == 1 and np.isfinite(row["z"])
+    assert all(np.isnan(row[c]) for c in ("cara_w5", "cara_w20", "cara_w60"))
+
+
+def test_exploration_cars_stop_at_the_end_of_2021():
+    panel, model, firms = _setup_boundary({"2021-12-17": 6 * SIG})        # +5 ends 2021-12-24, +20 in 2022
+    row = bs.detect(panel, model, firms).set_index("date").loc[pd.Timestamp("2021-12-17")]
+    assert np.isfinite(row["cara_w5"]) and np.isnan(row["cara_w20"]) and np.isnan(row["cara_w60"])
+
+
+def test_top1pct_exploration_shocks_do_not_depend_on_holdout_returns():
+    base = bs.detect(*_setup_boundary({"2021-06-01": 7 * SIG}), rule="top1pct")
+    noisy = bs.detect(*_setup_boundary({"2021-06-01": 7 * SIG}, noise_scale_from=("2022-01-03", 3.0)),
+                      rule="top1pct")
+    ex = lambda s: sorted(s.loc[s["period"] == "exploration", "e_idx"])   # noqa: E731
+    assert ex(base) == ex(noisy) and len(ex(base)) > 0
+
+
+def test_top1pct_needs_100_valid_days_in_the_period():
+    # ~60 holdout days only: the holdout pool is too short, so no holdout top-1% shocks
+    panel, model, firms = _setup_boundary({"2022-02-15": 9 * SIG}, n_days=composite_days("2019-06-03", 60))
+    sh = bs.detect(panel, model, firms, rule="top1pct")
+    assert (sh["period"] == "holdout").sum() == 0 and (sh["period"] == "exploration").sum() > 0
+
+
+def composite_days(start: str, holdout_days: int) -> int:
+    return int((pd.bdate_range(start, "2021-12-31")).size) + holdout_days
+
+
 def test_top1pct_rule_uses_each_firms_own_99th_percentile():
     panel, model, firms = _setup({500: 8 * SIG, 650: 6 * SIG, 900: -7 * SIG})
     i = panel.col["AAA"]
