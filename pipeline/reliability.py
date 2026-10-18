@@ -16,6 +16,7 @@ import json
 import logging
 import math
 import os
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,6 +28,8 @@ log = logging.getLogger(__name__)
 _B = [float(x) for x in os.environ.get("RELIABILITY_MAG_BANDS", "0.05,0.15").split(",")]
 _Z = 1.96  # 95% Wilson interval
 _IC_MIN_N = 5  # below this, an IC is too noisy to report
+_CLUSTER_SEED = 42  # deterministic cluster-bootstrap so dashboard CIs are stable run-to-run
+_CLUSTER_REPS = 1000
 _SCORECARD = Path(os.environ.get("RELIABILITY_SCORECARD",
                   str(Path(__file__).resolve().parents[1] / "data" / "signal_reliability.json")))
 
@@ -96,12 +99,82 @@ def _median(vs: list[float]) -> float:
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
 
 
-def _stat_block(rows: list[dict]) -> dict:
+def _cluster_key(r: dict):
+    """The entry DAY — the cluster unit. Signals sharing an entry day have overlapping forward
+    windows and the same-day macro move, so they are NOT independent draws."""
+    return r.get("base_date") or r.get("entry_date")
+
+
+def _cluster_ci(clusters_vals: list, rng, reps: int = _CLUSTER_REPS) -> tuple:
+    """Percentile CI for the pooled mean, bootstrapped by resampling WHOLE clusters with
+    replacement (block bootstrap). Honors intra-day correlation the iid interval ignores."""
+    clusters_vals = [v for v in clusters_vals if v]
+    k = len(clusters_vals)
+    if k < 2:
+        return (None, None)
+    agg = [(sum(v), len(v)) for v in clusters_vals]
+    means = []
+    for _ in range(reps):
+        tot, cnt = 0.0, 0
+        for _ in range(k):
+            s, c = agg[rng.randrange(k)]
+            tot += s
+            cnt += c
+        means.append(tot / cnt if cnt else 0.0)
+    means.sort()
+    return (round(means[int(0.025 * reps)], 6), round(means[int(0.975 * reps)], 6))
+
+
+def _clustered_stats(rows: list[dict]) -> dict:
+    """Cluster-robust add-ons keyed on the entry day: block-bootstrap CIs for net-hit and mean-net
+    (wider than the iid Wilson/mean because overlapping same-day windows aren't independent), the
+    per-day median (collapse each day to its mean, then take the median), and a first/second-half
+    regime split. Returns {'n_clusters': None} when rows carry no date key (CIs stay iid-only)."""
+    groups: dict = {}
+    for r in rows:
+        key = _cluster_key(r)
+        if key is None:
+            return {"n_clusters": None}
+        groups.setdefault(key, []).append(r)
+    keys = sorted(groups)
+    k = len(keys)
+    nethit_ci = _cluster_ci([[1.0 if x.get("net_hit") else 0.0 for x in groups[c]] for c in keys],
+                            random.Random(_CLUSTER_SEED))
+    net_by_day = [[x["net_cap"] for x in groups[c] if x.get("net_cap") is not None] for c in keys]
+    net_by_day = [v for v in net_by_day if v]
+    meannet_ci = _cluster_ci(net_by_day, random.Random(_CLUSTER_SEED + 1))
+    day_means = sorted(sum(v) / len(v) for v in net_by_day) if net_by_day else []
+    med_day = round(_median(day_means), 6) if day_means else None
+
+    def _half(dkeys):
+        rs = [x for c in dkeys for x in groups[c]]
+        if not rs:
+            return None
+        nvals = [x["net_cap"] for x in rs if x.get("net_cap") is not None]
+        return {"n": len(rs), "days": len(dkeys),
+                "net_hit": round(sum(1 for x in rs if x.get("net_hit")) / len(rs), 4),
+                "mean_net": round(sum(nvals) / len(nvals), 6) if nvals else 0.0}
+
+    half = k // 2
+    return {
+        "n_clusters": k,
+        "net_hit_cl_low": nethit_ci[0], "net_hit_cl_high": nethit_ci[1],
+        "mean_net_cl_low": meannet_ci[0], "mean_net_cl_high": meannet_ci[1],
+        "median_net_day": med_day,
+        "time_split": {"first": _half(keys[:half]), "second": _half(keys[half:])} if k >= 2 else None,
+    }
+
+
+def _stat_block(rows: list[dict], clustered: bool = False) -> dict:
     """Summary stats for a group of outcome rows. All hit/abn fields are the CAPTURABLE (entry-open
     -> exit) abnormal return. `net_*` is that return direction-signed and net of round-trip cost —
     the retail bar. `dir_acc` is announcement-day direction accuracy (extraction quality, from the
     priced-in ann_abn); `mean_gap` is the missed overnight. `directional_abn` re-signs the abnormal
-    into the predicted direction so IC>0 means stronger-predicted => more-favorable capturable move."""
+    into the predicted direction so IC>0 means stronger-predicted => more-favorable capturable move.
+
+    With `clustered=True`, adds cluster-robust uncertainty (block-bootstrap net-hit/mean-net CIs by
+    entry day, per-day median, regime split) — the HONEST interval for overlapping, event-clustered
+    windows. The iid Wilson fields remain for continuity but understate uncertainty on such data."""
     n = len(rows)
     hits = sum(r["hit"] for r in rows)
     abn = [r["abn_ret"] for r in rows]
@@ -116,7 +189,7 @@ def _stat_block(rows: list[dict]) -> dict:
     ann_rows = [r for r in rows if r.get("ann_abn") is not None]
     ann_ok = sum(1 for r in ann_rows if (r["direction"] == "positive") == (r["ann_abn"] > 0))
     gaps = [r["gap_abn"] for r in rows if r.get("gap_abn") is not None]
-    return {
+    out = {
         "n": n, "hits": hits,
         "hit_rate": round(hits / n, 4) if n else 0.0,
         "ci_low": lo, "ci_high": hi,
@@ -129,6 +202,9 @@ def _stat_block(rows: list[dict]) -> dict:
         "dir_acc": round(ann_ok / len(ann_rows), 4) if ann_rows else None,
         "mean_gap": round(sum(gaps) / len(gaps), 6) if gaps else None,
     }
+    if clustered and n:
+        out.update(_clustered_stats(rows))
+    return out
 
 
 def _intraday_block(rows: list[dict]) -> dict:
@@ -138,7 +214,7 @@ def _intraday_block(rows: list[dict]) -> dict:
 
     def cell(pred):
         sub = [r for r in rows if pred(r)]
-        return _stat_block(sub) if sub else None
+        return _stat_block(sub, clustered=True) if sub else None
 
     by_hop_horizon = []
     for hop in hops:
@@ -166,7 +242,7 @@ def _dynamic_block(rows: list[dict]) -> dict:
     """Reverse-signal dynamic-exit rollup: overall + per-order net stats, average holding period,
     and the exit-reason mix (reverse / faded / maxhold)."""
     def block(sub):
-        b = _stat_block(sub)
+        b = _stat_block(sub, clustered=True)
         b["avg_hold"] = round(sum(r["holding_days"] for r in sub) / len(sub), 1) if sub else 0.0
         return b
     hops = sorted({r["hop"] for r in rows})
@@ -212,15 +288,15 @@ def compute_reliability(conn, write_scorecard: bool = True) -> dict:
     horizons = sorted({r["horizon_days"] for r in outcomes})
     hops = sorted({r["hop"] for r in outcomes})
 
-    def cell(pred):
+    def cell(pred, clustered=False):
         sub = [r for r in outcomes if pred(r)]
-        return _stat_block(sub) if sub else None
+        return _stat_block(sub, clustered=clustered) if sub else None
 
     by_hop_horizon = []
     for hop in hops:
         for h in horizons:
-            allc = cell(lambda r, hop=hop, h=h: r["hop"] == hop and r["horizon_days"] == h)
-            clnc = cell(lambda r, hop=hop, h=h: r["hop"] == hop and r["horizon_days"] == h and r["clean"] == 1)
+            allc = cell(lambda r, hop=hop, h=h: r["hop"] == hop and r["horizon_days"] == h, clustered=True)
+            clnc = cell(lambda r, hop=hop, h=h: r["hop"] == hop and r["horizon_days"] == h and r["clean"] == 1, clustered=True)
             if allc:
                 by_hop_horizon.append({"hop": hop, "horizon_days": h, "all": allc, "clean": clnc})
 
@@ -231,7 +307,7 @@ def compute_reliability(conn, write_scorecard: bool = True) -> dict:
             if c:
                 by_magband.append({"mag_band": band, "horizon_days": h, **c})
 
-    overall = {str(h): cell(lambda r, h=h: r["horizon_days"] == h) for h in horizons}
+    overall = {str(h): cell(lambda r, h=h: r["horizon_days"] == h, clustered=True) for h in horizons}
 
     # --- coverage / maturity ---
     sig_total = conn.execute("""

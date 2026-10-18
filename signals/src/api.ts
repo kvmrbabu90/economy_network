@@ -1,11 +1,20 @@
 // API client for the standalone Signals dashboard. Consumes the shared EconGraph reliability API.
 import { API_BASE_URL } from "./config";
 
+export interface RelHalf { n: number; days: number; net_hit: number; mean_net: number; }
 export interface RelStat {
   n: number; hits: number; hit_rate: number; ci_low: number; ci_high: number;
   mean_abn: number; median_abn: number; ic: number | null;
   net_hit_rate?: number; net_ci_low?: number; net_ci_high?: number; mean_net?: number;
   dir_acc?: number | null; mean_gap?: number | null;
+  // Cluster-robust add-ons (present on dashboard rollups): block-bootstrap CIs by entry DAY, the
+  // per-day median net, a count of independent days, and a first/second-half regime split. These
+  // are the HONEST intervals for overlapping, event-clustered windows; the iid ci_* understate.
+  n_clusters?: number | null;
+  net_hit_cl_low?: number | null; net_hit_cl_high?: number | null;
+  mean_net_cl_low?: number | null; mean_net_cl_high?: number | null;
+  median_net_day?: number | null;
+  time_split?: { first: RelHalf | null; second: RelHalf | null } | null;
 }
 export interface RelHopHorizon { hop: number; horizon_days: number; all: RelStat; clean: RelStat | null; }
 export interface RelMagBand extends RelStat { mag_band: string; horizon_days: number; }

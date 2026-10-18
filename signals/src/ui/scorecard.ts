@@ -45,6 +45,13 @@ function statFor(cells: RelHopHorizon[], hop: number, horizon: number, clean: bo
   return clean ? cell.clean : cell.all;
 }
 
+// Cluster-robust (block-bootstrap by entry day) net-hit interval. `straddles` = spans 50%, i.e. not
+// distinguishable from a coin flip once overlapping same-day windows are honored.
+function clNetCI(s: RelStat): { lo: number | null; hi: number | null; days: number | null; straddles: boolean } {
+  const lo = s.net_hit_cl_low ?? null, hi = s.net_hit_cl_high ?? null;
+  return { lo, hi, days: s.n_clusters ?? null, straddles: lo !== null && hi !== null && lo <= 0.5 && hi >= 0.5 };
+}
+
 function heatCell(stat: RelStat | null, kind: "hit" | "ic", metric: RelMetric): string {
   if (!stat || stat.n === 0) return `<div class="rel-cell rel-cell-empty" title="no mature signals yet">·</div>`;
   const lowN = stat.n < LOW_N;
@@ -54,8 +61,11 @@ function heatCell(stat: RelStat | null, kind: "hit" | "ic", metric: RelMetric): 
   }
   const { rate, lo, hi } = rateOf(stat, metric);
   if (rate === null) return `<div class="rel-cell rel-cell-empty" title="n=${stat.n}, no ${METRIC_LABEL[metric]}">n=${stat.n}</div>`;
-  const ci = lo !== undefined && hi !== undefined ? ` · 95% CI ${pct(lo)}–${pct(hi)}` : "";
-  return `<div class="rel-cell${lowN ? " rel-lown" : ""}" style="background:${hitColor(rate)}" title="${METRIC_LABEL[metric]} ${pct1(rate)}${ci} · n=${stat.n}">${pct(rate)}<span class="rel-cell-n">n=${stat.n}</span></div>`;
+  const ci = lo !== undefined && hi !== undefined ? ` · iid CI ${pct(lo)}–${pct(hi)}` : "";
+  const cl = metric === "net" ? clNetCI(stat) : null;
+  const clTip = cl && cl.lo !== null ? ` · clustered ${pct(cl.lo)}–${pct(cl.hi as number)}${cl.days != null ? ` (${cl.days}d)` : ""}` : "";
+  const dim = lowN || (cl ? cl.straddles : false);   // dim cells that are a coin flip once clustered
+  return `<div class="rel-cell${dim ? " rel-lown" : ""}" style="background:${hitColor(rate)}" title="${METRIC_LABEL[metric]} ${pct1(rate)}${ci}${clTip} · n=${stat.n}">${pct(rate)}<span class="rel-cell-n">n=${stat.n}</span></div>`;
 }
 
 function heatmap(cells: RelHopHorizon[], horizons: number[], kind: "hit" | "ic", clean: boolean, metric: RelMetric): string {
@@ -73,11 +83,15 @@ function overallCards(overall: Record<string, RelStat>, horizons: number[]): str
     if (!s) return `<div class="rel-ov-card rel-ov-pending"><div class="rel-ov-h">${hlabel(h)}</div><div class="rel-ov-pct">pending</div></div>`;
     const net = hasNet(s);
     const lead = net ? (s.net_hit_rate as number) : s.hit_rate;
-    const lo = net ? (s.net_ci_low ?? s.ci_low) : s.ci_low, hi = net ? (s.net_ci_high ?? s.ci_high) : s.ci_high;
-    return `<div class="rel-ov-card"><div class="rel-ov-h">${hlabel(h)} ${net ? "net" : "hit"}</div>`
+    const cl = net ? clNetCI(s) : null;
+    const useCl = !!cl && cl.lo !== null && cl.hi !== null;   // prefer the honest clustered CI
+    const lo = useCl ? (cl as { lo: number }).lo : (net ? (s.net_ci_low ?? s.ci_low) : s.ci_low);
+    const hi = useCl ? (cl as { hi: number }).hi : (net ? (s.net_ci_high ?? s.ci_high) : s.ci_high);
+    const dim = useCl && (cl as { straddles: boolean }).straddles;   // CI spans 50% -> coin flip
+    return `<div class="rel-ov-card${dim ? " rel-lown" : ""}"><div class="rel-ov-h">${hlabel(h)} ${net ? "net" : "hit"}</div>`
       + `<div class="rel-ov-pct" style="color:${hitColor(lead)}">${pct(lead)}</div>`
-      + `<div class="rel-ov-ci">CI ${pct(lo)}–${pct(hi)}</div>`
-      + `<div class="rel-ov-n">${net ? `gross ${pct(s.hit_rate)} · ` : ""}n=${s.n}</div></div>`;
+      + `<div class="rel-ov-ci">${useCl ? "CI✦" : "CI"} ${pct(lo)}–${pct(hi)}</div>`
+      + `<div class="rel-ov-n">${net ? `gross ${pct(s.hit_rate)} · ` : ""}n=${s.n}${useCl && cl!.days != null ? ` · ${cl!.days}d` : ""}</div></div>`;
   }).join("");
   return `<div class="rel-overall">${cards}</div>`;
 }
@@ -106,10 +120,13 @@ function dynamicView(sc: ReliabilitySummary): string {
   }
   const o = dyn.overall;
   const net = o.net_hit_rate ?? o.hit_rate;
-  const lo = o.net_ci_low ?? o.ci_low, hi = o.net_ci_high ?? o.ci_high;
-  const ovLowN = (o.n ?? 0) < LOW_N ? " rel-lown" : "";   // dim headline when the sample is thin
+  const oCl = clNetCI(o);
+  const oUseCl = oCl.lo !== null && oCl.hi !== null;
+  const lo = oUseCl ? (oCl.lo as number) : (o.net_ci_low ?? o.ci_low);
+  const hi = oUseCl ? (oCl.hi as number) : (o.net_ci_high ?? o.ci_high);
+  const ovLowN = (oUseCl && oCl.straddles) || (o.n ?? 0) < LOW_N ? " rel-lown" : "";   // dim coin-flip / thin
   const cards = `<div class="rel-overall">
-    <div class="rel-ov-card${ovLowN}"><div class="rel-ov-h">net edge</div><div class="rel-ov-pct" style="color:${hitColor(net)}">${pct(net)}</div><div class="rel-ov-ci">CI ${pct(lo)}–${pct(hi)}</div><div class="rel-ov-n">gross ${pct(o.hit_rate)} · n=${o.n}</div></div>
+    <div class="rel-ov-card${ovLowN}"><div class="rel-ov-h">net edge</div><div class="rel-ov-pct" style="color:${hitColor(net)}">${pct(net)}</div><div class="rel-ov-ci">${oUseCl ? "CI✦" : "CI"} ${pct(lo)}–${pct(hi)}</div><div class="rel-ov-n">gross ${pct(o.hit_rate)} · n=${o.n}${oUseCl && oCl.days != null ? ` · ${oCl.days}d` : ""}</div></div>
     <div class="rel-ov-card"><div class="rel-ov-h">avg hold</div><div class="rel-ov-pct">${dyn.coverage.avg_hold}d</div><div class="rel-ov-n">cap ${dyn.coverage.max_hold ?? "—"}d</div></div>
     <div class="rel-ov-card"><div class="rel-ov-h">mean net / trade</div><div class="rel-ov-pct" style="font-size:22px">${((o.mean_net ?? 0) * 100).toFixed(2)}%</div></div>
   </div>`;
@@ -158,6 +175,7 @@ export function renderDashboard(el: HTMLElement, sc: ReliabilitySummary, opts: R
       <b>Daily</b> enters at the next session open; <b>Hourly</b> enters at the next bar after the news
       ${intraday?.coverage.latency_min != null ? `(+${intraday.coverage.latency_min}min modeled latency)` : ""} — what the live cycle could get.
       <b>Dynamic exit</b> holds while the node's net consensus still backs the trade and exits on a reverse signal.
+      <b>CI✦</b> is cluster-robust — bootstrapped by entry day, since same-day signals share one move and aren't independent; a ✦ interval that spans 50% (or a dimmed cell) isn't distinguishable from a coin flip.
     </div>`;
 
   const isDyn = opts.model === "dynamic";

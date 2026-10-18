@@ -118,6 +118,23 @@ describe("renderDashboard", () => {
     expect(el.querySelectorAll(".rel-grid").length).toBe(0);
   });
 
+  it("prefers the clustered CI (CI✦), surfaces independent-day count, and dims coin-flip cards", () => {
+    const el = document.createElement("div");
+    const clStat: RelStat = { ...stat(90, 0.6, 0.2, 0.58), net_hit_cl_low: 0.44, net_hit_cl_high: 0.72, n_clusters: 14 };
+    renderDashboard(el, { ...sc(), overall: { "1": clStat } }, { model: "daily", metric: "net", clean: false });
+    expect(el.textContent).toContain("CI✦");                              // clustered CI preferred over iid
+    expect(el.textContent).toContain("14d");                              // independent-day count surfaced
+    expect(el.querySelector(".rel-ov-card.rel-lown")).not.toBeNull();     // CI spans 50% -> dimmed
+    expect(el.textContent).toContain("cluster-robust");                   // framing explains the ✦
+  });
+
+  it("falls back to the iid CI (no ✦) when clustered fields are absent", () => {
+    const el = document.createElement("div");
+    renderDashboard(el, sc(), { model: "daily", metric: "net", clean: false });
+    const ci = el.querySelector(".rel-ov-ci") as HTMLElement;
+    expect(ci.textContent).toMatch(/^CI /);                               // "CI ...", not "CI✦ ..."
+  });
+
   it("renders the not-computed empty state", () => {
     const el = document.createElement("div");
     renderDashboard(el, { status: "not_computed", message: "No scorecard yet.", overall: {}, by_hop_horizon: [], by_magband: [], coverage: { directional_signals: 0, signals_with_mature_outcome: 0, outcome_rows: 0, mature_by_horizon: {}, distinct_events: 0, distinct_nodes: 0 } }, { model: "daily", metric: "net", clean: false });
