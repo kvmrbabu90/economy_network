@@ -491,8 +491,20 @@ def analyze_holdout(panel, model, shocks, links, firms, pairs, events_h, expl: d
         for w in config.SLOW_WINDOWS:
             a, b = config.WINDOWS[w]
             H5[w] = _cell(sh, s * model.car(cols, e, a, b), None, 0)
+    followups = {}
+    for fu in config.H6_FOLLOWUPS:
+        role_ev = ev[ev["role"] == fu["role"]]
+        big = (role_ev["z_a"].abs() >= fu["min_abs_z"]).to_numpy()
+        col = f"ripple_{fu['window']}_k{config.K_PRIMARY}"
+        c = _cell(role_ev[big], role_ev.loc[big, col].to_numpy(dtype=float), None, 0)
+        rest = _cell(role_ev[~big], role_ev.loc[~big, col].to_numpy(dtype=float), None, 0)
+        p1 = st.one_sided_p(c["t"], c["df"], fu["direction"])
+        followups[fu["id"]] = {"text": fu["text"], "mean": c["mean"], "t": c["t"], "n": c["n"], "g": c["g"],
+                               "p_one": _f(p1), "complement_mean": rest["mean"], "complement_t": rest["t"],
+                               "pass": bool(np.isfinite(p1) and p1 < config.HOLDOUT_ALPHA
+                                            and fu["direction"] * c["mean"] > 0)}
     late = ev[ev["date"] >= pd.Timestamp(config.HOLDOUT_LATE_START)]
-    res = {"period": "holdout", "table": table, "H1": H1, "H2": H2, "H3": H3, "H5": H5,
+    res = {"period": "holdout", "table": table, "H1": H1, "H2": H2, "H3": H3, "H5": H5, "H6_followups": followups,
            "robustness": {"r6_holdout_2024_on": role_window_table(late, config.K_PRIMARY, None, 0,
                                                                   config.SLOW_WINDOWS),
                           "r10_ex_b_coshock": _r10(ev, shocks)},          # late-2021 B shocks count too

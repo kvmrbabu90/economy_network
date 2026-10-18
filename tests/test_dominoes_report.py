@@ -198,4 +198,5 @@ def test_full_gated_protocol_ends_in_a_holdout_verdict(tmp_path, monkeypatch):
     sup = [ln for ln in chain.splitlines() if ln.startswith("| supplier | [+1,+20] |")]
     assert len(sup) == 1 and "PASS" in sup[0]
     assert "Placebo diagnostics" in chain
+    assert "H6-F1" in _section(text, "## H6")
     assert (out / "figures" / "paths-holdout.png").exists()

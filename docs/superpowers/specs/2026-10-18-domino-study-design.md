@@ -274,3 +274,9 @@ The holdout stays closed until the exploration readout is committed.
   - competitor: 24,458 on 1,534.
 
   [+1,+20] bootstrap MDEs are 0.75% (supplier), 0.60% (customer) and 0.30% (competitor). No role is underpowered or borderline in the primary run or in any robustness variant (largest variant MDE: 1.15%, supplier under top-1%). The supplier role's variance is concentrated (top-5 dates hold 36% of it). Its 80% upper-bound MDE is 0.85%. The power files are committed under `docs/research/domino-study/power/`. Their sha256 hashes reappear in the exploration readout's integrity table.
+- 2026-10-18 (after the exploration readout was committed at `16eb523`, **before the holdout was unlocked**). **H6 follow-up registration (§6).**
+  - Registered: **H6-F1.** Among shocks with |z| ≥ 4, the supplier [+1,+20] ripple is positive in the holdout. Test: one-sided, date-clustered, p < 0.05.
+  - Basis in exploration: ≥4σ supplier [+1,+20] was +0.77% (t 2.60), against −0.11% for 3–4σ shocks. Robustness 3a (4σ shocks) gave +0.67% (t 2.38).
+  - Why this one: it was chosen from about 126 H6 cells because it has a mechanism (bigger news should travel further along the supply chain), and an independent robustness run echoes it.
+  - It is a single secondary test and never a verdict input.
+  - No other H6 pattern is claimed. In particular, the customer [+1,+5] effect showing up mainly in unweighted links has no mechanism, so it is not registered.

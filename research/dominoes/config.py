@@ -70,6 +70,13 @@ POWER_METHOD_VERSION = 2       # bump whenever the power check's computation cha
 H6_MIN_YEAR_EVENTS = 30        # H6 B-size terciles are formed within an event year with >= 30 events
 COSHOCK_LOOKBACK = 10          # exploratory R10: B had its own shock in [e-10, e]
 
+# H6 follow-ups registered in spec §13 after the exploration readout was committed and BEFORE the holdout was
+# unlocked; each is a single one-sided date-clustered test in the holdout and never a verdict input.
+H6_FOLLOWUPS = (
+    {"id": "H6-F1", "role": "supplier", "window": "w20", "min_abs_z": 4.0, "direction": 1,
+     "text": "Among shocks with |z| >= 4, the supplier [+1,+20] ripple is positive (one-sided p < 0.05)"},
+)
+
 _SECTOR_ALIASES = {"Healthcare": "Health Care"}
 
 

@@ -313,6 +313,19 @@ def test_unevaluable_placebo_makes_the_role_inconclusive_not_no_ripple(holdout_w
     assert hold["verdict"]["by_role"]["supplier"] == "inconclusive_unevaluable"
 
 
+def test_registered_h6_followup_is_tested_one_sided_in_the_holdout(holdout_world, monkeypatch):
+    panel, model, shocks, links, firms, pairs, ev_h, expl = holdout_world
+    monkeypatch.setattr(io, "holdout_unlocked", lambda: True)
+    monkeypatch.setattr(config, "PLACEBO_N", 20)
+    hold = ms.analyze_holdout(panel, model, shocks, links, firms, pairs, ev_h, expl, power=_power_ok(), boot_n=50)
+    f = hold["H6_followups"]["H6-F1"]
+    ev = ev_h[(ev_h["period"] == "holdout") & (ev_h["role"] == "supplier") & (ev_h["z_a"].abs() >= 4)]
+    assert f["n"] == int(ev["ripple_w20_k5"].notna().sum())
+    assert f["mean"] == pytest.approx(ev["ripple_w20_k5"].mean())
+    assert f["pass"] == bool(f["mean"] > 0 and f["p_one"] < 0.05) and f["pass"]      # planted supplier ripple
+    assert np.isfinite(f["complement_mean"]) and "verdict" not in f
+
+
 def test_holdout_r10_counts_b_shocks_from_late_2021(holdout_world, monkeypatch):
     panel, model, shocks, links, firms, pairs, ev_h, expl = holdout_world
     early = ev_h[ev_h["date"] < pd.Timestamp("2022-01-15")]

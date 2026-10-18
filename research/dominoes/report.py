@@ -638,6 +638,12 @@ def render_holdout(expl: dict, hold: dict, power: dict, variants: dict, figure: 
           "## H5 — first-domino drift, holdout (descriptive)", "",
           _table(["Window", "Mean s·CAR(A)", "t (date)", "Shocks"],
                  [[WLABEL[w], _pct(c["mean"]), _t(c["t"]), c["n"]] for w, c in hold.get("H5", {}).items()]), "",
+          "## H6 — registered follow-ups (spec §13; registered before the holdout opened, never verdict inputs)", "",
+          _table(["Id", "Hypothesis", "Holdout mean", "t", "p one-sided", "Events", "Rest of the role", "Result"],
+                 [[k, f["text"], _pct(f["mean"]), _t(f["t"]), _p(f["p_one"]), f["n"],
+                   f"{_pct(f['complement_mean'])} (t {_t(f['complement_t'])})",
+                   "**CONFIRMED**" if f["pass"] else "not confirmed"]
+                  for k, f in hold.get("H6_followups", {}).items()]), "",
           "## Robustness (spec §8 — reported, never changes the verdict)", "",
           f"### R6: holdout restricted to {config.HOLDOUT_LATE_START[:4]} onward", "",
           _table(["Role", "[+1,+5]", "[+1,+20]", "[+1,+60]", "Events [+1,+20]"],
