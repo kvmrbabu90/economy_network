@@ -117,3 +117,56 @@ def test_holdout_events_require_the_unlock_marker(tmp_path, monkeypatch):
     monkeypatch.setenv("DOMINO_STORE", str(tmp_path))
     with pytest.raises(PermissionError):
         be.build("holdout")
+
+
+def test_a_shock_whose_index_does_not_match_its_date_is_refused():
+    panel, model, firms, links, pairs, shocks = _world()
+    bad = shocks.copy()
+    bad.loc[bad.index[0], "e_idx"] = int(bad["e_idx"].iloc[0]) + 1
+    with pytest.raises(ValueError, match="e_idx"):
+        be.build_events_for_links(panel, model, bad, links, firms, pairs, "exploration")
+
+
+def _perturb_from(prices: pd.DataFrame, day: str, seed: int = 9) -> pd.DataFrame:
+    """Multiply every firm's closes from `day` on by an independent random walk (3% daily): returns dated
+    before `day` are untouched; SPY is left alone."""
+    p = prices.copy()
+    rng = np.random.default_rng(seed)
+    for sym, idx in p[p["symbol"] != "SPY"].groupby("symbol").groups.items():
+        rows = p.loc[idx].sort_values("date")
+        late = rows.index[rows["date"] >= pd.Timestamp(day)]
+        p.loc[late, "close"] *= np.cumprod(1 + rng.normal(0, 0.03, len(late)))
+    return p
+
+
+@pytest.mark.parametrize("rule", ["sigma3", "top1pct"])
+def test_exploration_artifacts_do_not_depend_on_returns_dated_2022_or_later(rule):
+    prices, firms, links, pairs = synth.synth_world(seed=6)
+    out = []
+    for p in (prices, _perturb_from(prices, "2022-01-03")):
+        panel = rt.build_panel(p)
+        model = rt.AbnormalModel(panel, "market")
+        sh = bs.detect(panel, model, firms, rule=rule)
+        ev, ctl = be.build_events_for_links(panel, model, sh, links, firms, pairs, "exploration")
+        out.append((sh[sh["period"] == "exploration"].reset_index(drop=True), ev, ctl))
+    (sh0, ev0, c0), (sh1, ev1, c1) = out
+    assert len(ev0) > 1000
+    pd.testing.assert_frame_equal(sh0, sh1)
+    pd.testing.assert_frame_equal(ev0, ev1)
+    pd.testing.assert_frame_equal(c0, c1)
+
+
+def test_exploration_windows_reaching_2022_are_missing_for_b_controls_and_ripple():
+    prices, firms, links, pairs = synth.synth_world(seed=6)
+    panel = rt.build_panel(prices)
+    model = rt.AbnormalModel(panel, "market")
+    ev, _ = be.build_events_for_links(panel, model, bs.detect(panel, model, firms), links, firms, pairs,
+                                      "exploration")
+    last = pd.Timestamp("2021-12-31")
+    for w, (lo, hi) in (("w5", (1, 5)), ("w20", (1, 20)), ("w60", (1, 60))):
+        end = panel.dates[np.minimum(ev["e_idx"].to_numpy() + hi, len(panel.dates) - 1)]
+        late = np.asarray(end > last)
+        assert late.any()
+        assert ev.loc[late, [f"ripple_{w}_k5", f"raw_b_{w}", f"raw_c_{w}_k5"]].isna().all().all()
+        assert (ev.loc[late, f"nctl_{w}_k5"] == 0).all()
+        assert ev.loc[~late, f"ripple_{w}_k5"].notna().mean() > 0.8

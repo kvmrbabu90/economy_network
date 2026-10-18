@@ -8,7 +8,12 @@ B to have a valid estimation window and dollar volume, and at least 2 eligible c
 
 Per window w: raw_b = s * CAR_B; for K in (3, 5, 10) using the first K ranked controls, dropping any
 without a complete window: raw_c = s * mean CAR_C, ripple = s * (CAR_B - mean CAR_C), nctl = controls
-used. A window with fewer than 2 complete controls (or no complete CAR_B) has ripple = NaN.
+used. A window with fewer than 2 complete controls (or no complete CAR_B) has ripple = NaN. raw_b / raw_c are
+stored as computed; measure aligns them to the ripple's sample for robustness 9.
+
+Embargo (§13 amendment): for exploration events, any window that ends after the last trading day of 2021 is
+missing for B and every control (so raw_b, raw_c, ripple are NaN and nctl is 0) — exploration never reads a
+return dated 2022 or later.
 """
 from __future__ import annotations
 
@@ -56,12 +61,28 @@ def _empty(schema: dict[str, str]) -> pd.DataFrame:
     return pd.DataFrame({c: pd.Series(dtype=dtype[k]) for c, k in schema.items()})
 
 
+def check_calendar(panel: rt.Panel, frame: pd.DataFrame, what: str) -> None:
+    """Every row's e_idx must point at its own date in this panel's calendar (stale frames built on another
+    calendar are refused, never silently re-indexed)."""
+    if frame is None or not len(frame):
+        return
+    e = frame["e_idx"].to_numpy(dtype=np.int64)
+    inr = (e >= 0) & (e < len(panel.dates))
+    d = pd.to_datetime(frame["date"]).dt.normalize().to_numpy()
+    ok = np.zeros(len(e), dtype=bool)
+    ok[inr] = panel.dates.values[e[inr]] == d[inr]
+    if not ok.all():
+        bad = frame.loc[~ok, ["date", "e_idx"]].head(3).to_dict("records")
+        raise ValueError(f"{what}: {int((~ok).sum())} row(s) whose e_idx does not match the date, e.g. {bad}")
+
+
 def build_events_for_links(panel: rt.Panel, model: rt.AbnormalModel, shocks: pd.DataFrame,
                            links: pd.DataFrame, firms: pd.DataFrame, any_edge_pairs: pd.DataFrame,
                            period: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     if period == "holdout":
         io.require_holdout_unlocked()
     sh = shocks[shocks["period"] == period]
+    check_calendar(panel, sh, "shocks")
     f = firms.set_index("firm_id")
     sym_of, tick_of, sec_of = f["symbol"].to_dict(), f["ticker"].to_dict(), f["sector"].to_dict()
     col_of = {fid: panel.col[s] for fid, s in sym_of.items() if s in panel.col}
@@ -135,10 +156,14 @@ def build_events_for_links(panel: rt.Panel, model: rt.AbnormalModel, shocks: pd.
     pad = C < 0
     flat_cols = np.where(pad, 0, C).ravel()
     flat_e = np.repeat(evs, config.K_MAX)
+    horizon = config.exploration_last_row(panel.dates) if period == "exploration" else len(panel.dates)
     for w, (lo, hi) in config.WINDOWS.items():
         car_b = model.car(bcols, evs, lo, hi)
         car_c = model.car(flat_cols, flat_e, lo, hi).reshape(n, config.K_MAX)
         car_c[pad] = np.nan
+        embargo = evs + hi > horizon
+        car_b[embargo] = np.nan
+        car_c[embargo] = np.nan
         ev[f"raw_b_{w}"] = s * car_b
         for k in config.K_VARIANTS:
             sub = car_c[:, :k]
