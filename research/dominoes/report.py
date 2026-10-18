@@ -233,9 +233,9 @@ def _data_notes(store: Path, counts: dict) -> list[str]:
         n = p.groupby("symbol").size()
         thin = sorted(s for s, k in n.items() if k < config.MIN_EST_DAYS and s not in config.SECTOR_ETFS)
         if thin:
-            lines.append(f"- Symbols with fewer than {config.MIN_EST_DAYS} price rows (delisted or taken private; "
-                         f"never usable): {', '.join(thin)}. Survivorship: firms that left the market are missing "
-                         "(§11).")
+            lines.append(f"- Symbols with fewer than {config.MIN_EST_DAYS} price rows in the Yahoo snapshot (never "
+                         f"usable; likely delisted, taken private or re-tickered — the cause was not verified): "
+                         f"{', '.join(thin)}. Survivorship: firms missing from the snapshot are missing here (§11).")
         first = p[p["symbol"].isin(config.SECTOR_ETFS)].groupby("symbol")["date"].min()
         late = {s: pd.Timestamp(d).date().isoformat() for s, d in first.items()
                 if pd.Timestamp(d) > pd.Timestamp(config.PRICE_START) + pd.Timedelta(days=30)}
@@ -517,6 +517,33 @@ def render_exploration(res: dict, power: dict, variants: dict, figure: str, data
 
 
 # ---------------------------------------------------------------------------------------------- holdout
+def uncommitted_leads(expl: dict, hold: dict) -> list[str]:
+    """Holdout slow-window moves that look significant but were NOT nominated by exploration: reported as leads
+    for a future pre-registered test, never as findings."""
+    out = []
+    for role in config.ROLES:
+        for w in config.SLOW_WINDOWS:
+            if expl["H2"][f"{role}|{w}"]["pass_exploration"]:
+                continue
+            c = hold["table"][role][w]
+            p = c.get("p_two")
+            sig = (p < 0.05) if _fin(p) else (_fin(c.get("t")) and abs(c["t"]) > 1.96)
+            if sig:
+                floor = " and is below the 0.5% floor" if _fin(c["mean"]) and abs(c["mean"]) < config.FLOOR else ""
+                out.append(f"- Descriptively, {role} {WLABEL[w]} moved {_pct(c['mean'])} (t {_t(c['t'])}) in the "
+                           f"holdout, but it was not nominated by exploration{floor}, so it cannot be claimed — it "
+                           "is a lead for a new pre-registered test on fresh data.")
+    return out
+
+
+def same_day_caveat(v: dict) -> str:
+    if not any(s in ("same_day_only", "same_day_slow_inconclusive") for s in v["by_role"].values()):
+        return ""
+    return ("- What 'same day' does and does not show: a same-day ripple cannot separate A→B transmission from "
+            "shared same-day news or finer sub-industry co-movement, because look-alikes are matched only on GICS "
+            "sector. It is measured close to close, so it says nothing about speed within the day.")
+
+
 def _summary_holdout(expl: dict, hold: dict, power: dict) -> list[str]:
     title = OVERALL[hold["verdict"]["overall"]][0]
     out = [f"- **{title}.** {overall_meaning(hold['verdict'])}"]
@@ -563,6 +590,10 @@ def _summary_holdout(expl: dict, hold: dict, power: dict) -> list[str]:
                    "shared information rather than transmission.")
     if untest:
         out.append(f"- Pre-trend could not be tested for: {', '.join(untest)}.")
+    caveat = same_day_caveat(hold["verdict"])
+    if caveat:
+        out.append(caveat)
+    out += uncommitted_leads(expl, hold)
     out.append("- Research only: close-to-close returns, no trading costs beyond the 50 bp floor, no news latency.")
     return out
 
@@ -575,6 +606,11 @@ def render_holdout(expl: dict, hold: dict, power: dict, variants: dict, figure: 
         for w in config.SLOW_WINDOWS:
             h = hold["H2"][f"{role}|{w}"]
             pl = h["placebo"]
+            if not h["pass_exploration"]:                 # nothing was tested: show the raw holdout move only
+                c = hold["table"][role][w]
+                chain.append([role, WLABEL[w], "no", "—", f"{_pct(c['mean'])} (raw)", f"{_t(c['t'])} (raw)", "—",
+                              "—", "—", "not run", "—", "not a candidate", "—"])
+                continue
             if pl.get("run"):
                 plc = (f"{_pct(pl.get('p95'))} (n {pl.get('n_finite')}/{pl.get('n')}"
                        + ("" if pl.get("evaluable") else ", not evaluable") + ")")
@@ -612,8 +648,10 @@ def render_holdout(expl: dict, hold: dict, power: dict, variants: dict, figure: 
          "A test passes only if all hold: it passed exploration; the holdout has the same sign with one-sided "
          f"p < {config.HOLDOUT_ALPHA}; the holdout mean is at least {config.FLOOR * 100:.1f}% in that direction; "
          "and it beats the 95th percentile of the placebo (each linked firm relabelled to one random same-sector "
-         "firm that is not linked to the shocked firm). Means are shown in the exploration direction. The last "
-         "column is the exploratory two-way (date × linked firm) one-sided p (⚠ = a pass it does not confirm).", "",
+         "firm that is not linked to the shocked firm). Candidates' means and t are shown in the exploration "
+         "direction; rows that were not exploration candidates were not tested and show the raw holdout move only. "
+         "The last column is the exploratory two-way (date × linked firm) one-sided p (⚠ = a pass it does not "
+         "confirm).", "",
          _table(["Role", "Window", "Exploration pass", "Direction", "Holdout mean (in direction)", "t (in direction)",
                  "p one-sided", "Replicates", f"≥ {config.FLOOR * 100:.1f}%", "Placebo 95th pct (in direction)",
                  "Beats placebo", "Result", "p two-way"], chain), ""]
@@ -622,11 +660,20 @@ def render_holdout(expl: dict, hold: dict, power: dict, variants: dict, figure: 
               "real events; SD ratio = placebo SD / real date-clustered SE, ⚠ below 0.8):", "",
               _table(["Test", "Finite", "Coverage", "Pool size", "Links dropped", "p50", "p95", "SD ratio",
                       "Evaluable"], diag), ""]
+    def _h1_row(r: str) -> list:
+        h = hold["H1"][r]
+        tx = expl["table"][r]["d0"].get("t_2w")
+        p2 = hold["table"][r]["d0"].get("p_one_pos_2w")
+        warn_x = " ⚠" if h["pass_exploration"] and not (_fin(tx) and abs(tx) > config.T_BAR) else ""
+        warn_h = " ⚠" if h["pass"] and not (_fin(p2) and p2 < config.HOLDOUT_ALPHA) else ""
+        return [r, "candidate" if h["pass_exploration"] else "fail", _pct(h["mean"]), _t(h["t"]), _p(h["p_one"]),
+                "**PASS**" if h["pass"] else "fail", _t(tx) + warn_x, _p(p2) + warn_h]
+
     L += ["## H1 — same-day ripple, holdout", "",
-          _table(["Role", "Exploration", "Holdout mean [0,0]", "t", "p one-sided", "Result"],
-                 [[r, "candidate" if hold["H1"][r]["pass_exploration"] else "fail", _pct(hold["H1"][r]["mean"]),
-                   _t(hold["H1"][r]["t"]), _p(hold["H1"][r]["p_one"]),
-                   "**PASS**" if hold["H1"][r]["pass"] else "fail"] for r in config.ROLES]), "",
+          "The last two columns are the exploratory two-way (date × linked firm) diagnostics: the exploration t "
+          "(⚠ = a candidate below |t| = 3) and the holdout one-sided p (⚠ = a pass it does not confirm).", "",
+          _table(["Role", "Exploration", "Holdout mean [0,0]", "t", "p one-sided", "Result",
+                  "Exploration t two-way", "Holdout p two-way"], [_h1_row(r) for r in config.ROLES]), "",
           "## H3 — pre-trend in both periods", "",
           _table(["Role", "t exploration", "t holdout", "Status", "Required"],
                  [[r, _t(expl["H3"][r]["t_pre"]), _t(hold["H3"][r]["t_pre"]),

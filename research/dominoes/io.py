@@ -64,6 +64,13 @@ def validate(df: pd.DataFrame, schema: dict[str, str], name: str = "frame") -> N
             raise ValueError(f"{name}: column {col!r} expected {kind}, got {df[col].dtype}")
 
 
+def write_json(path: Path, obj) -> Path:
+    """JSON with LF line endings on every OS, so a file's sha256 is the same in the store and in git."""
+    import json
+    Path(path).write_text(json.dumps(obj, indent=2), encoding="utf-8", newline="\n")
+    return Path(path)
+
+
 def frame_path(name: str) -> Path:
     return store_dir() / f"{name}.parquet"
 

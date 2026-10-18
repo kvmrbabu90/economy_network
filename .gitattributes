@@ -12,3 +12,6 @@
 *.sqlite binary
 *.woff binary
 *.woff2 binary
+
+# Study artifacts are stored byte-for-byte so their sha256 matches the readout integrity tables.
+docs/research/domino-study/**/*.json -text

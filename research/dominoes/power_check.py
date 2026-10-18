@@ -23,7 +23,6 @@ The output reports SEs, thresholds, MDEs and shares — never the observed means
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import subprocess
 
@@ -245,5 +244,5 @@ def run(period: str = "exploration", variant: str = "market", rule: str = "sigma
     res["variant"], res["rule"] = variant, rule
     res["meta"].update({"variant": variant, "rule": rule, "code_commit": _commit()})
     path = store / f"power{sfx}.json"
-    path.write_text(json.dumps(res, indent=2), encoding="utf-8")
+    io.write_json(path, res)
     return res

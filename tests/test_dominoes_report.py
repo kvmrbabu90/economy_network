@@ -157,6 +157,23 @@ def test_overall_meaning_is_built_from_the_role_states():
     assert "customer" in t2 and "competitor" in t2 and "supplier" in t2
 
 
+def test_holdout_summary_names_uncommitted_leads_without_claiming_them():
+    from research.dominoes import report
+    expl = {"H2": {f"{r}|{w}": {"pass_exploration": False} for r in config.ROLES for w in config.SLOW_WINDOWS}}
+    table = {r: {w: {"mean": 0.0, "t": 0.1} for w in config.SLOW_WINDOWS} for r in config.ROLES}
+    table["competitor"]["w60"] = {"mean": 0.0048, "t": 2.28}
+    lines = report.uncommitted_leads(expl, {"table": table})
+    assert len(lines) == 1 and "competitor [+1,+60]" in lines[0] and "cannot be claimed" in lines[0]
+    assert "below the 0.5% floor" in lines[0]
+
+
+def test_same_day_verdicts_carry_the_shared_news_caveat():
+    from research.dominoes import report
+    v = {"by_role": {"supplier": "same_day_only", "customer": "no_ripple", "competitor": "same_day_only"}}
+    assert "sub-industry" in report.same_day_caveat(v)
+    assert report.same_day_caveat({"by_role": {r: "no_ripple" for r in config.ROLES}}) == ""
+
+
 def test_holdout_h3_text_names_the_period_that_flagged_and_marks_not_required():
     from research.dominoes import report
     h3 = {"t_pre": 0.30, "status": "flag", "status_exploration": "flag", "status_holdout": "ok", "applies": False}
@@ -198,5 +215,9 @@ def test_full_gated_protocol_ends_in_a_holdout_verdict(tmp_path, monkeypatch):
     sup = [ln for ln in chain.splitlines() if ln.startswith("| supplier | [+1,+20] |")]
     assert len(sup) == 1 and "PASS" in sup[0]
     assert "Placebo diagnostics" in chain
+    for ln in chain.splitlines():
+        if ln.startswith(("| customer |", "| competitor |")):
+            assert "not a candidate" in ln and "(raw)" in ln
+    assert "two-way" in _section(text, "## H1")
     assert "H6-F1" in _section(text, "## H6")
     assert (out / "figures" / "paths-holdout.png").exists()

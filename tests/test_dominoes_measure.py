@@ -393,6 +393,8 @@ def test_measure_requires_a_fresh_pinned_power_file(small_store, monkeypatch):
     import hashlib
     assert res["power_sha256"] == hashlib.sha256((store / "power.json").read_bytes()).hexdigest()
     assert res["counts"]["embargoed"]["supplier"]["w60"] > 0
+    for name in ("results_exploration.json", "power.json"):     # LF on every OS: hashes match the repo copies
+        assert b"\r\n" not in (store / name).read_bytes()
 
 
 def test_robustness_variants_carry_no_verdict(small_store, monkeypatch):

@@ -18,6 +18,15 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+# research/dominoes (the pre-registered domino study); its tests are skipped when these are missing
+research = [
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pyarrow>=14",
+    "matplotlib>=3.8",
+    "yfinance>=0.2.40",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

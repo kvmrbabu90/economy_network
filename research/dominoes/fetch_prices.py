@@ -118,7 +118,7 @@ def _fetch_into(frame: str, manifest: str, schema: dict, close_name: str, symbol
         io.write_frame(frame, merged[list(schema)], schema)
     man["fetched"] = sorted(set(man["fetched"]) | set(fetched))
     man["failed"] = sorted(set(man["failed"]) | set(failed))
-    man_path.write_text(json.dumps(man, indent=2), encoding="utf-8")
+    io.write_json(man_path, man)
     return {"requested": len(wanted), "fetched": len(fetched), "failed": len(failed),
             "skipped_cached": len(wanted) - len(todo)}
 

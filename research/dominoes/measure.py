@@ -630,7 +630,7 @@ def run(period: str = "exploration", variant: str = "market", rule: str = "sigma
                               io.read_frame("any_edge_pairs", snapshot_links.PAIR_SCHEMA),
                               events, expl, power=power, primary=primary, placebo_n=placebo_n, boot_n=boot_n)
     res.update({"variant": variant, "rule": rule, "power_sha256": power_sha})
-    (store / f"results_{period}{sfx}.json").write_text(json.dumps(res, indent=2), encoding="utf-8")
+    io.write_json(store / f"results_{period}{sfx}.json", res)
     io.write_frame(f"paths_{period}{sfx}", compute_paths(panel, model, events, controls, shocks, period),
                    PATH_SCHEMA)
     return res

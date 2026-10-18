@@ -76,7 +76,7 @@ def stage_prices(end: str | None) -> dict:
     out = {"adjusted": fetch_prices.fetch(symbols, config.PRICE_START, end or dt.date.today().isoformat()),
            "raw": fetch_prices.fetch_raw(symbols)}
     sanity = fetch_prices.raw_sanity(fetch_prices.load_prices(), fetch_prices.load_prices_raw())
-    (io.store_dir() / "raw_sanity.json").write_text(json.dumps(sanity, indent=2), encoding="utf-8")
+    io.write_json(io.store_dir() / "raw_sanity.json", sanity)
     out["raw_sanity"] = {k: v for k, v in sanity.items() if not isinstance(v, list)}
     return out
 
