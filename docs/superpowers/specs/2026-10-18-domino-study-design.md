@@ -268,3 +268,9 @@ The holdout stays closed until the exploration readout is committed.
       - At a 1.5% ripple the full exploration × holdout chain has only about 75% power.
       - COVID exclusion (R4) stays on event dates, as §8 says, because it has no holdout-independence reason.
       - Robustness 1 cannot use XLC before mid-2018 or XLRE before late 2015 (plus their estimation windows).
+- 2026-10-18 (real data; **power check run, no hypothesis measured yet**). Raw-close snapshot fetched: 580 symbols, with 0 volume mismatches and 0 adjusted-above-raw rows across 1,829,819 common rows. Primary exploration sample, events on dates:
+  - supplier: 2,848 events on 787 dates;
+  - customer: 2,704 on 700;
+  - competitor: 24,458 on 1,534.
+
+  [+1,+20] bootstrap MDEs are 0.75% (supplier), 0.60% (customer) and 0.30% (competitor). No role is underpowered or borderline in the primary run or in any robustness variant (largest variant MDE: 1.15%, supplier under top-1%). The supplier role's variance is concentrated (top-5 dates hold 36% of it). Its 80% upper-bound MDE is 0.85%. The power files are committed under `docs/research/domino-study/power/`. Their sha256 hashes reappear in the exploration readout's integrity table.
