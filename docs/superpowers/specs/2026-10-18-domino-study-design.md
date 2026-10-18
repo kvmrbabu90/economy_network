@@ -209,3 +209,15 @@ The holdout stays closed until the exploration readout is committed.
 - 2026-10-18: drafted.
 - 2026-10-18: self-review fixes before approval. Price history now starts 2013-09-01 so early-2015 events get a full estimation window; the placebo is defined in the holdout; means are equal-weighted across events.
 - 2026-10-18: approved by the user and frozen. No long-history price data had been downloaded at this point.
+- 2026-10-18: clarifications and operational definitions, written while planning the build and **before any price data was downloaded**:
+  1. **H2 direction.** In exploration the test is two-sided: |t| > 3, with Holm applied to two-sided p-values. Holdout replication is one-sided, in the direction found during exploration. The 50 bp floor applies to the holdout mean's size in that same direction. This resolves a conflict in §6 between "same sign" and "≥ 0.5%", consistent with the |t| in §5. H1 stays directional (positive follow), as written.
+  2. **Shock dedup.** A shock is dropped if any earlier shock of the same firm, kept or dropped, occurred within the previous 10 trading days.
+  3. **Data-error rule.** Applied to raw daily returns before model estimation, so bad prints also stay out of estimation windows. If |r(t)| > 50% and the next day brings the price back within 5% of its pre-move level, both days' returns are set to missing.
+  4. **Window completeness.** A firm's outcome window is used only if the firm has a valid return on every trading day of the window. Controls without a complete window are dropped for that window. If fewer than 2 controls remain, the event is excluded for that window.
+  5. **Dollar volume.** Size matching needs at least 20 valid days in [−80, −21].
+  6. **Control ranking.** Up to 10 controls are ranked per event. The primary analysis uses the first 5; robustness check 7 uses the first 3 and all 10.
+  7. **Abnormal volume (H6).** The shocked firm A's day-0 volume divided by its average over [−80, −21].
+  8. **Trading calendar.** SPY's trading days.
+  9. **Robustness check 5.** "A's sector ETF moved ≥ 2σ" means the ETF's own market-model AR on day 0 is at least 2σ in absolute value. The ETF's model is estimated the same way as a firm's.
+  10. **Robustness check 3, top 1%.** The threshold is each firm's 99th percentile of |AR| across all its dates in the study period.
+  11. **Holdout gate.** Holdout events are not built until the exploration readout is committed. The code enforces this with a marker file that records the readout's commit hash.
