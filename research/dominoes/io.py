@@ -127,13 +127,19 @@ def gate_status() -> tuple[bool, str]:
     if not re.fullmatch(r"[0-9a-f]{7,40}", commit):
         return False, "the marker does not hold a commit hash"
     key_files = sorted(p for p in store_dir().glob("*.json") if p.name.startswith(("results_exploration", "power")))
-    key = (commit, config.READOUT_PATH, str(store_dir()),
+    head = _git("rev-parse", "HEAD").stdout.strip()
+    key = (commit, head, config.READOUT_PATH, str(store_dir()),
            tuple((p.name, p.stat().st_mtime_ns, p.stat().st_size) for p in key_files))
     if key in _GATE_CACHE:
         return _GATE_CACHE[key]
     sha, table, reason = committed_integrity(commit)
     if not reason and _git("merge-base", "--is-ancestor", sha, "HEAD").returncode != 0:
         reason = f"commit {sha[:10]} is not an ancestor of HEAD (re-unlock after a squash or rebase)"
+    if not reason:
+        extra = sorted({p.name for p in key_files} - set(table))
+        if extra:
+            reason = (f"{', '.join(extra)} exist in the store but not in the committed readout's integrity table "
+                      "(explored after the readout was committed)")
     if not reason:
         for name, want in sorted(table.items()):
             path = store_dir() / name

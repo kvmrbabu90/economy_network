@@ -100,6 +100,29 @@ def test_a_replicate_with_zero_se_never_counts_as_a_detection():
     assert w["curve"][0][1] == 0.0
 
 
+def test_a_replicate_whose_se_is_only_rounding_noise_never_counts_as_a_detection():
+    v = np.random.default_rng(0).normal(0, 0.03, 6)             # same-date draws leave se ~ 6e-19, not 0
+    w = pc._window_power(v, np.array(["a"] * 3 + ["b"] * 3), None, 1.0, 400, 0)
+    assert w["curve"][0][1] == 0.0
+
+
+def test_borderline_fires_when_a_conservative_mde_is_never_reached_or_not_computable():
+    base = {"mde_bootstrap": 0.010, "mde_ucb80": 0.012, "mde_twoway": 0.011,
+            "holdout_projection": {"mde_joint": float("nan")}}
+    assert "full-rule (exploration x holdout) MDE not reached" in pc.borderline_reasons(base, underpowered=False)[0]
+    no_proj = {"mde_bootstrap": 0.010, "mde_ucb80": 0.012, "mde_twoway": float("nan")}
+    reasons = pc.borderline_reasons(no_proj, underpowered=False)
+    assert any("not computable" in r for r in reasons)
+
+
+def test_events_fingerprint_does_not_depend_on_the_os_line_ending(monkeypatch):
+    ev = _events()
+    a = pc.events_fingerprint(ev)
+    import os
+    monkeypatch.setattr(os, "linesep", "\r\n" if os.linesep == "\n" else "\n")
+    assert pc.events_fingerprint(ev) == a
+
+
 def test_ucb80_mde_is_never_below_the_bootstrap_mde_and_concentration_is_reported():
     res = pc.power(_events(), n_boot=300, seed=6)
     for role in config.ROLES:

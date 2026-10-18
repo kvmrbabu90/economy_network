@@ -134,7 +134,7 @@ def _window_power(values: np.ndarray, clusters: np.ndarray, bids, share: float, 
     se = st.clustered_mean(v - v.mean(), cl)["se"]          # SE is invariant to demeaning
     thr = t_threshold(g - 1)
     m0, se_b = _replicates(v, cl, n_boot, seed)
-    pos = se_b > 0
+    pos = se_b > 1e-9 * se if np.isfinite(se) and se > 0 else se_b > 0     # same-date draws: SE is rounding noise
     curve, mde_b = [], math.nan
     for delta in config.POWER_DELTAS:
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -164,8 +164,21 @@ def borderline_reasons(w20: dict, underpowered: bool) -> list[str]:
               ("mde_twoway", "two-way (date x linked firm) MDE"))
     out = []
     for key, label in checks:
-        x = (w20.get("holdout_projection") or {}).get(key) if key == "mde_joint" else w20.get(key)
-        if x is not None and np.isfinite(x) and x > lim + 1e-12:
+        if key == "mde_joint":
+            proj = w20.get("holdout_projection")
+            if not proj:
+                out.append(f"{label} not computable (no trading calendar)")
+                continue
+            x = proj.get("mde_joint")
+            if x is None or not np.isfinite(x):
+                out.append(f"{label} not reached on the 0-{config.POWER_DELTAS[-1] * 100:.0f}% grid")
+                continue
+        else:
+            x = w20.get(key)
+            if x is None or not np.isfinite(x):
+                out.append(f"{label} not computable")
+                continue
+        if x > lim + 1e-12:
             out.append(f"{label} {x * 100:.2f}% > {lim * 100:.1f}%")
     return out
 
@@ -175,7 +188,8 @@ def events_fingerprint(events: pd.DataFrame) -> str:
     keys = [c for c in ("event_id", "role", "date") if c in events.columns]
     cols = keys + [f"ripple_{w}_k{config.K_PRIMARY}" for w in config.SLOW_WINDOWS]
     df = events[cols].sort_values(keys, kind="mergesort")
-    return hashlib.sha256(df.to_csv(index=False, float_format="%.17g").encode("utf-8")).hexdigest()
+    text = df.to_csv(index=False, float_format="%.17g", lineterminator="\n", date_format="%Y-%m-%d")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def power(events: pd.DataFrame, n_boot: int | None = None, seed: int | None = None, calendar=None) -> dict:

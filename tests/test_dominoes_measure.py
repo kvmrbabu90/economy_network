@@ -313,6 +313,25 @@ def test_unevaluable_placebo_makes_the_role_inconclusive_not_no_ripple(holdout_w
     assert hold["verdict"]["by_role"]["supplier"] == "inconclusive_unevaluable"
 
 
+def test_holdout_r10_counts_b_shocks_from_late_2021(holdout_world, monkeypatch):
+    panel, model, shocks, links, firms, pairs, ev_h, expl = holdout_world
+    early = ev_h[ev_h["date"] < pd.Timestamp("2022-01-15")]
+    assert len(early)
+    flags_all = ms.b_coshock(early, shocks)
+    flags_hold = ms.b_coshock(early, shocks[shocks["period"] == "holdout"])
+    assert flags_all.sum() >= flags_hold.sum()
+    monkeypatch.setattr(io, "holdout_unlocked", lambda: True)
+    monkeypatch.setattr(ms, "placebo_distribution",
+                        lambda *a, **k: {"values": np.full(config.PLACEBO_N, 0.0), "coverage": np.full(config.PLACEBO_N, 1e9),
+                                         "pool_median": 5.0, "pool_min": 1, "dropped_link_share": 0.0,
+                                         "dropped_b": 0, "real_count": 1})
+    hold = ms.analyze_holdout(panel, model, shocks, links, firms, pairs, ev_h, expl, power=_power_ok(), boot_n=50)
+    ev = ev_h[ev_h["period"] == "holdout"]
+    want = ms.b_coshock(ev, shocks)
+    got = hold["robustness"]["r10_ex_b_coshock"]["share_coshock"]["supplier"]
+    assert got == pytest.approx(want[(ev.role == "supplier").to_numpy()].mean())
+
+
 def test_holdout_measurement_requires_the_marker(tmp_path, monkeypatch):
     monkeypatch.setenv("DOMINO_STORE", str(tmp_path))
     with pytest.raises(PermissionError):

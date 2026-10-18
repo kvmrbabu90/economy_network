@@ -94,10 +94,53 @@ def _mt(c: dict) -> str:
     return f"{_pct(c.get('mean'))} (t {_t(c.get('t'))})"
 
 
+def _cellstr(x) -> str:
+    return str(x).replace("|", "\\|")        # a raw '|' inside a cell would split it (GFM)
+
+
 def _table(header: list[str], rows: list[list]) -> str:
-    out = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
-    out += ["| " + " | ".join(str(x) for x in r) + " |" for r in rows]
+    out = ["| " + " | ".join(_cellstr(h) for h in header) + " |", "|" + "---|" * len(header)]
+    out += ["| " + " | ".join(_cellstr(x) for x in r) + " |" for r in rows]
     return "\n".join(out)
+
+
+_ROLE_ACTION = {
+    "slow_ripple": "slow ripple confirmed, real and large enough to study: go to Stage 2 (predict the ripple) and "
+                   "Stage 3 (how fast prices absorb it, with intraday data)",
+    "same_day_only": "the market prices the link on the same day; any value sits in a latency race, so Stage 2 is "
+                     "not justified for trading",
+    "same_day_slow_inconclusive": "B follows A on the same day (confirmed), but the slow-ripple test is inconclusive "
+                                  f"(too little power or an unevaluable check): {_RERUN}",
+    "no_ripple": "no ripple: close the price-ripple thesis for these link types",
+    "inconclusive_underpowered": f"inconclusive (too little power): {_RERUN}",
+    "inconclusive_unevaluable": f"inconclusive (a required check could not be evaluated): {_RERUN}",
+}
+
+
+def overall_meaning(v: dict) -> str:
+    """§7 consequences per group of roles, built from the role states (never a fixed sentence that could
+    contradict the per-role table)."""
+    groups: dict[str, list] = {}
+    for r in config.ROLES:
+        groups.setdefault(v["by_role"][r], []).append(r)
+    return " ".join(f"{', '.join(groups[s])}: {_ROLE_ACTION[s]}." for s in _ROLE_ACTION if s in groups)
+
+
+def h3_holdout_text(h3: dict, t_exploration) -> str:
+    """Combined pre-trend status, naming the period(s) that flagged or could not be tested."""
+    def per(status_key: str, label: str, t) -> str | None:
+        s = h3.get(status_key)
+        if s == "flag":
+            return f"{label} t {_t(t)}"
+        if s == "untestable":
+            return f"{label} untestable"
+        return None
+    parts = [p for p in (per("status_exploration", "exploration", t_exploration),
+                         per("status_holdout", "holdout", h3.get("t_pre"))) if p]
+    s = {"ok": "ok", "flag": "FLAG", "untestable": "could not be tested"}.get(h3["status"], h3["status"])
+    if parts and h3["status"] != "ok":
+        s += f" ({'; '.join(parts)})"
+    return s + ("" if h3.get("applies") else " (not required)")
 
 
 def _commit() -> str:
@@ -475,8 +518,8 @@ def render_exploration(res: dict, power: dict, variants: dict, figure: str, data
 
 # ---------------------------------------------------------------------------------------------- holdout
 def _summary_holdout(expl: dict, hold: dict, power: dict) -> list[str]:
-    title, meaning = OVERALL[hold["verdict"]["overall"]]
-    out = [f"- **{title}.** {meaning}"]
+    title = OVERALL[hold["verdict"]["overall"]][0]
+    out = [f"- **{title}.** {overall_meaning(hold['verdict'])}"]
     cands = [k for k, v in expl["H2"].items() if v["pass_exploration"]]
     for k in cands:
         h = hold["H2"][k]
@@ -489,10 +532,13 @@ def _summary_holdout(expl: dict, hold: dict, power: dict) -> list[str]:
         else:
             pl = h.get("placebo", {})
             reasons = []
-            if not h["replicates"]:
-                reasons.append("did not replicate")
-            if not h["floor_ok"]:
-                reasons.append(f"below the {config.FLOOR * 100:.1f}% floor")
+            if not _fin(h.get("p_one")):
+                reasons.append("could not be evaluated (holdout t/p missing)")
+            else:
+                if not h["replicates"]:
+                    reasons.append("did not replicate")
+                if not h["floor_ok"]:
+                    reasons.append(f"below the {config.FLOOR * 100:.1f}% floor")
             if pl.get("run") and not pl.get("evaluable", True):
                 reasons.append(pl.get("reason") or "placebo not evaluable")
             elif h["beats_placebo"] is False and pl.get("run"):
@@ -523,7 +569,7 @@ def _summary_holdout(expl: dict, hold: dict, power: dict) -> list[str]:
 
 def render_holdout(expl: dict, hold: dict, power: dict, variants: dict, figure: str, data_notes: list[str]) -> str:
     v = hold["verdict"]
-    title, meaning = OVERALL[v["overall"]]
+    title, meaning = OVERALL[v["overall"]][0], overall_meaning(v)
     chain = []
     for role in config.ROLES:
         for w in config.SLOW_WINDOWS:
@@ -535,7 +581,8 @@ def render_holdout(expl: dict, hold: dict, power: dict, variants: dict, figure: 
             else:
                 plc = "not run"
             chain.append([role, WLABEL[w], _yn(h["pass_exploration"]), "+" if h["direction"] > 0 else "−",
-                          _pct(h["direction_mean"]), _t(h["t"]), _p(h["p_one"]), _yn(h["replicates"]),
+                          _pct(h["direction_mean"]), _t(h["direction"] * h["t"] if _fin(h["t"]) else math.nan),
+                          _p(h["p_one"]), _yn(h["replicates"]),
                           _yn(h["floor_ok"]), plc, _yn(h["beats_placebo"]),
                           "**PASS**" if h["pass"] else ("inconclusive" if h.get("unevaluable") else "fail"),
                           _p(h.get("p_one_2w")) + (" ⚠" if h.get("flag_2w") else "")])
@@ -557,8 +604,8 @@ def render_holdout(expl: dict, hold: dict, power: dict, variants: dict, figure: 
          "## Verdict (spec §7)", "", f"**Overall: {title}.** {meaning}", "",
          _table(["Role", "Verdict", "Power: 20-day MDE", "Full-chain power at 1.5% (projected)", "Pre-trend"],
                 [[r, ROLE_STATUS[v["by_role"][r]], _mde(power, r) + _power_note(power, r),
-                  _pct(proj[r].get("joint_power_at_limit"), False), _h3_text(hold["H3"][r]["status"],
-                                                                            hold["H3"][r]["t_pre"])]
+                  _pct(proj[r].get("joint_power_at_limit"), False),
+                  h3_holdout_text(hold["H3"][r], expl["H3"][r]["t_pre"])]
                  for r in config.ROLES]), "",
          "## Data", "", *data_notes, "",
          "## H2 — slow ripple, holdout chain", "",
@@ -567,7 +614,7 @@ def render_holdout(expl: dict, hold: dict, power: dict, variants: dict, figure: 
          "and it beats the 95th percentile of the placebo (each linked firm relabelled to one random same-sector "
          "firm that is not linked to the shocked firm). Means are shown in the exploration direction. The last "
          "column is the exploratory two-way (date × linked firm) one-sided p (⚠ = a pass it does not confirm).", "",
-         _table(["Role", "Window", "Exploration pass", "Direction", "Holdout mean (in direction)", "t",
+         _table(["Role", "Window", "Exploration pass", "Direction", "Holdout mean (in direction)", "t (in direction)",
                  "p one-sided", "Replicates", f"≥ {config.FLOOR * 100:.1f}%", "Placebo 95th pct (in direction)",
                  "Beats placebo", "Result", "p two-way"], chain), ""]
     if diag:
@@ -583,7 +630,7 @@ def render_holdout(expl: dict, hold: dict, power: dict, variants: dict, figure: 
           "## H3 — pre-trend in both periods", "",
           _table(["Role", "t exploration", "t holdout", "Status", "Required"],
                  [[r, _t(expl["H3"][r]["t_pre"]), _t(hold["H3"][r]["t_pre"]),
-                   _h3_text(hold["H3"][r]["status"], hold["H3"][r]["t_pre"]), _yn(hold["H3"][r]["applies"])]
+                   h3_holdout_text(hold["H3"][r], expl["H3"][r]["t_pre"]), _yn(hold["H3"][r]["applies"])]
                   for r in config.ROLES]), "",
           "## H4 — direction by role, holdout (descriptive)", "",
           _table(["Role", "Window", "Mean", "t (date)", "t (week)", "95% CI (bootstrap)", "t two-way", "Events",

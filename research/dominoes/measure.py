@@ -136,7 +136,8 @@ def _r10(ev: pd.DataFrame, shocks: pd.DataFrame) -> dict:
     flag = b_coshock(ev, shocks) if len(ev) else np.zeros(0, dtype=bool)
     share = {r: (_f(flag[(ev["role"] == r).to_numpy()].mean()) if (ev["role"] == r).any() else math.nan)
              for r in config.ROLES}
-    return {"label": "exploratory (not pre-registered): events whose B had its own shock in [e-10, e] removed",
+    return {"label": "exploratory (not pre-registered): events whose B had its own shock in [e-10, e] removed "
+                     "(B shocks before 2015 are not stored, so the first days of 2015 are slightly undercounted)",
             "share_coshock": share,
             "table": role_window_table(ev[~flag], config.K_PRIMARY, None, 0, config.SLOW_WINDOWS)}
 
@@ -494,7 +495,7 @@ def analyze_holdout(panel, model, shocks, links, firms, pairs, events_h, expl: d
     res = {"period": "holdout", "table": table, "H1": H1, "H2": H2, "H3": H3, "H5": H5,
            "robustness": {"r6_holdout_2024_on": role_window_table(late, config.K_PRIMARY, None, 0,
                                                                   config.SLOW_WINDOWS),
-                          "r10_ex_b_coshock": _r10(ev, shocks[shocks["period"] == "holdout"])},
+                          "r10_ex_b_coshock": _r10(ev, shocks)},          # late-2021 B shocks count too
            "counts": {"events": {r: int((ev["role"] == r).sum()) for r in config.ROLES},
                       "event_dates": int(ev["date"].nunique()), "shocks": int(len(sh))}}
     res["verdict"] = verdict(expl, res, power) if primary else None

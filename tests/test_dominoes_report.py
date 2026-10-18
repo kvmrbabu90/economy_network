@@ -127,6 +127,44 @@ def test_power_cannot_be_regenerated_after_measuring(explored, monkeypatch):
         run.main(["power"])
 
 
+def test_every_markdown_table_row_has_as_many_cells_as_its_delimiter(explored):
+    import re
+    _, out = explored
+    lines = (out / "readout-exploration.md").read_text(encoding="utf-8").splitlines()
+    cells = lambda ln: len(re.split(r"(?<!\\)\|", ln.strip())) - 2      # noqa: E731
+    for i, ln in enumerate(lines):
+        if re.fullmatch(r"\|(---\|)+", ln.strip()):
+            n = cells(ln)
+            j = i - 1
+            assert cells(lines[j]) == n, lines[j]
+            j = i + 1
+            while j < len(lines) and lines[j].startswith("|"):
+                assert cells(lines[j]) == n, lines[j]
+                j += 1
+
+
+def test_overall_meaning_is_built_from_the_role_states():
+    from research.dominoes import report
+    v = {"overall": "same_day_some_inconclusive",
+         "by_role": {"supplier": "same_day_slow_inconclusive", "customer": "no_ripple", "competitor": "no_ripple"}}
+    text = report.overall_meaning(v)
+    assert "supplier" in text and "same day" in text.lower()
+    assert "customer, competitor" in text and "close the price-ripple thesis" in text.lower()
+    assert "inconclusive" in text.lower()
+    v2 = {"overall": "same_day_some_inconclusive",
+          "by_role": {"supplier": "same_day_only", "customer": "no_ripple", "competitor": "inconclusive_underpowered"}}
+    t2 = report.overall_meaning(v2)
+    assert "customer" in t2 and "competitor" in t2 and "supplier" in t2
+
+
+def test_holdout_h3_text_names_the_period_that_flagged_and_marks_not_required():
+    from research.dominoes import report
+    h3 = {"t_pre": 0.30, "status": "flag", "status_exploration": "flag", "status_holdout": "ok", "applies": False}
+    expl_t = 2.5
+    s = report.h3_holdout_text(h3, expl_t)
+    assert "exploration t 2.50" in s and "not required" in s
+
+
 def test_full_gated_protocol_ends_in_a_holdout_verdict(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()

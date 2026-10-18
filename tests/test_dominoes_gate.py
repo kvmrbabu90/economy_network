@@ -96,6 +96,26 @@ def test_the_readout_commit_must_be_an_ancestor_of_head(repo):
     assert not ok and "ancestor" in reason
 
 
+def test_a_results_or_power_file_added_after_the_commit_closes_the_gate(repo):
+    rp, store = repo
+    sha = _commit_readout(rp, _readout(store))
+    run.main(["unlock", "--commit", sha])
+    assert io.holdout_unlocked()
+    (store / "results_exploration__market_sigma4.json").write_text("{}", encoding="utf-8")   # explored after unlock
+    io.clear_gate_cache()
+    ok, reason = io.gate_status()
+    assert not ok and "results_exploration__market_sigma4.json" in reason
+
+
+def test_the_gate_cache_notices_head_moving_off_the_readout(repo):
+    rp, store = repo
+    sha = _commit_readout(rp, _readout(store))
+    run.main(["unlock", "--commit", sha])
+    assert io.holdout_unlocked()
+    _git(rp, "checkout", "-q", "-b", "elsewhere", "HEAD~1")             # HEAD no longer descends from the readout
+    assert not io.holdout_unlocked()                                     # no clear_gate_cache() on purpose
+
+
 def test_cli_no_longer_accepts_knobs_that_could_bypass_the_registered_run():
     for flag in (["--require-path", "x"], ["--boot-n", "5"], ["--placebo-n", "5"]):
         with pytest.raises(SystemExit):
