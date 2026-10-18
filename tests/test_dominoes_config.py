@@ -83,10 +83,12 @@ def test_holdout_locked_without_marker(tmp_path, monkeypatch):
     assert io.holdout_unlocked() is False
 
 
-def test_holdout_unlocked_only_with_a_real_commit(tmp_path, monkeypatch):
+def test_a_real_commit_alone_does_not_unlock_the_holdout(tmp_path, monkeypatch):
+    # the positive path (committed readout whose integrity table matches the store) is in test_dominoes_gate
     monkeypatch.setenv("DOMINO_STORE", str(tmp_path))
+    io.clear_gate_cache()
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     (tmp_path / config.HOLDOUT_MARKER).write_text("0" * 40, encoding="utf-8")
     assert io.holdout_unlocked() is False
     (tmp_path / config.HOLDOUT_MARKER).write_text(head + "\n", encoding="utf-8")
-    assert io.holdout_unlocked() is True
+    assert io.holdout_unlocked() is False

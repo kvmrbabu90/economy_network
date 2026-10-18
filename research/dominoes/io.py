@@ -82,20 +82,75 @@ def read_frame(name: str, schema: dict[str, str]) -> pd.DataFrame:
     return df
 
 
-def holdout_unlocked() -> bool:
-    """True only when the marker names a commit that exists in this repo (the committed exploration readout)."""
+INTEGRITY_ROW = re.compile(r"^\|\s*`([^`/\\]+\.json)`\s*\|\s*([0-9a-f]{64})\s*\|", re.MULTILINE)
+REQUIRED_INTEGRITY = ("results_exploration.json", "power.json")
+_GATE_CACHE: dict = {}
+
+
+def clear_gate_cache() -> None:
+    _GATE_CACHE.clear()
+
+
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True)
+
+
+def _file_sha256(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def committed_integrity(commit: str) -> tuple[str | None, dict[str, str], str]:
+    """(full sha or None, {file: sha256} from the readout committed at `commit`, reason if unusable)."""
+    full = _git("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}")
+    if full.returncode != 0:
+        return None, {}, f"commit {commit} does not exist in this repository"
+    sha = full.stdout.strip()
+    shown = _git("show", f"{sha}:{config.READOUT_PATH}")
+    if shown.returncode != 0:
+        return sha, {}, f"commit {sha[:10]} does not contain the exploration readout {config.READOUT_PATH}"
+    table = dict(INTEGRITY_ROW.findall(shown.stdout))
+    missing = [f for f in REQUIRED_INTEGRITY if f not in table]
+    if missing:
+        return sha, table, f"the committed readout has no integrity hash for {missing}"
+    return sha, table, ""
+
+
+def gate_status() -> tuple[bool, str]:
+    """The holdout opens only if the marker names a commit that (1) exists, (2) is an ancestor of HEAD, and
+    (3) contains the exploration readout whose integrity table matches the store's exploration results and
+    power files byte for byte (sha256)."""
     marker = store_dir() / config.HOLDOUT_MARKER
     if not marker.exists():
-        return False
+        return False, "no holdout marker"
     commit = marker.read_text(encoding="utf-8").strip()
     if not re.fullmatch(r"[0-9a-f]{7,40}", commit):
-        return False
-    r = subprocess.run(["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=REPO_ROOT, capture_output=True)
-    return r.returncode == 0
+        return False, "the marker does not hold a commit hash"
+    key_files = sorted(p for p in store_dir().glob("*.json") if p.name.startswith(("results_exploration", "power")))
+    key = (commit, config.READOUT_PATH, str(store_dir()),
+           tuple((p.name, p.stat().st_mtime_ns, p.stat().st_size) for p in key_files))
+    if key in _GATE_CACHE:
+        return _GATE_CACHE[key]
+    sha, table, reason = committed_integrity(commit)
+    if not reason and _git("merge-base", "--is-ancestor", sha, "HEAD").returncode != 0:
+        reason = f"commit {sha[:10]} is not an ancestor of HEAD (re-unlock after a squash or rebase)"
+    if not reason:
+        for name, want in sorted(table.items()):
+            path = store_dir() / name
+            if not path.exists() or _file_sha256(path) != want:
+                reason = f"{name} in the store does not match the committed readout's integrity hash"
+                break
+    result = (not reason, reason)
+    _GATE_CACHE[key] = result
+    return result
+
+
+def holdout_unlocked() -> bool:
+    return gate_status()[0]
 
 
 def require_holdout_unlocked() -> None:
     if not holdout_unlocked():
         raise PermissionError(
-            "Holdout is locked: commit the exploration readout and write its hash to "
-            f"{store_dir() / config.HOLDOUT_MARKER} first (spec §12, §13.11).")
+            f"Holdout is locked ({gate_status()[1]}): commit the exploration readout and run "
+            "`unlock --commit <hash>` first (spec §12, §13.11).")

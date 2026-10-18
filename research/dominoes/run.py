@@ -2,14 +2,19 @@
 
 Stages, in protocol order (spec §10, plan Task 11):
   snapshot   production DB (read-only) -> firms, links, any_edge_pairs
-  prices     yfinance -> prices (study firms + SPY + sector ETFs; cached, never re-fetched)
+  prices     yfinance -> prices (adjusted: returns) + prices_raw (unadjusted close: dollar volume), both cached
+             and never re-fetched; writes raw_sanity.json
   factors    Ken French FF5 + momentum -> factors (robustness 2)
   shocks     -> shocks[<suffix>]                       (--variant/--rule, or --all-variants)
   events     -> events_<period>, controls_<period>     (holdout: needs `unlock` first)
-  power      exploration only -> power.json            (run and commit before `measure`)
+  power      exploration only -> power[<suffix>].json  (run ONCE, before `measure`; never regenerated after)
   measure    -> results_<period>.json, paths_<period>  (holdout: needs `unlock` first)
-  report     -> docs/research/domino-study/readout-<period>.md + figures
-  unlock     record the commit that holds the committed exploration readout (opens the holdout)
+  report     -> docs/research/domino-study/readout-<period>.md + figures (+ integrity table in exploration)
+  unlock     open the holdout: the commit must hold the exploration readout whose integrity table matches the
+             store's exploration results and power files
+
+The registered constants (bootstrap draws, placebo permutations, seeds) are not CLI options: the primary run
+uses exactly the pre-registered values.
 """
 from __future__ import annotations
 
@@ -17,7 +22,6 @@ import argparse
 import datetime as dt
 import json
 import re
-import subprocess
 import sys
 
 from research.dominoes import build_events as be
@@ -46,26 +50,35 @@ class _Contexts:
         return self._cache[variant]
 
 
-def _git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=io.REPO_ROOT, capture_output=True, text=True)
-
-
-def stage_unlock(commit: str, require_path: str = config.READOUT_PATH) -> dict:
-    """Write the holdout marker, but only for a full commit hash that exists and contains `require_path`."""
+def stage_unlock(commit: str) -> dict:
+    """Write the holdout marker only if the gate then reads open; otherwise remove it and say why."""
     if not re.fullmatch(r"[0-9a-f]{7,40}", commit or ""):
         raise ValueError(f"not a commit hash: {commit!r}")
-    full = _git("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}")
-    if full.returncode != 0:
-        raise ValueError(f"commit {commit} does not exist in this repository")
-    sha = full.stdout.strip()
-    if _git("cat-file", "-e", f"{sha}:{require_path}").returncode != 0:
-        raise ValueError(f"commit {sha[:10]} does not contain {require_path}: commit the exploration readout first")
+    sha, _, reason = io.committed_integrity(commit)
+    if reason:
+        raise ValueError(reason)
     store = io.store_dir()
     store.mkdir(parents=True, exist_ok=True)
-    (store / config.HOLDOUT_MARKER).write_text(sha, encoding="utf-8")
-    if not io.holdout_unlocked():
-        raise RuntimeError("marker written but the holdout gate still reads locked")
-    return {"unlocked_by": sha, "requires": require_path}
+    marker = store / config.HOLDOUT_MARKER
+    marker.write_text(sha, encoding="utf-8")
+    io.clear_gate_cache()
+    ok, why = io.gate_status()
+    if not ok:
+        marker.unlink()
+        io.clear_gate_cache()
+        raise ValueError(f"holdout stays locked: {why}")
+    return {"unlocked_by": sha, "readout": config.READOUT_PATH}
+
+
+def stage_prices(end: str | None) -> dict:
+    firms = io.read_frame("firms", snapshot_links.FIRM_SCHEMA)
+    symbols = [config.MARKET_TICKER, *config.SECTOR_ETFS, *sorted(firms["symbol"])]
+    out = {"adjusted": fetch_prices.fetch(symbols, config.PRICE_START, end or dt.date.today().isoformat()),
+           "raw": fetch_prices.fetch_raw(symbols)}
+    sanity = fetch_prices.raw_sanity(fetch_prices.load_prices(), fetch_prices.load_prices_raw())
+    (io.store_dir() / "raw_sanity.json").write_text(json.dumps(sanity, indent=2), encoding="utf-8")
+    out["raw_sanity"] = {k: v for k, v in sanity.items() if not isinstance(v, list)}
+    return out
 
 
 def main(argv: list[str] | None = None) -> dict:
@@ -77,13 +90,8 @@ def main(argv: list[str] | None = None) -> dict:
     p.add_argument("--rule", choices=bs.RULES, default=config.PRIMARY_RUN[1])
     p.add_argument("--all-variants", action="store_true", help="primary run plus robustness runs 1-3")
     p.add_argument("--end", help="prices: last date (exclusive), default today; pinned by the first fetch")
-    p.add_argument("--boot-n", type=int, help="bootstrap draws (power default %d, measure default %d)"
-                   % (config.POWER_BOOT_N, config.BOOT_N))
-    p.add_argument("--placebo-n", type=int, default=config.PLACEBO_N,
-                   help="holdout placebo permutations for the primary run (robustness runs use none)")
     p.add_argument("--out", help="report: output directory (default docs/research/domino-study)")
     p.add_argument("--commit", help="unlock: commit hash of the committed exploration readout")
-    p.add_argument("--require-path", default=config.READOUT_PATH, help="unlock: file the commit must contain")
     args = p.parse_args(argv)
 
     if args.period == "holdout" and args.stage in ("events", "measure", "report"):
@@ -94,9 +102,7 @@ def main(argv: list[str] | None = None) -> dict:
     if args.stage == "snapshot":
         out.update(snapshot_links.snapshot())
     elif args.stage == "prices":
-        firms = io.read_frame("firms", snapshot_links.FIRM_SCHEMA)
-        symbols = [config.MARKET_TICKER, *config.SECTOR_ETFS, *sorted(firms["symbol"])]
-        out.update(fetch_prices.fetch(symbols, config.PRICE_START, args.end or dt.date.today().isoformat()))
+        out.update(stage_prices(args.end))
     elif args.stage == "factors":
         out["rows"] = fetch_factors.fetch_factors()
     elif args.stage == "shocks":
@@ -112,21 +118,21 @@ def main(argv: list[str] | None = None) -> dict:
             out[f"{variant}/{rule}"] = be.build(args.period, variant, rule, panel, model)
     elif args.stage == "power":
         for variant, rule in _runs(args):
-            res = power_check.run("exploration", variant, rule, n_boot=args.boot_n or config.POWER_BOOT_N)
+            res = power_check.run("exploration", variant, rule)
             out[f"{variant}/{rule}"] = {r: {"mde_w20": res["roles"][r]["w20"]["mde_bootstrap"],
-                                           "underpowered": res["roles"][r]["underpowered"]}
+                                           "underpowered": res["roles"][r]["underpowered"],
+                                           "borderline": res["roles"][r]["borderline"]}
                                        for r in config.ROLES}
     elif args.stage == "measure":
         for variant, rule in _runs(args):
             panel, model = ctx.get(variant)
-            primary = (variant, rule) == config.PRIMARY_RUN
-            res = measure.run(args.period, variant, rule, boot_n=args.boot_n or config.BOOT_N,
-                              placebo_n=args.placebo_n if primary else 0, panel=panel, model=model)
-            out[f"{variant}/{rule}"] = res.get("verdict", {}).get("overall", "exploration measured")
+            res = measure.run(args.period, variant, rule, panel=panel, model=model)
+            v = res.get("verdict")
+            out[f"{variant}/{rule}"] = v["overall"] if v else f"{args.period} measured"
     elif args.stage == "report":
         out.update(report.run(args.period, args.out))
     elif args.stage == "unlock":
-        out.update(stage_unlock(args.commit, args.require_path))
+        out.update(stage_unlock(args.commit))
     return out
 
 

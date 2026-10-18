@@ -1,12 +1,16 @@
 """Stage: the readout (markdown tables) and the average CAR-path figure (spec §10 Output).
 
-Reads results_<period>*.json, power.json and paths_<period>.parquet from the research store and writes
+Reads results_<period>*.json, power*.json and paths_<period>.parquet from the research store and writes
 docs/research/domino-study/readout-<period>.md plus figures/paths-<period>.png. It formats what measure
 computed and decides nothing: every pass/fail shown here was set by measure under the frozen rules.
+
+The exploration readout ends with an integrity table (sha256 of every exploration results file and power file).
+The holdout gate reads that table from the COMMITTED readout and opens only if the store still matches it.
 """
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import math
 import subprocess
@@ -27,6 +31,8 @@ SUBSETS = (
     ("r8_llm_only", "R8 LLM-extracted links only"),
     ("r8_manual_only", "R8 manual links only"),
 )
+_RERUN = ("strengthen the map (10-K supplier/customer links with revenue weights) and re-run under this same "
+          "frozen protocol")
 OVERALL = {
     "slow_ripple": ("Slow ripple confirmed",
                     "Slow ripples are real and large enough to study. Next: Stage 2 (predict the ripple) and "
@@ -34,16 +40,26 @@ OVERALL = {
     "same_day_only": ("Same-day ripple only",
                       "The market prices the link on the same day. Any value sits in a latency race where faster "
                       "data alone is unlikely to be enough; Stage 2 is not justified for trading."),
+    "same_day_some_inconclusive": ("Same-day ripple; slow ripple inconclusive for some roles",
+                                   "For the roles where the slow test had power, the market prices the link on the "
+                                   "same day and Stage 2 is not justified for trading. The other roles are "
+                                   f"inconclusive: {_RERUN}."),
     "no_ripple": ("No ripple",
                   "The map's links don't carry measurable price ripples. Close the price-ripple thesis for these "
                   "link types."),
-    "no_ripple_powered_roles": ("No ripple where the data had power; other roles inconclusive",
-                                "No ripple among the adequately powered roles. The underpowered roles are "
-                                "inconclusive: strengthen the map (10-K supplier/customer links with revenue "
-                                "weights) and re-run under this same frozen protocol."),
+    "no_ripple_powered_roles": ("No ripple where the test could decide; other roles inconclusive",
+                                "No ripple among the roles where the test had power and could be evaluated. The "
+                                f"other roles are inconclusive: {_RERUN}."),
+    "inconclusive": ("Inconclusive", f"No role could be decided (too little power or an unevaluable check): {_RERUN}."),
 }
-ROLE_STATUS = {"slow_ripple": "slow ripple (confirmed)", "same_day_only": "same-day only",
-               "inconclusive_underpowered": "underpowered / inconclusive", "no_ripple": "no ripple"}
+ROLE_STATUS = {
+    "slow_ripple": "slow ripple (confirmed)",
+    "same_day_slow_inconclusive": "same-day ripple confirmed; slow ripple inconclusive",
+    "inconclusive_underpowered": "underpowered / inconclusive",
+    "inconclusive_unevaluable": "inconclusive (a required check could not be evaluated)",
+    "same_day_only": "same-day only",
+    "no_ripple": "no ripple",
+}
 
 
 def _fin(x) -> bool:
@@ -58,6 +74,10 @@ def _pct(x, signed: bool = True) -> str:
 
 def _t(x) -> str:
     return f"{x:.2f}" if _fin(x) else "n/a"
+
+
+def _g(x) -> str:
+    return f"{x:.4f}" if _fin(x) else "n/a"
 
 
 def _p(x) -> str:
@@ -89,11 +109,29 @@ def _load(path: Path) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
-def _mde(power: dict | None, role: str, w: str = "w20") -> str:
+def _mde(power: dict | None, role: str, w: str = "w20", key: str = "mde_bootstrap") -> str:
     if not power:
         return "n/a"
-    m = power["roles"][role][w]["mde_bootstrap"]
-    return _pct(m, signed=False) if _fin(m) else f"> {config.POWER_DELTAS[-1] * 100:.2f}%"
+    m = power["roles"][role][w].get(key, math.nan)
+    if key == "mde_bootstrap" and not _fin(m):
+        return f"> {config.POWER_DELTAS[-1] * 100:.2f}%"
+    return _pct(m, signed=False)
+
+
+def _power_note(power: dict, role: str) -> str:
+    r = power["roles"][role]
+    if r["underpowered"]:
+        return " (underpowered)"
+    if r.get("borderline"):
+        return " (power borderline: " + "; ".join(r.get("borderline_reasons", [])) + ")"
+    return ""
+
+
+def integrity_lines(store: Path) -> list[str]:
+    """Machine-readable sha256 table of the exploration results and power files (read back by the gate)."""
+    files = sorted(p for p in Path(store).glob("*.json") if p.name.startswith(("results_exploration", "power")))
+    rows = [f"| `{p.name}` | {hashlib.sha256(p.read_bytes()).hexdigest()} |" for p in files]
+    return ["| File | sha256 |", "|---|---|", *rows]
 
 
 # ----------------------------------------------------------------------------------------------- figures
@@ -143,8 +181,31 @@ def _data_notes(store: Path, counts: dict) -> list[str]:
     lines = []
     man = _load(store / "fetch_manifest.json")
     if man:
-        lines.append(f"- Prices: yfinance (split/dividend adjusted), {man['start']} to {man['end']}; "
-                     f"{len(man['fetched'])} symbols fetched, {len(man['failed'])} unavailable.")
+        lines.append(f"- Prices: yfinance, total-return adjusted for returns; {man['start']} to {man['end']} "
+                     f"(end exclusive); {len(man['fetched'])} symbols fetched, unavailable: "
+                     f"{', '.join(man['failed']) or 'none'}.")
+    if io.frame_path("prices").exists():
+        from research.dominoes import fetch_prices
+        p = fetch_prices.load_prices()
+        n = p.groupby("symbol").size()
+        thin = sorted(s for s, k in n.items() if k < config.MIN_EST_DAYS and s not in config.SECTOR_ETFS)
+        if thin:
+            lines.append(f"- Symbols with fewer than {config.MIN_EST_DAYS} price rows (delisted or taken private; "
+                         f"never usable): {', '.join(thin)}. Survivorship: firms that left the market are missing "
+                         "(§11).")
+        first = p[p["symbol"].isin(config.SECTOR_ETFS)].groupby("symbol")["date"].min()
+        late = {s: pd.Timestamp(d).date().isoformat() for s, d in first.items()
+                if pd.Timestamp(d) > pd.Timestamp(config.PRICE_START) + pd.Timedelta(days=30)}
+        if late:
+            lines.append("- Sector ETFs that start late (robustness 1 cannot use those sectors before then plus a "
+                         "~1-year estimation window): " + ", ".join(f"{s} from {d}" for s, d in sorted(late.items()))
+                         + ".")
+    sanity = _load(store / "raw_sanity.json")
+    if sanity:
+        lines.append(f"- Dollar volume uses a separate unadjusted-close snapshot (no dividend look-ahead): "
+                     f"{sanity['common_rows']} common rows; volume mismatches {sanity['volume_mismatch_rows']}; "
+                     f"adjusted-above-raw rows {sanity['ratio_violation_rows']}; symbols without raw history "
+                     f"{len(sanity['symbols_missing_raw'])} (their dollar volume is missing, never imputed).")
     if io.frame_path("links").exists():
         links = io.read_frame("links", snapshot_links.LINK_SCHEMA)
         by_role = links["role"].value_counts().to_dict()
@@ -159,29 +220,34 @@ def _data_notes(store: Path, counts: dict) -> list[str]:
     return lines
 
 
+def _h3_text(status: str, t) -> str:
+    return {"ok": "ok", "flag": f"FLAG (t {_t(t)})", "untestable": "could not be tested"}.get(status, status)
+
+
 # ------------------------------------------------------------------------------------------ exploration
-def _verdict_rows_exploration(res: dict, power: dict | None) -> list[list]:
+def _verdict_rows_exploration(res: dict, power: dict) -> list[list]:
     rows = []
     for role in config.ROLES:
         cands = [w for w in config.SLOW_WINDOWS if res["H2"][f"{role}|{w}"]["pass_exploration"]]
         h1 = res["H1"][role]["pass_exploration"]
-        under = bool(power and power["roles"][role]["underpowered"])
+        under = power["roles"][role]["underpowered"]
         if cands:
             status = "slow-ripple candidate → holdout"
         elif h1:
-            status = "same-day candidate → holdout"
+            status = "same-day candidate → holdout" + (" (slow ripple underpowered)" if under else "")
         elif under:
             status = "underpowered / inconclusive"
         else:
             status = "no candidate"
         pre = res["H3"][role]
-        rows.append([role, _mde(power, role) + (" (underpowered)" if under else ""),
-                     "candidate" if h1 else "—", ", ".join(WLABEL[w] for w in cands) or "—",
-                     "ok" if pre["ok_exploration"] else f"FLAG (t {_t(pre['t_pre'])})", status])
+        rows.append([role, _mde(power, role) + _power_note(power, role), "candidate" if h1 else "—",
+                     ", ".join(WLABEL[w] for w in cands) or "—",
+                     _h3_text(pre["status_exploration"], pre["t_pre"]) + ("" if pre["applies"] else " (not required)"),
+                     status])
     return rows
 
 
-def _summary_exploration(res: dict, power: dict | None) -> list[str]:
+def _summary_exploration(res: dict, power: dict) -> list[str]:
     c = res["counts"]
     total = sum(c["events"].values())
     out = [f"- Exploration years {config.EXPLORATION[0][:4]}–{config.EXPLORATION[1][:4]}: {c.get('shocks', 'n/a')} "
@@ -191,20 +257,29 @@ def _summary_exploration(res: dict, power: dict | None) -> list[str]:
         out.append("- Slow-ripple candidates that cleared the strict exploration bar (Holm + |t| > 3): "
                    + "; ".join(f"{k.split('|')[0]} {WLABEL[k.split('|')[1]]} {_pct(v['mean'])} (t {_t(v['t'])})"
                                for k, v in cands) + ".")
+        weak = [k for k, v in cands if v.get("flag_2w")]
+        if weak:
+            out.append("- Caution (exploratory diagnostic): with standard errors clustered by both date and linked "
+                       f"firm, these candidates fall below |t| = 3: {', '.join(weak)}. Overlapping windows of the "
+                       "same firm may overstate them; the holdout and its placebo decide.")
     else:
         out.append("- No slow ripple cleared the strict exploration bar, so the holdout cannot confirm one.")
     h1 = [r for r in config.ROLES if res["H1"][r]["pass_exploration"]]
     out.append("- Same-day candidates: " + (", ".join(h1) if h1 else "none") + ".")
-    if power:
-        under = [r for r in config.ROLES if power["roles"][r]["underpowered"]]
-        out.append("- Power: the smallest 20-day ripple the data reliably detects is "
-                   + ", ".join(f"{_mde(power, r)} ({r})" for r in config.ROLES)
-                   + (f"; underpowered (> {config.MDE_LIMIT * 100:.1f}%): {', '.join(under)}." if under
-                      else "; every role is adequately powered."))
-    flagged = [r for r in config.ROLES if not res["H3"][r]["ok_exploration"]]
+    under = [r for r in config.ROLES if power["roles"][r]["underpowered"]]
+    border = [r for r in config.ROLES if power["roles"][r].get("borderline")]
+    out.append("- Power: the smallest 20-day ripple the data reliably detects is "
+               + ", ".join(f"{_mde(power, r)} ({r})" for r in config.ROLES)
+               + (f"; underpowered (> {config.MDE_LIMIT * 100:.1f}%): {', '.join(under)}" if under
+                  else "; every role passes the power rule")
+               + (f"; power borderline (see the power table): {', '.join(border)}." if border else "."))
+    flagged = [r for r in config.ROLES if res["H3"][r]["applies"] and res["H3"][r]["status_exploration"] == "flag"]
+    untest = [r for r in config.ROLES if res["H3"][r]["applies"] and res["H3"][r]["status_exploration"] == "untestable"]
     if flagged:
         out.append(f"- Pre-trend flag (B moved before A's shock): {', '.join(flagged)} — possible shared "
                    "information rather than transmission.")
+    if untest:
+        out.append(f"- Pre-trend could not be tested for: {', '.join(untest)}.")
     out.append("- None of this is proof yet. Exploration only nominates candidates; the verdict comes from the "
                "locked 2022+ holdout.")
     return out
@@ -217,7 +292,8 @@ def _h2_rows_exploration(res: dict) -> list[list]:
             h = res["H2"][f"{role}|{w}"]
             rows.append([role, WLABEL[w], _pct(h["mean"]), _t(h["t"]), _p(h["p_two"]), _yn(h["holm"]),
                          _yn(_fin(h["t"]) and abs(h["t"]) > config.T_BAR),
-                         "**PASS**" if h["pass_exploration"] else "fail"])
+                         "**PASS**" if h["pass_exploration"] else "fail",
+                         _t(h.get("t_2w")) + (" ⚠" if h.get("flag_2w") else "")])
     return rows
 
 
@@ -228,11 +304,11 @@ def _h4_rows(table: dict) -> list[list]:
             c = table[role][w]
             ci = c.get("ci_boot") or [math.nan, math.nan]
             rows.append([role, WLABEL[w], _pct(c["mean"]), _t(c["t"]), _t(c.get("t_week")),
-                         f"{_pct(ci[0])} to {_pct(ci[1])}", c["n"], c["g"]])
+                         f"{_pct(ci[0])} to {_pct(ci[1])}", _t(c.get("t_2w")), c["n"], c["g"]])
     return rows
 
 
-def _variant_rows(variants: dict, key: str) -> list[list]:
+def _variant_rows(variants: dict, period: str) -> list[list]:
     rows = []
     for variant, rule, label in config.ROBUSTNESS_RUNS:
         res = variants.get(label)
@@ -243,8 +319,11 @@ def _variant_rows(variants: dict, key: str) -> list[list]:
             cells = []
             for w in config.SLOW_WINDOWS:
                 h = res["H2"][f"{role}|{w}"]
-                ok = h.get(key)
-                cells.append(f"{_mt(h)}{' ✓' if ok else ''}")
+                if period == "exploration":
+                    cells.append(f"{_mt(h)}{' ✓' if h.get('pass_exploration') else ''}")
+                else:
+                    cells.append(f"{_pct(h.get('direction_mean'))} in dir. (p {_p(h.get('p_one'))})"
+                                 f"{' ✓' if h.get('pass') else ''}")
             rows.append([label, role, *cells])
     return rows
 
@@ -258,12 +337,39 @@ def _subset_rows(rob: dict) -> list[list]:
     return rows
 
 
-def render_exploration(res: dict, power: dict | None, variants: dict, figure: str, data_notes: list[str]) -> str:
+def _power_rows(power: dict) -> list[list]:
+    rows = []
+    for r in config.ROLES:
+        pr = power["roles"][r]
+        w = pr["w20"]
+        conc = w.get("concentration", {})
+        rows.append([r, pr["n_events"], pr["n_dates"], _pct(w["se"], signed=False),
+                     *[_mde(power, r, x) for x in config.SLOW_WINDOWS],
+                     _pct(w.get("mde_ucb80"), signed=False), _pct(w.get("mde_twoway"), signed=False),
+                     f"{conc.get('g_eff_events', math.nan):.0f} / {conc.get('g_eff_variance', math.nan):.0f}",
+                     _yn(pr["underpowered"]), "; ".join(pr.get("borderline_reasons", [])) or "—"])
+    return rows
+
+
+def _projection_rows(power: dict) -> list[list]:
+    rows = []
+    for r in config.ROLES:
+        proj = power["roles"][r]["w20"].get("holdout_projection")
+        if not proj:
+            continue
+        rows.append([r, proj["t_explore_days"], proj["t_holdout_days"], _pct(proj["mde_holdout_floor"], False),
+                     _pct(proj["mde_joint"], False) if _fin(proj["mde_joint"]) else "> 3.00%",
+                     _pct(proj["joint_power_at_limit"], False)])
+    return rows
+
+
+def render_exploration(res: dict, power: dict, variants: dict, figure: str, data_notes: list[str],
+                       integrity: list[str]) -> str:
     L = [f"# Domino study — exploration readout ({config.EXPLORATION[0][:4]}–{config.EXPLORATION[1][:4]})", "",
          f"Generated {dt.date.today().isoformat()} from code commit `{_commit()}` under the frozen "
-         "pre-registration (`docs/superpowers/specs/2026-10-18-domino-study-design.md`). "
-         f"The holdout ({config.HOLDOUT_START[:4]}+) stays **LOCKED** until this readout is committed; its commit "
-         "hash is then written to the holdout marker.", "",
+         "pre-registration (`docs/superpowers/specs/2026-10-18-domino-study-design.md`, incl. its §13 log). "
+         f"The holdout ({config.HOLDOUT_START[:4]}+) stays **LOCKED** until this readout is committed; the gate then "
+         "checks the integrity table at the end against the research store.", "",
          "Question: when one company has a large price shock of its own, do its graph-linked suppliers, customers "
          "and competitors move more than matched unlinked look-alikes, on the same day or slowly afterwards? "
          "Ripple = s·[CAR(B) − mean CAR(look-alikes)], so a positive ripple means B followed A's direction.", "",
@@ -271,78 +377,104 @@ def render_exploration(res: dict, power: dict | None, variants: dict, figure: st
          "## Verdict (provisional — exploration only)", "",
          _table(["Role", "Power: 20-day MDE", "Same-day (H1)", "Slow-ripple candidates (H2)", "Pre-trend (H3)",
                  "Status"], _verdict_rows_exploration(res, power)), "",
-         "## Data", "", *data_notes, "",
-         "## Power check (spec §5, run before any hypothesis test)", "",
-         "Smallest synthetic 20-day ripple detected in 80% of date-bootstrap replicates under the full exploration "
-         f"rule; above {config.MDE_LIMIT * 100:.1f}% a role is underpowered / inconclusive, never 'no effect'.", ""]
-    if power:
-        rows = [[r, power["roles"][r]["n_events"], power["roles"][r]["n_dates"],
-                 _pct(power["roles"][r]["w20"]["se"], signed=False),
-                 *[_mde(power, r, w) for w in config.SLOW_WINDOWS],
-                 _yn(power["roles"][r]["underpowered"])] for r in config.ROLES]
-        L += [_table(["Role", "Events", "Dates", "SE [+1,+20]", "MDE [+1,+5]", "MDE [+1,+20]", "MDE [+1,+60]",
-                      "Underpowered"], rows)]
-    else:
-        L += ["Power check not found in the store."]
-    L += ["", "## H1 — same-day ripple", "",
+         "## Data", "", *data_notes]
+    emb = res["counts"].get("embargoed")
+    if emb:
+        L += ["- Embargo: exploration windows ending after 2021-12-31 are not measured (events per window): "
+              + "; ".join(f"{r} " + ", ".join(f"{WLABEL[w]} {emb[r][w]}" for w in config.SLOW_WINDOWS)
+                          for r in config.ROLES) + "."]
+    L += ["", "## Power check (spec §5, run before any hypothesis test)", "",
+          "Smallest synthetic 20-day ripple detected in 80% of date-bootstrap replicates under the full exploration "
+          f"rule; above {config.MDE_LIMIT * 100:.1f}% a role is underpowered / inconclusive, never 'no effect'. The "
+          "80%-upper-bound and two-way MDEs, the effective number of dates (by events / by variance) and the "
+          "borderline notes are descriptive caveats, fixed before any outcome was measured.", "",
+          _table(["Role", "Events", "Dates", "SE [+1,+20]", "MDE [+1,+5]", "MDE [+1,+20]", "MDE [+1,+60]",
+                  "MDE upper bound", "MDE two-way", "Effective dates", "Underpowered", "Borderline because"],
+                 _power_rows(power)), ""]
+    proj = _projection_rows(power)
+    if proj:
+        L += ["Projected holdout power ([+1,+20], calendar arithmetic only — no holdout data): the ripple the "
+              "holdout leg can confirm (one-sided p < 0.05 and the 50 bp floor), the ripple the full exploration × "
+              "holdout chain detects 80% of the time, and the chain's power at 1.5%.", "",
+              _table(["Role", "Exploration days", "Holdout days", "Holdout-leg MDE", "Full-chain MDE",
+                      "Full-chain power at 1.5%"], proj), ""]
+    L += ["## H1 — same-day ripple", "",
           f"Pass in exploration: mean Ripple[0,0] > 0 with t > {config.T_BAR:.0f} (date-clustered).", "",
           _table(["Role", "Mean [0,0]", "t", "Exploration"],
                  [[r, _pct(res["H1"][r]["mean"]), _t(res["H1"][r]["t"]),
                    "candidate" if res["H1"][r]["pass_exploration"] else "fail"] for r in config.ROLES]), "",
           "## H2 — slow ripple (primary family: 3 roles × 3 windows)", "",
           f"Pass in exploration: Holm at family α = {config.FAMILY_ALPHA} on two-sided date-clustered p, and "
-          f"|t| > {config.T_BAR:.0f}. Passing tests go to the holdout in their exploration direction.", "",
+          f"|t| > {config.T_BAR:.0f}. Passing tests go to the holdout in their exploration direction. The last "
+          "column is an exploratory diagnostic (t clustered by date AND linked firm; ⚠ = a pass below |t| = 3).", "",
           _table(["Role", "Window", "Mean", "t (date)", "p two-sided", "Holm", f"|t| > {config.T_BAR:.0f}",
-                  "Exploration"], _h2_rows_exploration(res)), "",
+                  "Exploration", "t two-way"], _h2_rows_exploration(res)), "",
           "## H3 — pre-trend", "",
-          f"Ripple[-5,-1] must have |t| < {config.PRETREND_T:.0f}; otherwise the role is flagged as possible "
-          "shared information rather than transmission.", "",
-          _table(["Role", "Mean [-5,-1]", "t", "OK"],
+          f"Ripple[-5,-1] must have |t| < {config.PRETREND_T:.0f} for any role that passes H1 or H2; otherwise the "
+          "role is flagged as possible shared information rather than transmission. 'Could not be tested' is never "
+          "read as ok.", "",
+          _table(["Role", "Mean [-5,-1]", "t", "Status", "Required"],
                  [[r, _pct(res["table"][r]["pre"]["mean"]), _t(res["H3"][r]["t_pre"]),
-                   _yn(res["H3"][r]["ok_exploration"])] for r in config.ROLES]), "",
+                   _h3_text(res["H3"][r]["status_exploration"], res["H3"][r]["t_pre"]),
+                   _yn(res["H3"][r]["applies"])] for r in config.ROLES]), "",
           "## H4 — direction by role (descriptive)", "",
           "Every role × window, equal-weighted across events. t (date) is the primary clustering; t (week) and "
-          "the date-block bootstrap 95% CI are robustness.", "",
-          _table(["Role", "Window", "Mean", "t (date)", "t (week)", "95% CI (bootstrap)", "Events", "Dates"],
-                 _h4_rows(res["table"])), "",
+          "the date-block bootstrap 95% CI are robustness; t two-way is an exploratory diagnostic.", "",
+          _table(["Role", "Window", "Mean", "t (date)", "t (week)", "95% CI (bootstrap)", "t two-way", "Events",
+                  "Dates"], _h4_rows(res["table"])), "",
           "## H5 — first-domino drift (descriptive)", "",
           "s·CAR(A) after the shock day: positive = continuation, negative = reversal.", "",
           _table(["Window", "Mean s·CAR(A)", "t (date)", "Shocks"],
                  [[WLABEL[w], _pct(c["mean"]), _t(c["t"]), c["n"]] for w, c in res["H5"].items()]), "",
           "## H6 — what makes ripples bigger (hypothesis-generating, exploration only)", "",
           "A pattern here can only be claimed if it is registered in spec §13 before the holdout opens and then "
-          "confirmed in the holdout.", ""]
+          f"confirmed in the holdout. {res['H6']['_notes']['b_size_rule']}; events in thinner years: "
+          f"{res['H6']['_notes']['b_size_excluded_events']}.", ""]
     for split, groups in res["H6"].items():
+        if split.startswith("_"):
+            continue
         rows = []
         for g, tab in groups.items():
             for r in config.ROLES:
                 rows.append([g, r, *[_mt(tab[r][w]) for w in config.SLOW_WINDOWS], tab[r]["w20"]["n"]])
         L += [f"### {split}", "", _table(["Group", "Role", "[+1,+5]", "[+1,+20]", "[+1,+60]", "Events"], rows), ""]
+    rob = res["robustness"]
+    r10 = rob["r10_ex_b_coshock"]
     L += ["## Transmission coefficient γ", "",
           "OLS of [CAR(B) − mean CAR(look-alikes)] on AR(A, 0), clustered by date: the share of A's shock that "
           "shows up in B beyond what look-alikes show.", "",
           _table(["Role", "Window", "γ", "t", "Events"],
-                 [[r, WLABEL[w], _t(g["slope"]), _t(g["t"]), g["n"]]
+                 [[r, WLABEL[w], _g(g["slope"]), _t(g["t"]), g["n"]]
                   for r in config.ROLES for w, g in res["gamma"][r].items()]), "",
           "## Robustness (spec §8 — reported, never changes the verdict)", "",
-          "### R1–R3: model and shock-rule variants (H2 family re-run; ✓ = passes the exploration rule)", "",
-          _table(["Check", "Role", "[+1,+5]", "[+1,+20]", "[+1,+60]"],
-                 _variant_rows(variants, "pass_exploration")), "",
+          "### R1–R3: model and shock-rule variants (H2 family re-run; ✓ = passes the exploration rule in that "
+          "variant)", "",
+          _table(["Check", "Role", "[+1,+5]", "[+1,+20]", "[+1,+60]"], _variant_rows(variants, "exploration")), "",
           "### R4, R5, R7, R8: subsets and K", "",
-          _table(["Check", "Role", "[+1,+5]", "[+1,+20]", "[+1,+60]", "Events [+1,+20]"],
-                 _subset_rows(res["robustness"])), "",
-          "### R9: raw linked and control moves (how much is industry-wide)", "",
+          f"R8 counts a link carrying both LLM and manual provenance in both subsets ({rob['r8_overlap_events']} "
+          "events).", "",
+          _table(["Check", "Role", "[+1,+5]", "[+1,+20]", "[+1,+60]", "Events [+1,+20]"], _subset_rows(rob)), "",
+          "### R9: raw linked and control moves on the ripple's own sample (how much is industry-wide)", "",
           _table(["Role", "Window", "Linked B s·CAR", "Look-alikes s·CAR", "Ripple"],
-                 [[r, WLABEL[w], _mt(res["robustness"]["r9_raw_moves"]["linked_b"][r][w]),
-                   _mt(res["robustness"]["r9_raw_moves"]["controls"][r][w]), _mt(res["table"][r][w])]
+                 [[r, WLABEL[w], _mt(rob["r9_raw_moves"]["linked_b"][r][w]),
+                   _mt(rob["r9_raw_moves"]["controls"][r][w]), _mt(res["table"][r][w])]
                   for r in config.ROLES for w in ("d0",) + config.SLOW_WINDOWS]), "",
-          "## Figures", "", "Average cumulative abnormal return paths, day −5 to +60 (exploration events).", "",
-          f"![CAR paths]({figure})", ""]
+          "### R10 (exploratory, not pre-registered): without events where B had its own shock in [e−10, e]", "",
+          "Share of events affected: " + ", ".join(f"{r} {_pct(r10['share_coshock'][r], False)}"
+                                                   for r in config.ROLES) + ".", "",
+          _table(["Role", "[+1,+5]", "[+1,+20]", "[+1,+60]", "Events [+1,+20]"],
+                 [[r, *[_mt(r10["table"][r][w]) for w in config.SLOW_WINDOWS], r10["table"][r]["w20"]["n"]]
+                  for r in config.ROLES]), "",
+          "## Figures", "", "Average cumulative abnormal return paths, day −5 to +60, on events with a complete "
+          "60-day ripple (exploration).", "", f"![CAR paths]({figure})", "",
+          "## Integrity", "",
+          "sha256 of the exploration results and power files this readout was written from. The holdout gate "
+          "compares these against the research store before any holdout event is built.", "", *integrity, ""]
     return "\n".join(L)
 
 
 # ---------------------------------------------------------------------------------------------- holdout
-def _summary_holdout(expl: dict, hold: dict) -> list[str]:
+def _summary_holdout(expl: dict, hold: dict, power: dict) -> list[str]:
     title, meaning = OVERALL[hold["verdict"]["overall"]]
     out = [f"- **{title}.** {meaning}"]
     cands = [k for k, v in expl["H2"].items() if v["pass_exploration"]]
@@ -350,30 +482,46 @@ def _summary_holdout(expl: dict, hold: dict) -> list[str]:
         h = hold["H2"][k]
         role, w = k.split("|")
         if h["pass"]:
-            out.append(f"- {role} {WLABEL[w]}: confirmed out of sample — {_pct(h['mean'])} in the exploration "
-                       f"direction (one-sided p {_p(h['p_one'])}), above the {config.FLOOR * 100:.1f}% floor, and "
-                       "beyond what random same-sector links produce.")
+            out.append(f"- {role} {WLABEL[w]}: confirmed out of sample — {_pct(h['direction_mean'])} in the "
+                       f"exploration direction (one-sided p {_p(h['p_one'])}), above the {config.FLOOR * 100:.1f}% "
+                       "floor, and beyond what random same-sector links produce."
+                       + (" Caution: the exploratory two-way test does not confirm it." if h.get("flag_2w") else ""))
         else:
-            why = [n for n, ok in (("did not replicate", h["replicates"]),
-                                   (f"below the {config.FLOOR * 100:.1f}% floor", h["floor_ok"]),
-                                   ("did not beat the placebo", h["beats_placebo"] is not False)) if not ok]
-            out.append(f"- {role} {WLABEL[w]}: not confirmed ({'; '.join(why)}); holdout mean {_pct(h['mean'])}.")
+            pl = h.get("placebo", {})
+            reasons = []
+            if not h["replicates"]:
+                reasons.append("did not replicate")
+            if not h["floor_ok"]:
+                reasons.append(f"below the {config.FLOOR * 100:.1f}% floor")
+            if pl.get("run") and not pl.get("evaluable", True):
+                reasons.append(pl.get("reason") or "placebo not evaluable")
+            elif h["beats_placebo"] is False and pl.get("run"):
+                reasons.append("did not beat the placebo")
+            out.append(f"- {role} {WLABEL[w]}: not confirmed ({'; '.join(reasons) or 'see the H2 table'}); holdout "
+                       f"mean {_pct(h['direction_mean'])} in the exploration direction.")
     if not cands:
         out.append("- No slow-ripple candidate came out of exploration, so the holdout had nothing to confirm.")
     for r in config.ROLES:
         if hold["H1"][r]["pass_exploration"]:
             out.append(f"- Same-day {r}: {'confirmed' if hold['H1'][r]['pass'] else 'not confirmed'} "
                        f"(holdout mean {_pct(hold['H1'][r]['mean'])}).")
-    flagged = [r for r in config.ROLES if not hold["H3"][r]["ok"]]
+    for r in config.ROLES:
+        d = hold["verdict"]["details"][r]
+        if d["borderline"] and hold["verdict"]["by_role"][r] in ("no_ripple", "same_day_only"):
+            out.append(f"- {r}: '{ROLE_STATUS[hold['verdict']['by_role'][r]]}' with power borderline — "
+                       + "; ".join(d["borderline_reasons"]) + ".")
+    flagged = [r for r in config.ROLES if hold["H3"][r]["applies"] and hold["H3"][r]["status"] == "flag"]
+    untest = [r for r in config.ROLES if hold["H3"][r]["applies"] and hold["H3"][r]["status"] == "untestable"]
     if flagged:
         out.append(f"- Pre-trend flag in at least one period: {', '.join(flagged)} — any ripple there may be "
                    "shared information rather than transmission.")
+    if untest:
+        out.append(f"- Pre-trend could not be tested for: {', '.join(untest)}.")
     out.append("- Research only: close-to-close returns, no trading costs beyond the 50 bp floor, no news latency.")
     return out
 
 
-def render_holdout(expl: dict, hold: dict, power: dict | None, variants: dict, figure: str,
-                   data_notes: list[str]) -> str:
+def render_holdout(expl: dict, hold: dict, power: dict, variants: dict, figure: str, data_notes: list[str]) -> str:
     v = hold["verdict"]
     title, meaning = OVERALL[v["overall"]]
     chain = []
@@ -381,47 +529,86 @@ def render_holdout(expl: dict, hold: dict, power: dict | None, variants: dict, f
         for w in config.SLOW_WINDOWS:
             h = hold["H2"][f"{role}|{w}"]
             pl = h["placebo"]
+            if pl.get("run"):
+                plc = (f"{_pct(pl.get('p95'))} (n {pl.get('n_finite')}/{pl.get('n')}"
+                       + ("" if pl.get("evaluable") else ", not evaluable") + ")")
+            else:
+                plc = "not run"
             chain.append([role, WLABEL[w], _yn(h["pass_exploration"]), "+" if h["direction"] > 0 else "−",
-                          _pct(h["mean"]), _t(h["t"]), _p(h["p_one"]), _yn(h["replicates"]), _yn(h["floor_ok"]),
-                          _pct(pl.get("p95")) if pl.get("run") else "not run", _yn(h["beats_placebo"]),
-                          "**PASS**" if h["pass"] else "fail"])
+                          _pct(h["direction_mean"]), _t(h["t"]), _p(h["p_one"]), _yn(h["replicates"]),
+                          _yn(h["floor_ok"]), plc, _yn(h["beats_placebo"]),
+                          "**PASS**" if h["pass"] else ("inconclusive" if h.get("unevaluable") else "fail"),
+                          _p(h.get("p_one_2w")) + (" ⚠" if h.get("flag_2w") else "")])
+    diag = []
+    for key, h in hold["H2"].items():
+        pl = h["placebo"]
+        if pl.get("run"):
+            diag.append([key.replace("|", " "), pl.get("n_finite"), f"{pl.get('median_coverage', 0):.0f} / "
+                         f"{pl.get('real_count')}", f"{pl.get('pool_median', math.nan):.0f} (min {pl.get('pool_min')})",
+                         _pct(pl.get("dropped_link_share"), False), _pct(pl.get("p50")), _pct(pl.get("p95")),
+                         _t(pl.get("sd_ratio")) + (" ⚠" if pl.get("sd_ratio_flag") else ""),
+                         pl.get("reason") or "ok"])
+    proj = {r: power["roles"][r]["w20"].get("holdout_projection") or {} for r in config.ROLES}
     L = [f"# Domino study — holdout readout ({config.HOLDOUT_START[:4]}+)", "",
          f"Generated {dt.date.today().isoformat()} from code commit `{_commit()}`. The exploration readout "
-         "(`readout-exploration.md`) was committed before any holdout event was built.", "",
-         "## Plain-language summary", "", *_summary_holdout(expl, hold), "",
+         "(`readout-exploration.md`) was committed before any holdout event was built, and the gate verified its "
+         "integrity table against the research store.", "",
+         "## Plain-language summary", "", *_summary_holdout(expl, hold, power), "",
          "## Verdict (spec §7)", "", f"**Overall: {title}.** {meaning}", "",
-         _table(["Role", "Verdict", "Power: 20-day MDE"],
-                [[r, ROLE_STATUS[v["by_role"][r]], _mde(power, r)] for r in config.ROLES]), "",
+         _table(["Role", "Verdict", "Power: 20-day MDE", "Full-chain power at 1.5% (projected)", "Pre-trend"],
+                [[r, ROLE_STATUS[v["by_role"][r]], _mde(power, r) + _power_note(power, r),
+                  _pct(proj[r].get("joint_power_at_limit"), False), _h3_text(hold["H3"][r]["status"],
+                                                                            hold["H3"][r]["t_pre"])]
+                 for r in config.ROLES]), "",
          "## Data", "", *data_notes, "",
          "## H2 — slow ripple, holdout chain", "",
          "A test passes only if all hold: it passed exploration; the holdout has the same sign with one-sided "
          f"p < {config.HOLDOUT_ALPHA}; the holdout mean is at least {config.FLOOR * 100:.1f}% in that direction; "
-         "and it beats the 95th percentile of the placebo (random same-sector B, never linked to A).", "",
-         _table(["Role", "Window", "Exploration pass", "Direction", "Holdout mean", "t", "p one-sided",
-                 "Replicates", f"≥ {config.FLOOR * 100:.1f}%", "Placebo 95th pct", "Beats placebo", "Result"],
-                chain), "",
-         "## H1 — same-day ripple, holdout", "",
-         _table(["Role", "Exploration", "Holdout mean [0,0]", "t", "p one-sided", "Result"],
-                [[r, "candidate" if hold["H1"][r]["pass_exploration"] else "fail", _pct(hold["H1"][r]["mean"]),
-                  _t(hold["H1"][r]["t"]), _p(hold["H1"][r]["p_one"]),
-                  "**PASS**" if hold["H1"][r]["pass"] else "fail"] for r in config.ROLES]), "",
-         "## H3 — pre-trend in both periods", "",
-         _table(["Role", "t exploration", "t holdout", "OK"],
-                [[r, _t(expl["H3"][r]["t_pre"]), _t(hold["H3"][r]["t_pre"]), _yn(hold["H3"][r]["ok"])]
-                 for r in config.ROLES]), "",
-         "## H4 — direction by role, holdout (descriptive)", "",
-         _table(["Role", "Window", "Mean", "t (date)", "t (week)", "95% CI (bootstrap)", "Events", "Dates"],
-                _h4_rows(hold["table"])), "",
-         "## Robustness (spec §8 — reported, never changes the verdict)", "",
-         f"### R6: holdout restricted to {config.HOLDOUT_LATE_START[:4]} onward", "",
-         _table(["Role", "[+1,+5]", "[+1,+20]", "[+1,+60]", "Events [+1,+20]"],
-                [[r, *[_mt(hold["robustness"]["r6_holdout_2024_on"][r][w]) for w in config.SLOW_WINDOWS],
-                  hold["robustness"]["r6_holdout_2024_on"][r]["w20"]["n"]] for r in config.ROLES]), "",
-         "### R1–R3: model and shock-rule variants in the holdout (✓ = replicates and clears the floor; no "
-         "placebo for variants)", "",
-         _table(["Check", "Role", "[+1,+5]", "[+1,+20]", "[+1,+60]"], _variant_rows(variants, "pass")), "",
-         "## Figures", "", "Average cumulative abnormal return paths, day −5 to +60 (holdout events).", "",
-         f"![CAR paths]({figure})", ""]
+         "and it beats the 95th percentile of the placebo (each linked firm relabelled to one random same-sector "
+         "firm that is not linked to the shocked firm). Means are shown in the exploration direction. The last "
+         "column is the exploratory two-way (date × linked firm) one-sided p (⚠ = a pass it does not confirm).", "",
+         _table(["Role", "Window", "Exploration pass", "Direction", "Holdout mean (in direction)", "t",
+                 "p one-sided", "Replicates", f"≥ {config.FLOOR * 100:.1f}%", "Placebo 95th pct (in direction)",
+                 "Beats placebo", "Result", "p two-way"], chain), ""]
+    if diag:
+        L += ["Placebo diagnostics (evaluable only with ≥ 90% finite permutations and median coverage ≥ 50% of the "
+              "real events; SD ratio = placebo SD / real date-clustered SE, ⚠ below 0.8):", "",
+              _table(["Test", "Finite", "Coverage", "Pool size", "Links dropped", "p50", "p95", "SD ratio",
+                      "Evaluable"], diag), ""]
+    L += ["## H1 — same-day ripple, holdout", "",
+          _table(["Role", "Exploration", "Holdout mean [0,0]", "t", "p one-sided", "Result"],
+                 [[r, "candidate" if hold["H1"][r]["pass_exploration"] else "fail", _pct(hold["H1"][r]["mean"]),
+                   _t(hold["H1"][r]["t"]), _p(hold["H1"][r]["p_one"]),
+                   "**PASS**" if hold["H1"][r]["pass"] else "fail"] for r in config.ROLES]), "",
+          "## H3 — pre-trend in both periods", "",
+          _table(["Role", "t exploration", "t holdout", "Status", "Required"],
+                 [[r, _t(expl["H3"][r]["t_pre"]), _t(hold["H3"][r]["t_pre"]),
+                   _h3_text(hold["H3"][r]["status"], hold["H3"][r]["t_pre"]), _yn(hold["H3"][r]["applies"])]
+                  for r in config.ROLES]), "",
+          "## H4 — direction by role, holdout (descriptive)", "",
+          _table(["Role", "Window", "Mean", "t (date)", "t (week)", "95% CI (bootstrap)", "t two-way", "Events",
+                  "Dates"], _h4_rows(hold["table"])), "",
+          "## H5 — first-domino drift, holdout (descriptive)", "",
+          _table(["Window", "Mean s·CAR(A)", "t (date)", "Shocks"],
+                 [[WLABEL[w], _pct(c["mean"]), _t(c["t"]), c["n"]] for w, c in hold.get("H5", {}).items()]), "",
+          "## Robustness (spec §8 — reported, never changes the verdict)", "",
+          f"### R6: holdout restricted to {config.HOLDOUT_LATE_START[:4]} onward", "",
+          _table(["Role", "[+1,+5]", "[+1,+20]", "[+1,+60]", "Events [+1,+20]"],
+                 [[r, *[_mt(hold["robustness"]["r6_holdout_2024_on"][r][w]) for w in config.SLOW_WINDOWS],
+                   hold["robustness"]["r6_holdout_2024_on"][r]["w20"]["n"]] for r in config.ROLES]), "",
+          "### R1–R3: model and shock-rule variants in the holdout (✓ = the variant passed its own exploration "
+          "rule, replicates one-sided p < 0.05 and clears the 50 bp floor; no placebo)", "",
+          _table(["Check", "Role", "[+1,+5]", "[+1,+20]", "[+1,+60]"], _variant_rows(variants, "holdout")), ""]
+    r10 = hold["robustness"].get("r10_ex_b_coshock")
+    if r10:
+        L += ["### R10 (exploratory): without events where B had its own shock in [e−10, e]", "",
+              "Share of events affected: " + ", ".join(f"{r} {_pct(r10['share_coshock'][r], False)}"
+                                                       for r in config.ROLES) + ".", "",
+              _table(["Role", "[+1,+5]", "[+1,+20]", "[+1,+60]", "Events [+1,+20]"],
+                     [[r, *[_mt(r10["table"][r][w]) for w in config.SLOW_WINDOWS], r10["table"][r]["w20"]["n"]]
+                      for r in config.ROLES]), ""]
+    L += ["## Figures", "", "Average cumulative abnormal return paths, day −5 to +60, on events with a complete "
+          "60-day ripple (holdout).", "", f"![CAR paths]({figure})", ""]
     return "\n".join(L)
 
 
@@ -437,6 +624,8 @@ def run(period: str = "exploration", out_dir: str | Path | None = None) -> dict:
     if expl is None:
         raise FileNotFoundError("results_exploration.json missing: run `measure --period exploration` first")
     power = _load(store / "power.json")
+    if power is None:
+        raise FileNotFoundError("power.json missing: the readout cannot state power (spec §5)")
     variants = {label: _load(store / f"results_{period}{config.variant_suffix(v, r)}.json")
                 for v, r, label in config.ROBUSTNESS_RUNS}
     variants = {k: x for k, x in variants.items() if x is not None}
@@ -444,7 +633,8 @@ def run(period: str = "exploration", out_dir: str | Path | None = None) -> dict:
     fig_rel = f"figures/paths-{period}.png"
     plot_paths(paths, out / fig_rel, f"Domino study — average CAR paths ({period})")
     if period == "exploration":
-        text = render_exploration(expl, power, variants, fig_rel, _data_notes(store, expl["counts"]))
+        text = render_exploration(expl, power, variants, fig_rel, _data_notes(store, expl["counts"]),
+                                  integrity_lines(store))
     else:
         hold = _load(store / "results_holdout.json")
         if hold is None:
