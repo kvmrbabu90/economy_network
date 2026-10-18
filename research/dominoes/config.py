@@ -72,6 +72,14 @@ def normalize_sector(sector: str | None) -> str | None:
 
 
 MODEL_VARIANTS = ("market", "sector_etf", "ff6")       # primary, robustness 1, robustness 2
+PRIMARY_RUN = ("market", "sigma3")
+ROBUSTNESS_RUNS = (                                     # spec §8 checks 1-3: each re-runs shocks -> measure
+    ("sector_etf", "sigma3", "R1 sector-ETF excess return"),
+    ("ff6", "sigma3", "R2 Fama-French 5 factors + momentum"),
+    ("market", "sigma4", "R3a 4σ shocks"),
+    ("market", "top1pct", "R3b top 1% |AR| per firm"),
+)
+READOUT_PATH = "docs/research/domino-study/readout-exploration.md"   # what `unlock` requires in the commit
 
 
 def variant_suffix(variant: str = "market", rule: str = "sigma3") -> str:

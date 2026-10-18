@@ -87,12 +87,13 @@ def power(events: pd.DataFrame, n_boot: int = config.POWER_BOOT_N, seed: int = c
     return out
 
 
-def run(period: str = "exploration", variant: str = "market", rule: str = "sigma3") -> dict:
+def run(period: str = "exploration", variant: str = "market", rule: str = "sigma3",
+        n_boot: int = config.POWER_BOOT_N) -> dict:
     if period != "exploration":
         raise ValueError("the power check runs on exploration data only (spec §5)")
     sfx = config.variant_suffix(variant, rule)
     events = io.read_frame(f"events_exploration{sfx}", be.event_schema())
-    res = power(events)
+    res = power(events, n_boot=n_boot)
     res["variant"], res["rule"] = variant, rule
     path = io.store_dir() / f"power{sfx}.json"
     path.write_text(json.dumps(res, indent=2), encoding="utf-8")

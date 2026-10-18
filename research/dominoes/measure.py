@@ -302,18 +302,20 @@ def compute_paths(panel, model, events, controls, shocks, period: str, k: int = 
 
 
 def run(period: str = "exploration", variant: str = "market", rule: str = "sigma3",
-        boot_n: int = config.BOOT_N, placebo_n: int = config.PLACEBO_N) -> dict:
+        boot_n: int = config.BOOT_N, placebo_n: int = config.PLACEBO_N,
+        panel: rt.Panel | None = None, model: rt.AbnormalModel | None = None) -> dict:
     if period not in ("exploration", "holdout"):
         raise ValueError(f"unknown period {period!r}")
     if period == "holdout":
         io.require_holdout_unlocked()
-    from research.dominoes import context
     sfx = config.variant_suffix(variant, rule)
     store = io.store_dir()
     events = io.read_frame(f"events_{period}{sfx}", be.event_schema())
     controls = io.read_frame(f"controls_{period}{sfx}", be.CONTROL_SCHEMA)
     shocks = io.read_frame(f"shocks{sfx}", bs.SHOCK_SCHEMA)
-    panel, model = context.load(variant)
+    if panel is None or model is None:
+        from research.dominoes import context
+        panel, model = context.load(variant)
     if period == "exploration":
         res = analyze_exploration(events, shocks, boot_n)
     else:
