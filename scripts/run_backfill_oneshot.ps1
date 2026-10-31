@@ -6,7 +6,7 @@
 # mature +60d today. The default window (May 20 – Jul 18) targets exactly those, so every event's
 # full panel is computed in this run and the later prune of the (now-aged) events loses nothing —
 # signal_outcomes, once written, is never pruned. (Newer events' long horizons are handled by the
-# ongoing path: the cycle now retains events 95 days via PRUNE_OLDER_THAN_DAYS, long enough for
+# ongoing path: the cycle retains events ~10 years (PRUNE_OLDER_THAN_DAYS=3650), far longer than
 # +60d to mature, and the daily validation captures them as they do.)
 #
 # Pauses the hourly "So What V2 cycle" for the duration so a mid-run prune can't delete these
@@ -18,7 +18,7 @@ $repo = 'C:\Users\konda\OneDrive\econgraph_repo'
 $env:ECONGRAPH_DB = 'C:\Users\Public\econgraph\econgraph.db'
 $env:GKG_CACHE_DIR = 'C:\Users\Public\econgraph\gkg_cache'
 $env:PYTHONIOENCODING = 'utf-8'
-$env:PRUNE_OLDER_THAN_DAYS = '250'   # belt-and-suspenders if a cycle still fires somehow
+$env:PRUNE_OLDER_THAN_DAYS = '3650'  # same ~10-year retention as the hourly cycle; never lower it here
 Set-Location $repo
 $log = "$repo\data\backfill.log"
 

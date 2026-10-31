@@ -33,6 +33,7 @@ import yaml
 
 from schema.models import CandidateEdge, EdgeType, Provenance
 from pipeline.sections import SectionResult, load_filing_text
+from api import claude_cli
 
 
 log = logging.getLogger("extract.llm")
@@ -163,7 +164,7 @@ class ClaudeCLIExtractor:
 
     def extract(self, prompt: str) -> tuple[Optional[list[dict]], dict[str, Any]]:
         binary = self._resolve_binary()
-        cmd = [binary, "-p", prompt, "--output-format", "json", "--tools", ""]
+        cmd = claude_cli.build_argv(binary, prompt)
         # IMPORTANT: stdin=DEVNULL avoids the "no stdin data received in 3s"
         # warning the CLI emits when run non-interactively.
         try:

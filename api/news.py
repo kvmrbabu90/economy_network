@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from api import claude_cli
 
 log = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ def _claude_call(prompt: str, timeout: int = 120) -> str:
     """
     import tempfile
     binary = _resolve_claude_binary()
-    cmd = [binary, "-p", prompt, "--output-format", "json"]
+    cmd = claude_cli.build_argv(binary, prompt)
     t0 = time.time()
     try:
         with tempfile.TemporaryDirectory() as tmpdir:

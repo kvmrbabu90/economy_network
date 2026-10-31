@@ -39,6 +39,7 @@ from typing import Any, Optional
 
 import urllib.request
 import urllib.error
+from api import claude_cli
 
 log = logging.getLogger(__name__)
 
@@ -181,9 +182,9 @@ def _claude_call(prompt: str) -> str:
     """
     import tempfile
     binary = _resolve_claude_binary()
-    # --tools "": the CLI gets NO tools (no Bash, file or web access). Prompts embed untrusted news
-    # text, so a tool-enabled runner could be steered into running commands on this machine.
-    cmd = [binary, "-p", prompt, "--output-format", "json", "--tools", ""]
+    # Locked down (api/claude_cli.py): no built-in tools and no MCP servers. Prompts embed untrusted
+    # news text, so a tool-enabled runner could be steered into acting on this machine or accounts.
+    cmd = claude_cli.build_argv(binary, prompt)
     t0 = time.time()
     # On Windows, subprocess.run(timeout=) only kills the direct process, not
     # its children. Use Popen + communicate so we can call kill() ourselves

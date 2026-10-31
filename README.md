@@ -84,7 +84,7 @@ ECONGRAPH_LLM_MODEL=gemma4:26b
 
 **Windows** — double-click `dev.bat`, or run in two terminals:
 ```bat
-python -m uvicorn api.main:app --host :: --port 8101 --reload
+python -B -m uvicorn api.main:app --host ::1 --port 8101 --reload
 cd web && npm run dev -- --port 5180
 ```
 

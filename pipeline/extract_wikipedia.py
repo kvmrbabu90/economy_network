@@ -33,6 +33,7 @@ from uuid import uuid4
 import requests
 
 from schema.models import CandidateEdge, EdgeType, Provenance
+from api import claude_cli
 
 
 log = logging.getLogger("extract_wikipedia")
@@ -240,7 +241,7 @@ def _claude_call(prompt: str, *, max_retries: int = 3) -> Optional[dict[str, Any
     for attempt in range(max_retries):
         try:
             proc = subprocess.run(
-                [binary, "-p", prompt, "--output-format", "json", "--tools", ""],
+                claude_cli.build_argv(binary, prompt),
                 capture_output=True,
                 stdin=subprocess.DEVNULL,
                 text=True,

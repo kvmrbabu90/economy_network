@@ -25,17 +25,17 @@ sleep 1
 # ── Start backend ────────────────────────────────────────────────────────────
 echo "Starting backend  → http://localhost:8101"
 if [[ "$OSTYPE" == "darwin"* ]]; then
-  osascript -e "tell app \"Terminal\" to do script \"cd '$REPO_DIR' && python -m uvicorn api.main:app --host '::' --port 8101 --reload\"" &
+  osascript -e "tell app \"Terminal\" to do script \"cd '$REPO_DIR' && python -B -m uvicorn api.main:app --host '::1' --port 8101 --reload\"" &
 else
   # Linux: try common terminal emulators
   if command -v gnome-terminal &>/dev/null; then
-    gnome-terminal -- bash -c "cd '$REPO_DIR' && python -m uvicorn api.main:app --host '::' --port 8101 --reload; exec bash" &
+    gnome-terminal -- bash -c "cd '$REPO_DIR' && python -B -m uvicorn api.main:app --host '::1' --port 8101 --reload; exec bash" &
   elif command -v xterm &>/dev/null; then
-    xterm -e "cd '$REPO_DIR' && python -m uvicorn api.main:app --host '::' --port 8101 --reload; bash" &
+    xterm -e "cd '$REPO_DIR' && python -B -m uvicorn api.main:app --host '::1' --port 8101 --reload; bash" &
   else
     # Fallback: background process, logs to backend.log
     cd "$REPO_DIR"
-    python -m uvicorn api.main:app --host '::' --port 8101 --reload > "$REPO_DIR/backend.log" 2>&1 &
+    python -B -m uvicorn api.main:app --host '::1' --port 8101 --reload > "$REPO_DIR/backend.log" 2>&1 &
     echo "  (no terminal emulator found — backend running in background, logs → backend.log)"
   fi
 fi

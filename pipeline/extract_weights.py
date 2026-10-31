@@ -30,6 +30,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Optional
+from api import claude_cli
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ def _resolve_claude_binary() -> str:
 
 def _claude_call(prompt: str, timeout: int = LLM_TIMEOUT) -> str:
     binary = _resolve_claude_binary()
-    cmd = [binary, "-p", prompt, "--output-format", "json", "--tools", ""]
+    cmd = claude_cli.build_argv(binary, prompt)
     try:
         # ignore_cleanup_errors avoids Windows [WinError 32] when Claude CLI
         # keeps handles open after the subprocess exits.
