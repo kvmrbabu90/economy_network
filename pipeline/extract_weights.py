@@ -66,7 +66,7 @@ def _resolve_claude_binary() -> str:
 
 def _claude_call(prompt: str, timeout: int = LLM_TIMEOUT) -> str:
     binary = _resolve_claude_binary()
-    cmd = [binary, "-p", prompt, "--output-format", "json"]
+    cmd = [binary, "-p", prompt, "--output-format", "json", "--tools", ""]
     try:
         # ignore_cleanup_errors avoids Windows [WinError 32] when Claude CLI
         # keeps handles open after the subprocess exits.

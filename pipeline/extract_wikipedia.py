@@ -240,7 +240,7 @@ def _claude_call(prompt: str, *, max_retries: int = 3) -> Optional[dict[str, Any
     for attempt in range(max_retries):
         try:
             proc = subprocess.run(
-                [binary, "-p", prompt, "--output-format", "json"],
+                [binary, "-p", prompt, "--output-format", "json", "--tools", ""],
                 capture_output=True,
                 stdin=subprocess.DEVNULL,
                 text=True,

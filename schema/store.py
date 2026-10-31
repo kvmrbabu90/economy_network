@@ -737,7 +737,11 @@ def set_event_status(conn: sqlite3.Connection, event_id: str, status: str) -> No
     conn.commit()
 
 
-def prune_old_events(conn: sqlite3.Connection, older_than_days: int = 30) -> int:
+# Events are the irreplaceable evidence base for signal validation: keep them ~10 years by default.
+EVENT_RETENTION_DAYS = 3650
+
+
+def prune_old_events(conn: sqlite3.Connection, older_than_days: int = EVENT_RETENTION_DAYS) -> int:
     """Delete events (and their event_impacts) older than the horizon.
 
     "Age" is COALESCE(published_at, ingested_at) — an event with no publish

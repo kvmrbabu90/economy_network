@@ -163,7 +163,7 @@ class ClaudeCLIExtractor:
 
     def extract(self, prompt: str) -> tuple[Optional[list[dict]], dict[str, Any]]:
         binary = self._resolve_binary()
-        cmd = [binary, "-p", prompt, "--output-format", "json"]
+        cmd = [binary, "-p", prompt, "--output-format", "json", "--tools", ""]
         # IMPORTANT: stdin=DEVNULL avoids the "no stdin data received in 3s"
         # warning the CLI emits when run non-interactively.
         try:

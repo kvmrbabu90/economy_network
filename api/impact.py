@@ -157,6 +157,18 @@ def _resolve_claude_binary() -> str:
     )
 
 
+def _envelope_model(envelope: dict) -> Optional[str]:
+    """The model that did the work. The CLI's JSON envelope has no top-level `model`; it reports
+    per-model usage under `modelUsage` (several models when the CLI delegates), so take the one with
+    the most output tokens."""
+    if envelope.get("model"):
+        return envelope["model"]
+    usage = envelope.get("modelUsage") or {}
+    if not isinstance(usage, dict) or not usage:
+        return None
+    return max(usage, key=lambda m: ((usage[m] or {}).get("outputTokens") or 0, m))
+
+
 def _claude_call(prompt: str) -> str:
     """Single Claude Code CLI call. Returns the model's text (the
     `result` field of the JSON envelope). Empty string on error -- the
@@ -169,7 +181,9 @@ def _claude_call(prompt: str) -> str:
     """
     import tempfile
     binary = _resolve_claude_binary()
-    cmd = [binary, "-p", prompt, "--output-format", "json"]
+    # --tools "": the CLI gets NO tools (no Bash, file or web access). Prompts embed untrusted news
+    # text, so a tool-enabled runner could be steered into running commands on this machine.
+    cmd = [binary, "-p", prompt, "--output-format", "json", "--tools", ""]
     t0 = time.time()
     # On Windows, subprocess.run(timeout=) only kills the direct process, not
     # its children. Use Popen + communicate so we can call kill() ourselves
@@ -241,7 +255,7 @@ def _claude_call(prompt: str) -> str:
         u = envelope.get("usage") or {}
         from schema import store as _store
         _store.record_llm_usage({
-            "model": envelope.get("model"),
+            "model": _envelope_model(envelope),
             "input_tokens": u.get("input_tokens"),
             "output_tokens": u.get("output_tokens"),
             "cache_read_tokens": u.get("cache_read_input_tokens"),

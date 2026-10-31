@@ -20,7 +20,7 @@ for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":5180" ^| findstr "LISTENING
 
 :: Start backend
 echo Starting backend (uvicorn port 8101)...
-start "EconGraph Backend" cmd /k "cd /d C:\Users\konda\OneDrive\econgraph_repo && python -B -m uvicorn api.main:app --host :: --port 8101 --reload"
+start "EconGraph Backend" cmd /k "cd /d C:\Users\konda\OneDrive\econgraph_repo && python -B -m uvicorn api.main:app --host ::1 --port 8101 --reload"
 
 :: Brief pause so uvicorn binds before frontend tries to talk to it
 timeout /t 3 /nobreak >nul

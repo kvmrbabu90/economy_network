@@ -48,7 +48,7 @@ def _run_aggregate(db_path) -> dict:
         conn.close()
 
 
-def _run_prune(db_path, older_than_days: int = 30) -> dict:
+def _run_prune(db_path, older_than_days: int = store.EVENT_RETENTION_DAYS) -> dict:
     conn = store.connect(db_path); store.init_db(conn)
     try:
         # prune_old_events returns a bare int; wrap it so the prune slot matches
@@ -77,13 +77,11 @@ def run_cycle(db_path=DB_PATH, *, provider: Optional[str] = None) -> dict:
         _stage("enrich", lambda: _run_enrich(db_path), summary)   # routed + budgeted; degrades safely
     _stage("precompute", lambda: _run_precompute(db_path, provider), summary)
     _stage("aggregate", lambda: _run_aggregate(db_path), summary)
-    # Bound table growth: drop events (and their impacts) older than the aggregation
-    # window's reach. Runs after aggregate so we never prune a row still in-window.
-    # PRUNE_OLDER_THAN_DAYS raises the cutoff (default 30) so a historical backfill
-    # (scripts/backfill_history.py) can keep its old events alive long enough to be
-    # traced + validated; signal_outcomes is never pruned, so once validated the
-    # reliability record survives even after the events age out again.
-    _prune_days = int(os.environ.get("PRUNE_OLDER_THAN_DAYS", "30"))
+    # Retention: events (and their impacts) older than PRUNE_OLDER_THAN_DAYS are dropped after
+    # aggregate, so a row still in-window is never pruned. The default is ~10 years: the events are
+    # the evidence base for signal validation and cannot be re-collected once deleted (a 30-day
+    # default deleted 1,664 outcomes' source events before 2026-10-18). Lower it only on purpose.
+    _prune_days = int(os.environ.get("PRUNE_OLDER_THAN_DAYS", str(store.EVENT_RETENTION_DAYS)))
     _stage("prune", lambda: _run_prune(db_path, older_than_days=_prune_days), summary)
     # DEFERRED — auto-retry of aged 'failed' events. run_precompute(retry_failed=True)
     # re-queues *every* failed event indiscriminately, so wiring it into the unattended

@@ -9,7 +9,7 @@
 #                               running as an orphan; it can grab the port on the next
 #                               restart and serve 500s. Even when healthy, reap any
 #                               api.main uvicorn proc that is NOT the current :8101 owner.
-# Backend binds --host :: (the browser resolves localhost -> ::1). A re-test after a
+# Backend binds --host ::1 (loopback only, never other interfaces; the browser resolves localhost -> ::1). A re-test after a
 # short pause guards against killing a server that is merely busy for a moment.
 $ErrorActionPreference = 'SilentlyContinue'
 $repo = 'C:\Users\konda\OneDrive\econgraph_repo'
@@ -37,7 +37,7 @@ function Get-BackendProcs {
 }
 function Start-Backend {
     Start-Process -FilePath 'python' `
-        -ArgumentList '-B', '-m', 'uvicorn', 'api.main:app', '--host', '::', '--port', '8101' `
+        -ArgumentList '-B', '-m', 'uvicorn', 'api.main:app', '--host', '::1', '--port', '8101' `
         -WorkingDirectory $repo -WindowStyle Hidden
 }
 
