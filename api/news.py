@@ -100,6 +100,7 @@ def _claude_call(prompt: str, timeout: int = 120) -> str:
         with tempfile.TemporaryDirectory() as tmpdir:
             _kw: dict = dict(
                 stdin=subprocess.DEVNULL,
+                env=claude_cli.child_env(),   # subscription login, never an env API key
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=tmpdir,   # run outside repo root so CLAUDE.md doesn't block

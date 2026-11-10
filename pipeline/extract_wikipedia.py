@@ -244,6 +244,7 @@ def _claude_call(prompt: str, *, max_retries: int = 3) -> Optional[dict[str, Any
                 claude_cli.build_argv(binary, prompt),
                 capture_output=True,
                 stdin=subprocess.DEVNULL,
+                env=claude_cli.child_env(),   # subscription login, never an env API key
                 text=True,
                 encoding="utf-8",
                 errors="replace",

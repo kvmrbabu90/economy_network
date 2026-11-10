@@ -236,3 +236,42 @@ def test_main_reports_backup_and_rotation_failures_with_distinct_exit_codes(tmp_
     assert bk.main() == 2                                          # backup kept, rotation needs attention
     monkeypatch.setenv("ECONGRAPH_DB", str(tmp_path / "missing.db"))
     assert bk.main() == 1
+
+
+# --- 2026-11-09: a user-level ANTHROPIC_API_KEY overrode the subscription login in the scheduled task ------------
+def test_child_env_drops_api_keys_and_keeps_everything_else(monkeypatch):
+    from api import claude_cli
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-invalid")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok")
+    monkeypatch.setenv("ECONGRAPH_DB", r"C:\x\g.db")
+    env = claude_cli.child_env()
+    assert "ANTHROPIC_API_KEY" not in env and "ANTHROPIC_AUTH_TOKEN" not in env
+    assert env["ECONGRAPH_DB"] == r"C:\x\g.db" and "PATH" in {k.upper() for k in env}
+
+
+@pytest.mark.parametrize("module", ["impact", "news"])
+def test_runtime_cli_calls_never_pass_an_api_key(monkeypatch, module):
+    from api import impact as imp, news
+    mod = {"impact": imp, "news": news}[module]
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-invalid")
+    monkeypatch.setattr(mod, "_resolve_claude_binary", lambda: "claude")
+    from schema import store
+    monkeypatch.setattr(store, "record_llm_usage", lambda u, db_path=None: None)
+    seen: list = []
+
+    def fake_popen(cmd, **kw):
+        seen.append(kw.get("env"))
+        return _FakeProc(json.dumps({"is_error": False, "result": "ok"}).encode())
+
+    monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+    mod._claude_call("hello")
+    assert seen and seen[0] is not None and "ANTHROPIC_API_KEY" not in seen[0]
+
+
+def test_every_cli_launch_site_uses_the_scrubbed_environment():
+    offenders = []
+    for path in list((REPO / "api").rglob("*.py")) + list((REPO / "pipeline").rglob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        if "claude_cli.build_argv" in src and "env=claude_cli.child_env()" not in src:
+            offenders.append(path.relative_to(REPO).as_posix())
+    assert offenders == [], f"launch the Claude CLI with env=claude_cli.child_env(): {offenders}"

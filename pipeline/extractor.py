@@ -172,6 +172,7 @@ class ClaudeCLIExtractor:
                 cmd,
                 capture_output=True,
                 stdin=subprocess.DEVNULL,
+                env=claude_cli.child_env(),   # subscription login, never an env API key
                 text=True,
                 encoding="utf-8",
                 errors="replace",
