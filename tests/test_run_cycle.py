@@ -68,3 +68,14 @@ def test_scheduler_loop_survives_cycle_exception(monkeypatch):
     with pytest.raises(_Stop):
         scheduler.main([])
     assert calls["n"] == 1
+
+
+def test_an_auth_error_in_any_stage_turns_the_cycle_red(monkeypatch, tmp_path):
+    # 2026-11-09: an expired Claude login was reported as ok=True for 3 days. A stage that defers on
+    # auth must make the cycle not-ok (exit 1) so the scheduled task's result shows the outage.
+    monkeypatch.setattr(rc, "_run_ingest", lambda db: {"queued": 0})
+    monkeypatch.setattr(rc, "_run_precompute", lambda db, provider: {"processed": 0, "auth_error": True})
+    monkeypatch.setattr(rc, "_run_aggregate", lambda db: {"nodes": 0})
+    monkeypatch.setattr(rc, "_run_prune", lambda db, older_than_days=0: {"pruned_events": 0})
+    s = rc.run_cycle(tmp_path / "g.db")
+    assert s["ok"] is False and s.get("auth_error") is True

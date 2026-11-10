@@ -48,3 +48,29 @@ def test_logged_out_regex_is_narrow():
     assert r.search("please run /login")
     assert r.search("Please login")
     assert not r.search("The user logged in successfully and saw the dashboard")  # ordinary text
+
+
+# --- 2026-11-09 outage: "OAuth session expired" was not recognised as a logout --------------------------------
+_EXPIRED = "Failed to authenticate: OAuth session expired and could not be refreshed"
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_expired_oauth_session_raises_auth_error(monkeypatch, returncode):
+    _patch_cli(monkeypatch, {"is_error": True, "result": _EXPIRED, "terminal_reason": "api_error"},
+               returncode=returncode)
+    with pytest.raises(impact.ClaudeAuthError):
+        impact._claude_call("hi")
+
+
+def test_preflight_reports_an_expired_session(monkeypatch):
+    _patch_cli(monkeypatch, {"is_error": True, "result": _EXPIRED}, returncode=1)
+    reason = impact.check_claude_auth("claude")
+    assert reason and "OAuth" in reason
+
+
+def test_auth_regex_recognises_expiry_but_stays_narrow():
+    r = impact._CLAUDE_LOGGED_OUT_RE
+    assert r.search(_EXPIRED)
+    assert r.search("OAuth token has expired")
+    assert not r.search("Model temporarily overloaded")
+    assert not r.search("Bank says its new app lets customers log in with a passkey")

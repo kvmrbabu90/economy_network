@@ -59,7 +59,13 @@ class ClaudeAuthError(RuntimeError):
 # The logged-out CLI returns exit 0 + {"is_error": true, "result": "Not logged in · Please run
 # /login"}. Match that (and close variants) so we distinguish an auth outage from a real empty
 # result. Deliberately narrow — must not fire on ordinary model output that mentions "login".
-_CLAUDE_LOGGED_OUT_RE = re.compile(r"\bnot logged in\b|\brun /login\b|\bplease (run )?/?login\b", re.I)
+# It also covers an EXPIRED session: from 2026-11-06 to 11-09 "Failed to authenticate: OAuth session expired
+# and could not be refreshed" was not recognised, so every call looked like an ordinary empty result.
+_CLAUDE_LOGGED_OUT_RE = re.compile(
+    r"\bnot logged in\b|\brun /login\b|\bplease (run )?/?login\b"
+    r"|\bfailed to authenticate\b|\boauth (session|token)\b[^.\n]{0,40}\b(expired|invalid|revoked)\b"
+    r"|\bcould not be refreshed\b|\binvalid api key\b",
+    re.I)
 
 
 def check_claude_auth(provider: Optional[str] = None) -> Optional[str]:
@@ -232,8 +238,13 @@ def _claude_call(prompt: str) -> str:
         # STDOUT json envelope (not stderr), so check BOTH streams before treating it as a
         # generic failure — otherwise the auth outage looks like an ordinary empty result.
         if _CLAUDE_LOGGED_OUT_RE.search((stderr or "") + " " + (stdout or "")):
-            raise ClaudeAuthError("Claude CLI not logged in — run `claude login`")
-        log.warning("claude CLI non-zero exit: %s", stderr[:300])
+            try:
+                detail = (json.loads(stdout).get("result") or "").strip()
+            except (ValueError, AttributeError):
+                detail = ""
+            detail = detail or stderr.strip() or "not logged in"
+            raise ClaudeAuthError(f"Claude CLI not authenticated ({detail[:160]}) — run `claude` and log in again")
+        log.warning("claude CLI non-zero exit: %s", (stderr or stdout)[:300])
         return ""
     try:
         envelope = json.loads(stdout)

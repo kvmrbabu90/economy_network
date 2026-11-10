@@ -89,6 +89,12 @@ def run_cycle(db_path=DB_PATH, *, provider: Optional[str] = None) -> dict:
     # risk double-processing. A safe version needs a failed-at timestamp / attempt count in
     # the events table to bound retries to genuinely transient, recently-aged failures.
     # Until that column exists, retry stays a manual `--retry-failed` operator action.
+    # A stage that deferred because the Claude CLI is logged out (or its session expired) did not raise,
+    # but the cycle did nothing useful: make it not-ok so the scheduled task exits 1 and the outage shows.
+    if any(isinstance(v, dict) and v.get("auth_error") for v in summary.values()):
+        summary["ok"] = False
+        summary["auth_error"] = True
+        log.error("run_cycle: Claude CLI is not authenticated; run `claude` and log in again")
     summary["elapsed_s"] = round(time.time() - t0, 1)
     log.info("run_cycle: %s", summary)
     return summary
